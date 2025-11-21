@@ -1,0 +1,9 @@
+
+path: ./datasets/tray_3 # dataset root dir
+train: images/train # train images (relative to 'path') 4 images
+val: images/val
+test: 
+
+# Classes
+names:
+  0: tube
