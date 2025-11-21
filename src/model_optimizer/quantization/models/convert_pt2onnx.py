@@ -34,6 +34,7 @@ if __name__ == "__main__":
 
     # Validate
     data = TASK2DATA[model.task]
+    print(f'data: {data}')
     results = metric_model.val(
         data=data,
         batch=1,
