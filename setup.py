@@ -39,6 +39,14 @@ optional_deps["all"] = [
 ]
 optional_deps["dev"] = [deps for k in optional_deps for deps in optional_deps[k]]
 
+import os
+def get_console_scripts() -> list[str]:
+    console_scripts = ["model-optimizer-cli = model_optimizer.cli:main"]
+    if os.getenv("ENABLE_SHORT_CONSOLE", "1").lower() in ["true", "y", "1"]:
+        console_scripts.append("model-opt = model_optimizer.cli:main")
+
+    return console_scripts
+
 def main():
     setuptools.setup(
         name="model_optimizer",
@@ -59,6 +67,7 @@ def main():
         python_requires=">=3.10,<3.13",
         install_requires=required_deps,
         extras_require=optional_deps,
+        entry_points={"console_scripts": get_console_scripts()},
         packages=find_packages("src"),
         package_dir={"": "src"},
         package_data={"model_optimizer": ["**/*.h", "**/*.cpp", "**/*.cu"]},
