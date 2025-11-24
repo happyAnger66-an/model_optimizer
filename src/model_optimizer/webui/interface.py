@@ -3,24 +3,32 @@ import platform
 
 import gradio as gr
 
-from .css import CSS
+from .engine import Engine
+from .components.quantize import create_quantize_tab
+from .components.eval import create_eval_tab
+from .components.top import create_top
 
-def quantize_model(name, model_path):
-    return "成功量化了 " + name + "!!!!"
+from .commom import save_config
 
 def create_ui(demo_mode: bool = False) -> "gr.Blocks":
+    engine = Engine(demo_mode=demo_mode, pure_chat=False)
     hostname = os.getenv("HOSTNAME", os.getenv("COMPUTERNAME", platform.node())).split(".")[0]
     
     with gr.Blocks(title=f"Model Factory ({hostname})") as demo:
         title = gr.HTML()
         subtitle = gr.HTML()
+        engine.manager.add_elems("top", create_top())
+        lang: gr.Dropdown = engine.manager.get_elem_by_id("top.lang")
 
-        name = gr.Textbox(label="模型")
-        model_path = gr.Textbox(label="模型路径")
-        output = gr.Textbox(label="量化结果")
-        start_btn = gr.Button("开始量化")
-        start_btn.click(fn=quantize_model, inputs=[name, model_path], outputs=output, api_name="quantize")
+        with gr.Tab("量化"):
+            engine.manager.add_elems("quantize", create_quantize_tab(engine))
 
+        with gr.Tab("评测"):
+            engine.manager.add_elems("eval", create_eval_tab(engine))
+
+        lang.change(engine.change_lang, [lang], engine.manager.get_elem_list(), queue=False)
+        lang.input(save_config, inputs=[lang], queue=False)
+        
     return demo
 
 def run_web_ui() -> None:

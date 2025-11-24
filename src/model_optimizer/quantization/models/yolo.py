@@ -13,6 +13,9 @@ from model_optimizer.torch_hooks.hooks import hook_module_inputs
 import modelopt.torch.opt as mto
 import modelopt.torch.quantization as mtq
 
+
+# yolo val segment data=coco.yaml batch=1 device=0
+
 def hook_yolo_train_method(mode):
     print(f'hook yolo train called in quantization. Do nothing...')
     pass

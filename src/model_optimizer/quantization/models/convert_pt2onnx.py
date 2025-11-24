@@ -15,7 +15,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_path', type=str, required=True)
     parser.add_argument('--export_dir', type=str, required=True)
     parser.add_argument('--model_task', type=str, required=True)
-    parser.add_argument('--jpg_path', type=str, required=True)
+    parser.add_argument('--jpg_path', type=str)
     args = parser.parse_args()
 
     model_type = args.model_path.rsplit('.')[-1]
@@ -23,8 +23,10 @@ if __name__ == "__main__":
     print(f'model task {model.task}')
 #    benchmark(model=args.model_path, data='coco8-seg.yaml', imgsz=640, device=0)
 
-    onnx_path = model.export(format="onnx", dynamic=True, simplify=True, half=True, device='0')
-    #os.rename(onnx_path, f"{args.export_dir}")
+    onnx_path = model.export(format="onnx", dynamic=True, simplify=True, device='0')
+    os.rename(onnx_path, f"{args.export_dir}")
+    import sys
+    sys.exit(0)
 
     imgsz = 640
     metric_model = model

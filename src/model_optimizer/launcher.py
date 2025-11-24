@@ -55,5 +55,19 @@ def launch():
         from .webui.interface import run_web_ui
 
         run_web_ui()
+    elif command == "version":
+        print(WELCOME)
+    elif command == "quantize":
+        from .quantization.cli import quantize_cli
+        quantize_cli(sys.argv)
+    elif command == "convert":
+        from .convert.convert_formt import convert_model
+        convert_model(sys.argv)
+    elif command == "calibrate":
+        from .calibrate.cli import calibrate_cli
+        calibrate_cli(sys.argv)
+    elif command == "eval":
+        from .evaluate.cli import eval_cli
+        eval_cli(sys.argv)
     else:
         print(USAGE)

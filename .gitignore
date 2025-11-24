@@ -1,3 +1,9 @@
+output_dir/
+llamaboard_cache/
+*.engine
+*.npy
+*.onnx
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
