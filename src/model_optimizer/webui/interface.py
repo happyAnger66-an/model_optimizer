@@ -7,6 +7,7 @@ from .engine import Engine
 from .components.quantize import create_quantize_tab
 from .components.eval import create_eval_tab
 from .components.top import create_top
+from .components.footer import create_footer
 
 from .commom import save_config
 
@@ -16,7 +17,7 @@ def create_ui(demo_mode: bool = False) -> "gr.Blocks":
     
     with gr.Blocks(title=f"Model Factory ({hostname})") as demo:
         title = gr.HTML()
-        subtitle = gr.HTML()
+        engine.manager.add_elems("head", {"title": title})
         engine.manager.add_elems("top", create_top())
         lang: gr.Dropdown = engine.manager.get_elem_by_id("top.lang")
 
@@ -26,6 +27,7 @@ def create_ui(demo_mode: bool = False) -> "gr.Blocks":
         with gr.Tab("评测"):
             engine.manager.add_elems("eval", create_eval_tab(engine))
 
+        engine.manager.add_elems("footer", create_footer())
         lang.change(engine.change_lang, [lang], engine.manager.get_elem_list(), queue=False)
         lang.input(save_config, inputs=[lang], queue=False)
         

@@ -3,6 +3,7 @@ llamaboard_cache/
 *.engine
 *.npy
 *.onnx
+*.tar.gz
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

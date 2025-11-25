@@ -10,6 +10,7 @@ import json
 from .commom import abort_process, save_cmd, get_save_dir, load_eval_results
 from .locales import ALERTS
 from .extras.misc import is_accelerator_available, torch_gc
+from .extras.constants import RUNNING_LOG
 from .control import get_quantize_info
 
 import gradio as gr
@@ -201,6 +202,10 @@ class Runner:
             if args["output_dir"] and len(args["output_dir"]) > 2:
                 if os.path.exists(args["output_dir"]) and do_quantize:
                     shutil.rmtree(args["output_dir"])
+
+            running_log_path = os.path.join(args["output_dir"], RUNNING_LOG)
+            if os.path.exists(running_log_path):
+                os.remove(running_log_path)
             os.makedirs(args["output_dir"], exist_ok=True)
 
             env = deepcopy(os.environ)
@@ -224,9 +229,10 @@ class Runner:
                 cmd_list = ["model-optimizer-cli", "quantize"]
                 cmd_list.extend(self._prepare_quantize_cli(args))
                 print(f'quantize [quantize] cmd_list {cmd_list}')
-                self.quantizer = Popen(
-                    cmd_list, env=env, stderr=PIPE, text=True)
-                yield from self.monitor()
+                with open(running_log_path, 'a+') as log_f:
+                    self.quantizer = Popen(
+                        cmd_list, env=env, stdout=log_f, stderr=PIPE, text=True)
+                    yield from self.monitor()
             else:
                 model_name = args["model_path"]
                 if model_name.endswith('.onnx'):

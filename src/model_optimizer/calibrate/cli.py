@@ -1,7 +1,7 @@
 import os
 import argparse
 
-from ..progress.write import write_quantize_progress
+from ..progress.write import write_quantize_progress, write_running_log
 
 def calibrate(model_path, dataset_dir, export_dir):
     from ultralytics import YOLO
@@ -21,7 +21,7 @@ def calibrate(model_path, dataset_dir, export_dir):
     write_quantize_progress(export_dir, percent, 2, 3, percent, 100)
     calib_data = YoLoCalibrationData(dataset_dir)
     for idx, data in enumerate(calib_data):
-        print(f'calibrate: {idx}')
+        write_running_log(export_dir, f'calibrate: {idx}')
         model(data)
         percent+=1
         write_quantize_progress(export_dir, percent, 2, 3, percent, 100)
@@ -30,7 +30,7 @@ def calibrate(model_path, dataset_dir, export_dir):
 
     import numpy as np
     np.save(f'{export_dir}/calibrate.npy', yolo_calib_collector.datas["images"])
-    print(f'calibrate datas saved to {export_dir}/calibrate.npy')
+    write_running_log(export_dir, f'calibrate datas saved to {export_dir}/calibrate.npy')
     write_quantize_progress(export_dir, 80, 2, 3, 80, 100)
 
 

@@ -27,3 +27,16 @@ def torch_gc() -> None:
         torch.mps.empty_cache()
     elif is_torch_cuda_available():
         torch.cuda.empty_cache()
+
+def get_current_memory() -> tuple[int, int]:
+    r"""Get the available and total memory for the current device (in Bytes)."""
+    if is_torch_xpu_available():
+        return torch.xpu.mem_get_info()
+    elif is_torch_npu_available():
+        return torch.npu.mem_get_info()
+    elif is_torch_mps_available():
+        return torch.mps.current_allocated_memory(), torch.mps.recommended_max_memory()
+    elif is_torch_cuda_available():
+        return torch.cuda.mem_get_info()
+    else:
+        return 0, -1
