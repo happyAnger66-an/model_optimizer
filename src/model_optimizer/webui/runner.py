@@ -50,7 +50,7 @@ class Runner:
 
         args = dict(
             stage="sft",
-            model_name_or_path=get("top.model_path"),
+            model_path=get("top.model_path"),
             preprocessing_num_workers=16,
             dataset_dir=get("eval.dataset_dir"),
             output_dir=get_save_dir(model_name, model_path, get("eval.output_dir")),
@@ -127,6 +127,26 @@ class Runner:
         print(f' quantize args: {args}')
         return args
     
+    def _prepare_eval_cli(self, args):
+        cli_args = []
+        model_name = args["model_path"]
+
+        model_name = model_name.replace('.onnx', '.engine')
+        cli_args.extend(["--model_path", model_name])
+        cli_args.extend(["--dataset_dir", f'{args["dataset_dir"]}'])
+        cli_args.extend(["--output_dir", f'{args["output_dir"]}'])
+
+        return cli_args
+
+    def _prepare_build_cli(self, args):
+        cli_args = []
+        model_name = args["model_path"]
+
+        cli_args.extend(["--model_path", model_name])
+        cli_args.extend(["--export_dir", f'{args["output_dir"]}'])
+
+        return cli_args
+
     def _prepare_quantize_cli(self, args):
         cli_args = []
         model_name = args["model_name"]
@@ -179,7 +199,7 @@ class Runner:
             args = self._parse_quantize_args(data) if do_quantize else self._parse_eval_args(data)
 
             if args["output_dir"] and len(args["output_dir"]) > 2:
-                if os.path.exists(args["output_dir"]):
+                if os.path.exists(args["output_dir"]) and do_quantize:
                     shutil.rmtree(args["output_dir"])
             os.makedirs(args["output_dir"], exist_ok=True)
 
@@ -208,7 +228,18 @@ class Runner:
                     cmd_list, env=env, stderr=PIPE, text=True)
                 yield from self.monitor()
             else:
+                model_name = args["model_path"]
+                if model_name.endswith('.onnx'):
+                    cmd_list = ["model-optimizer-cli", "build"]
+                    cmd_list.extend(self._prepare_build_cli(args))
+                    print(f'eval [build] cmd_list {cmd_list}')
+                    self.quantizer = Popen(
+                        cmd_list, env=env, stderr=PIPE, text=True)
+                    yield from self.monitor(finalize=False)
+                
                 cmd_list = ["model-optimizer-cli", "eval"]
+                cmd_list.extend(self._prepare_eval_cli(args))
+                print(f'eval [eval] cmd_list {cmd_list}')
                 self.quantizer = Popen(
                     cmd_list, env=env, stderr=PIPE, text=True)
                 yield from self.monitor()
@@ -226,7 +257,7 @@ class Runner:
             elem_id): return self.running_data[self.manager.get_elem_by_id(elem_id)]
         lang, model_name, model_path = get("top.lang"), get(
             "top.model_name"), get("top.model_path")
-        output_dir = get("{}.output_dir".format("quantize")) if self.do_quantize else "eval"
+        output_dir = get("{}.output_dir".format("quantize" if self.do_quantize else "eval"))
         output_path = output_dir
 #        output_path = get_save_dir(model_name, model_path, output_dir)
 
@@ -261,6 +292,16 @@ class Runner:
 
         if return_code == 0 or self.aborted:
             finish_info = ALERTS["info_finished"][lang]
+
+            running_log, running_progress, running_info = get_quantize_info(
+                    lang, output_path, self.do_quantize)
+            return_dict = {
+                    output_box: running_log,
+                    progress_bar: running_progress,
+                }
+
+            yield return_dict
+
             if self.do_quantize:
                 finish_log = ALERTS["info_finished"][lang] + \
                     "\n\n" + running_log

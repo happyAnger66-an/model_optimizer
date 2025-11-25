@@ -66,6 +66,9 @@ def launch():
     elif command == "calibrate":
         from .calibrate.cli import calibrate_cli
         calibrate_cli(sys.argv)
+    elif command == "build":
+        from .trt_build.cli import build_cli
+        build_cli(sys.argv)
     elif command == "eval":
         from .evaluate.cli import eval_cli
         eval_cli(sys.argv)

@@ -21,9 +21,11 @@ def get_quantize_info(lang: str, output_path: os.PathLike, do_quantize: bool) ->
     running_info = {}
 
     running_log_path = os.path.join(output_path, RUNNING_LOG)
+#    print(f'running_log {running_log_path}')
     if os.path.isfile(running_log_path):
         with open(running_log_path, encoding="utf-8") as f:
             running_log = "```\n" + f.read()[-20000:] + "\n```\n"  # avoid lengthy log
+            #print(f'running_log {running_log}')
 
     quantize_log_path = os.path.join(output_path, QUANTIZE_LOG)
     if os.path.isfile(quantize_log_path):

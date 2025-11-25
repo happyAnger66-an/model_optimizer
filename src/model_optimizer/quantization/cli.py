@@ -7,7 +7,7 @@ from ..progress.write import write_quantize_progress
 
 def quantize_onnx(model_path, calibrate_data, export_dir, quant_mode, calibrate_method):
     model_name = os.path.basename(model_path)
-
+    export_name = model_name.replace('.', '_')
     calib_datas = np.load(calibrate_data)
     from modelopt.onnx.quantization import quantize
     
@@ -17,7 +17,7 @@ def quantize_onnx(model_path, calibrate_data, export_dir, quant_mode, calibrate_
              quantize_mode=quant_mode,       # fp8, int8, int4 etc.
              calibration_data=calib_datas, # max, entropy, awq_clip, rtn_dq etc.
              calibration_method=calibrate_method,
-             output_path=f"{export_dir}/{model_name}_quant.onnx"
+             output_path=f"{export_dir}/{export_name}_quant_{quant_mode}_{calibrate_method}.onnx"
              )
     write_quantize_progress(export_dir, 100, 3, 3, 100, 100)
     print(f'quantize done.')
