@@ -108,22 +108,22 @@ class Runner:
     def _parse_quantize_args(self, data: dict["Component", Any]) -> dict[str, Any]:
         r"""Build and validate the training arguments."""
         def get(elem_id): return data[self.manager.get_elem_by_id(elem_id)]
-        model_name, model_path = get("top.model_name"), get("top.model_path")
+        model_name, model_path = get("top.model_name").strip(), get("top.model_path").strip()
 #        user_config = load_config()
 
         args = dict(
             do_quantizer=True,
-            model_name=get("top.model_name"),
-            model_path=get("top.model_path"),
-            dataset_dir=get("quantize.dataset_dir"),
+            model_name=get("top.model_name").strip(),
+            model_path=get("top.model_path").strip(),
+            dataset_dir=get("quantize.dataset_dir").strip(),
 #            dataset=",".join(get("quantize.dataset")),
-            output_dir=get("quantize.output_dir"),
+            output_dir=get("quantize.output_dir").strip(),
         )
 
         # quantization
         if get("quantize.quantization_bit") != "none":
-            args["quantize_bit"] = get("quantize.quantization_bit")
-            args["calibrate_method"] = get("quantize.calibrate_method")
+            args["quantize_bit"] = get("quantize.quantization_bit").strip()
+            args["calibrate_method"] = get("quantize.calibrate_method").strip()
 
         print(f' quantize args: {args}')
         return args
@@ -143,8 +143,8 @@ class Runner:
         cli_args = []
         model_name = args["model_path"]
 
-        cli_args.extend(["--model_path", model_name])
-        cli_args.extend(["--export_dir", f'{args["output_dir"]}'])
+        cli_args.extend(["--model_path", model_name.strip()])
+        cli_args.extend(["--export_dir", f'{args["output_dir"].strip()}'])
 
         return cli_args
 
@@ -155,7 +155,7 @@ class Runner:
         onnx_name = model_name.replace('.pt', '.onnx')
         cli_args.extend(["--model_path", f'{os.path.join(args["output_dir"], onnx_name)}'])
         cli_args.extend(["--qformat", f'{args["quantize_bit"]}'])
-        cli_args.extend(["--export_dir", f'{args["output_dir"]}'])
+        cli_args.extend(["--export_dir", f'{args["output_dir"].strip()}'])
 
         calibrate_data = os.path.join(args['output_dir'], 'calibrate.npy')
         cli_args.extend(["--calibrate_data", f'{calibrate_data}'])
@@ -168,10 +168,10 @@ class Runner:
         model_name = args["model_name"]
         model_path = args["model_path"]
 
-        cli_args.extend(["--model_name", f'{model_name}'])
-        cli_args.extend(["--model_path", f'{model_path}'])
-        cli_args.extend(["--dataset_dir", f'{args["dataset_dir"]}'])
-        cli_args.extend(["--export_dir", f'{args["output_dir"]}'])
+        cli_args.extend(["--model_name", f'{model_name.strip()}'])
+        cli_args.extend(["--model_path", f'{model_path.strip()}'])
+        cli_args.extend(["--dataset_dir", f'{args["dataset_dir"].strip()}'])
+        cli_args.extend(["--export_dir", f'{args["output_dir"].strip()}'])
 
         return cli_args
 
