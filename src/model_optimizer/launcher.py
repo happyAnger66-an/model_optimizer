@@ -1,4 +1,4 @@
-# Copyright 2025 the modelfactory team.
+# Copyright 2025 the model_optimizer team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,15 +22,14 @@ USAGE = (
     "-" * 70
     + "\n"
     + "| Usage:                                                             |\n"
-    + "|   modelfactory-cli api -h: launch an OpenAI-style API server       |\n"
-    + "|   modelfactory-cli chat -h: launch a chat interface in CLI         |\n"
-    + "|   modelfactory-cli export -h: merge LoRA adapters and export model |\n"
-    + "|   modelfactory-cli train -h: train models                          |\n"
-    + "|   modelfactory-cli webchat -h: launch a chat interface in Web UI   |\n"
-    + "|   modelfactory-cli webui: launch LlamaBoard                        |\n"
-    + "|   modelfactory-cli env: show environment info                      |\n"
-    + "|   modelfactory-cli version: show version info                      |\n"
-    + "| Hint: You can use `lmf` as a shortcut for `modelfactory-cli`.      |\n"
+    + "|   model_optimizer-cli quantize: quantize a model |\n"
+    + "|   model_optimizer-cli convert: convert a model format |\n"
+    + "|   model_optimizer-cli calibrate: calibrate a model |\n"
+    + "|   model_optimizer-cli build -h: build a onnx model to engine |\n"
+    + "|   model_optimizer-cli eval -h: eval model |\n"
+    + "|   model_optimizer-cli webui: launch webui                        |\n"
+    + "|   model_optimizer-cli version: show version info                      |\n"
+    + "| Hint: You can use `moc` as a shortcut for `model_optimizer-cli`.      |\n"
     + "-" * 70
 )
 
