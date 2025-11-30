@@ -32,3 +32,12 @@ register_model_group(
     },
     template="yolo",
 )
+
+register_model_group(
+    models={
+        "resnet50-v1-12.pt": {
+            DownloadSource.DEFAULT: "CohereForAI/aya-23-8B",
+        }
+    },
+    template="resnet",
+)

@@ -133,21 +133,21 @@ LOCALES = {
     "extra_compile_args": {
         "en": {
             "label": "Extra compile args",
-            "info": "Extra compile arguments.",
+            "info": "Extra compile arguments. (eg:--noDataTransfers --useCudaGraph)",
         },
         "zh": {
             "label": "额外编译参数",
-            "info": "额外的编译参数。",
+            "info": "额外的编译参数 (例如:--noDataTransfers --useCudaGraph)",
         },
     },
     "shapes": {
         "en": {
             "label": "Shapes",
-            "info": "Shapes of the model.",
+            "info": "Shapes of the model (e.g., name1:1x3x224x224,name2:1x1000).",
         },
         "zh": {
             "label": "模型形状",
-            "info": "模型的形状。",
+            "info": "模型的形状 (例如:name1:1x3x224x224,name2:1x1000)",
         },
     },
     "template": {
