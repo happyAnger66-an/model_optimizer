@@ -15,10 +15,10 @@
 LOCALES = {
     "title": {
         "en": {
-            "value": "<h1><center>🦙🏭Model Optimizer: Unified Efficient Fine-Tuning of 100+ LLMs</center></h1>",
+            "value": "<h1><center>Model Optimizer: Unified Efficient Fine-Tuning of 100+ LLMs</center></h1>",
         },
         "zh": {
-            "value": "<h1><center>🦙🏭Model Optimizer: 模型高效优化平台</center></h1>",
+            "value": "<h1><center>Model Optimizer: 模型高效优化平台</center></h1>",
         },
     },
     "subtitle": {
