@@ -43,6 +43,9 @@ class Runner:
 
     def run_eval(self, data):
         yield from self._launch(data, do_quantize=False)
+    
+    def run_compile(self, data):
+        yield from self._launch(data, do_quantize=False)
 
     def _parse_eval_args(self, data: dict["Component", Any]) -> dict[str, Any]:
         r"""Build and validate the evaluation arguments."""
