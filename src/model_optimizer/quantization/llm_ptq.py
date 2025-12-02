@@ -161,7 +161,7 @@ def llm_quantize(args):
     # )
 
     args.batch_size = 1
-    args.calib_size = 512
+    args.calib_size = 10
     calib_dataloader = get_dataset_dataloader(
         dataset_name=args.dataset,
         tokenizer=tokenizer,
@@ -170,6 +170,8 @@ def llm_quantize(args):
         device=device,
         include_labels=include_labels,
     )
+    from ..datasets.dummy_dataloader import LLMDummyDataLoader
+    calib_dataloader = LLMDummyDataLoader(args.calib_size)
 
     model_type = get_model_type(model)
     args.kv_cache_qformat = "fp8"

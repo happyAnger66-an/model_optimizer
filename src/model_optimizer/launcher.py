@@ -71,5 +71,8 @@ def launch():
     elif command == "eval":
         from .evaluate.cli import eval_cli
         eval_cli(sys.argv)
+    elif command == "datasets":
+        from .datasets.cli import eval_datasets
+        eval_datasets(sys.argv)
     else:
         print(USAGE)
