@@ -41,3 +41,12 @@ register_model_group(
     },
     template="resnet",
 )
+
+register_model_group(
+    models={
+        "Qwen3-1.7B": {
+            DownloadSource.DEFAULT: "Qwen/Qwen3-1.7B",
+        }
+    },
+    template="qwen3",
+)

@@ -214,13 +214,15 @@ class Runner:
             env = deepcopy(os.environ)
 
             if do_quantize:
+                model_name = args["model_name"]
+                if "yolo" in model_name:
                 # NOTE: DO NOT USE shell=True to avoid security risk
-                cmd_list = ["model-optimizer-cli", "convert"]
-                cmd_list.extend(self._prepare_convert_cli(args))
-                print(f'quantize [convert] cmd_list {cmd_list}')
-                self.quantizer = Popen(
-                    cmd_list, env=env, stderr=PIPE, text=True)
-                yield from self.monitor(finalize=False)
+                    cmd_list = ["model-optimizer-cli", "convert"]
+                    cmd_list.extend(self._prepare_convert_cli(args))
+                    print(f'quantize [convert] cmd_list {cmd_list}')
+                    self.quantizer = Popen(
+                        cmd_list, env=env, stderr=PIPE, text=True)
+                    yield from self.monitor(finalize=False)
                 
                 cmd_list = ["model-optimizer-cli", "calibrate"]
                 cmd_list.extend(self._prepare_calibrate_cli(args))
