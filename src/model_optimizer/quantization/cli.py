@@ -5,6 +5,7 @@ import numpy as np
 
 from ..progress.write import write_quantize_progress, write_running_log
 from ..webui.extras.constants import RUNNING_LOG
+from .llm_ptq import llm_quantize
 
 def quantize_onnx(model_path, calibrate_data, export_dir, quant_mode, calibrate_method):
     model_name = os.path.basename(model_path)
@@ -32,6 +33,7 @@ def quantize_onnx(model_path, calibrate_data, export_dir, quant_mode, calibrate_
 def quantize_cli(args):
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_path', type=str, required=True)
+    parser.add_argument('--model_type', type=str, default="onnx")
     parser.add_argument('--qformat', type=str, default="fp8")
     parser.add_argument('--calibrate_data', type=str, required=True)
     parser.add_argument('--calibrate_method', type=str, default="entropy")
@@ -39,5 +41,9 @@ def quantize_cli(args):
     args = parser.parse_args(args[1:])
     print(f'[cli] quantize args {args}')
 
-    quantize_onnx(args.model_path,
+    if args.model_type == "llm":
+        args.dataset = args.calibrate_data
+        llm_quantize(args)
+    else:
+        quantize_onnx(args.model_path,
                   args.calibrate_data, args.export_dir, args.qformat, args.calibrate_method)

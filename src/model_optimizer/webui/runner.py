@@ -150,6 +150,20 @@ class Runner:
         cli_args.extend(["--export_dir", f'{args["output_dir"].strip()}'])
 
         return cli_args
+    
+    def _prepare_llm_quantize_cli(self, args):
+        cli_args = []
+        model_name = args["model_name"]
+
+        cli_args.extend(["--model_path", f'{args["model_path"]}'])
+        cli_args.extend(["--model_type", 'llm'])
+        cli_args.extend(["--qformat", f'{args["quantize_bit"]}'])
+        cli_args.extend(["--export_dir", f'{args["output_dir"]}'])
+
+        cli_args.extend(["--calibrate_data", f'{args["dataset_dir"]}'])
+        cli_args.extend(["--calibrate_method", f'{args["calibrate_method"]}'])
+
+        return cli_args
 
     def _prepare_quantize_cli(self, args):
         cli_args = []
@@ -224,20 +238,26 @@ class Runner:
                         cmd_list, env=env, stderr=PIPE, text=True)
                     yield from self.monitor(finalize=False)
                 
-                cmd_list = ["model-optimizer-cli", "calibrate"]
-                cmd_list.extend(self._prepare_calibrate_cli(args))
-                print(f'quantize [calibrate] cmd_list {cmd_list}')
-                self.quantizer = Popen(
-                    cmd_list, env=env, stderr=PIPE, text=True)
-                yield from self.monitor(finalize=False)
-                
-                cmd_list = ["model-optimizer-cli", "quantize"]
-                cmd_list.extend(self._prepare_quantize_cli(args))
-                print(f'quantize [quantize] cmd_list {cmd_list}')
-                with open(running_log_path, 'a+') as log_f:
+                    cmd_list = ["model-optimizer-cli", "calibrate"]
+                    cmd_list.extend(self._prepare_calibrate_cli(args))
+                    print(f'quantize [calibrate] cmd_list {cmd_list}')
                     self.quantizer = Popen(
-                        cmd_list, env=env, stdout=log_f, stderr=PIPE, text=True)
-                    yield from self.monitor()
+                        cmd_list, env=env, stderr=PIPE, text=True)
+                    yield from self.monitor(finalize=False)
+                
+                    cmd_list = ["model-optimizer-cli", "quantize"]
+                    cmd_list.extend(self._prepare_quantize_cli(args))
+                    print(f'quantize [quantize] cmd_list {cmd_list}')
+                else: # llm model quantize.
+                    cmd_list = ["model-optimizer-cli", "quantize"]
+                    cmd_list.extend(self._prepare_llm_quantize_cli(args))
+                    print(f'quantize [quantize] cmd_list {cmd_list}')
+
+#                with open(running_log_path, 'a+') as log_f:
+#                    self.quantizer = Popen(
+#                        cmd_list, env=env, stdout=log_f, stderr=PIPE, text=True)
+                self.quantizer = Popen(cmd_list, env=env, text=True)
+                yield from self.monitor()
             else:
                 model_name = args["model_path"]
                 if model_name.endswith('.onnx'):
