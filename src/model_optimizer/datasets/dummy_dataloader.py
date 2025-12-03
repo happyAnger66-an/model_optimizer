@@ -7,7 +7,7 @@ class LLMDummyDataLoader(Dataset):
         self.calib_size = calib_size
         self.datas = []
         for i in range(self.calib_size):
-            inputs_ids = torch.randint(10000, (1, 512)).cuda()
+            inputs_ids = torch.randint(1000, (1, 512)).cuda()
             data = {"input_ids":  inputs_ids}
             self.datas.append(data)
 

@@ -5,6 +5,7 @@ from typing import Any
 
 import datasets
 import torch
+from torch import nn
 
 from modelopt.torch.utils.dataset_utils import get_dataset_dataloader, \
     create_forward_loop, get_max_batch_size
@@ -90,11 +91,9 @@ def quantize_model(model, quant_cfg, args, calib_dataloader=None, calibration_on
     mtq.print_quant_summary(model)
     return model
 
+
 def export_llm_model(model, llm_dtype, model_config, output_dir):
-    inputs_ids = torch.randint(10000,
-        (1, 512),
-        dtype=torch.float16,
-    ).cuda()
+    input_ids = torch.randint(10000, (1, 512)).cuda()
     attention_mask = None,
     position_ids = None,
     past_key_values = None,
@@ -105,29 +104,56 @@ def export_llm_model(model, llm_dtype, model_config, output_dir):
     full_layer_quant = False
     # Use different filename for full layer quantization
     llm_dtype_suffix = (
-        f"{llm_dtype}_full" if (llm_dtype == "nvfp4" and full_layer_quant) else llm_dtype
+        f"{llm_dtype}_full" if (
+            llm_dtype == "nvfp4" and full_layer_quant) else llm_dtype
     )
     onnx_path = f"{output_dir}/llm_{llm_dtype_suffix}.onnx"
     onnx_dir = os.path.dirname(onnx_path)
     os.makedirs(onnx_dir, exist_ok=True)
 
     start_time = time.time()
-    torch.onnx.export(
-        model,
-        (inputs_ids),
-        onnx_path,
-        input_names=["input_ids"],
-        output_names=["hidden_states"],
-        opset_version=19,
-        do_constant_folding=True,
-        dynamic_axes={
-            "input_ids": {0: "batch_size"},
-            "hidden_states": {0: "batch_size", 1: "sequence_length"},
+    with torch.inference_mode():
+        torch.onnx.export(
+            #model.language_model,
+            model,
+            (input_ids),
+            onnx_path,
+            input_names=["input_ids"],
+            output_names=["logits"],
+            opset_version=19,
+            dynamo=False,
+            do_constant_folding=True,
+            dynamic_axes={
+                "input_ids": {0: "batch_size"},
+                "logits": {0: "batch_size", 1: "sequence_length"},
 
-        },
-    )
+            },
+        )
     end_time = time.time()
     print(f'export llm model to {onnx_path} cost:{end_time - start_time}s')
+
+
+class WrapQwen3Model(nn.Module):
+    def __init__(self, model_path):
+        """
+        Args:
+            tune_llm: whether to tune the LLM model (default: True)
+            tune_visual: whether to tune the visual model (default: False)
+        """
+        super().__init__()
+        self.language_model = get_model(model_path)
+
+    @property
+    def device(self):
+        return self.language_model.device
+
+    def forward(self, input_ids):
+        outputs = self.language_model(
+            input_ids=input_ids,
+        )
+
+        return outputs.logits
+
 
 def llm_quantize(args):
     tokenizer = get_tokenizer(args.model_path)
@@ -141,17 +167,19 @@ def llm_quantize(args):
     ), "The PreTrainedTokenizer must be set"
 
     # Prepare config kwargs for loading
-    #config_kwargs = {"trust_remote_code": trust_remote_code} if trust_remote_code else {}
+    # config_kwargs = {"trust_remote_code": trust_remote_code} if trust_remote_code else {}
     config_kwargs = {}
 
     # Load config once and handle VL model detection
     try:
-        hf_config = AutoConfig.from_pretrained(args.model_path, **config_kwargs)
+        hf_config = AutoConfig.from_pretrained(
+            args.model_path, **config_kwargs)
     except Exception as e:
         print(f"Error: Could not load config from {args.model_path}: {e}")
-        raise RuntimeError(f"Failed to load model configuration from {args.model_path}") from e
+        raise RuntimeError(
+            f"Failed to load model configuration from {args.model_path}") from e
 
-    model = get_model(args.model_path)
+    model = WrapQwen3Model(args.model_path).to(torch.float16)
     device = model.device
 
     include_labels = False
@@ -185,7 +213,7 @@ def llm_quantize(args):
         QUANT_CFG_CHOICES,
         KV_QUANT_CFG_CHOICES,
     )
-    model.to(torch.float16)
+    
     model.eval().cuda()
     model = quantize_model(model, quant_cfg, args,
                            calib_dataloader, False)
