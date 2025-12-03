@@ -91,7 +91,7 @@ def quantize_model(model, quant_cfg, args, calib_dataloader=None, calibration_on
     return model
 
 def export_llm_model(model, llm_dtype, model_config, output_dir):
-    inputs_ids = torch.randn(
+    inputs_ids = torch.randint(10000,
         (1, 512),
         dtype=torch.float16,
     ).cuda()
@@ -112,21 +112,20 @@ def export_llm_model(model, llm_dtype, model_config, output_dir):
     os.makedirs(onnx_dir, exist_ok=True)
 
     start_time = time.time()
-    with torch.inference_mode():
-        torch.onnx.export(
-            model,
-            (inputs_ids),
-            onnx_path,
-            input_names=["input_ids"],
-            output_names=["hidden_states"],
-            opset_version=19,
-            do_constant_folding=True,
-            dynamic_axes={
-                "input_ids": {0: "batch_size"},
-                "hidden_states": {0: "batch_size", 1: "sequence_length"},
+    torch.onnx.export(
+        model,
+        (inputs_ids),
+        onnx_path,
+        input_names=["input_ids"],
+        output_names=["hidden_states"],
+        opset_version=19,
+        do_constant_folding=True,
+        dynamic_axes={
+            "input_ids": {0: "batch_size"},
+            "hidden_states": {0: "batch_size", 1: "sequence_length"},
 
-            },
-        )
+        },
+    )
     end_time = time.time()
     print(f'export llm model to {onnx_path} cost:{end_time - start_time}s')
 
@@ -162,14 +161,14 @@ def llm_quantize(args):
 
     args.batch_size = 1
     args.calib_size = 10
-    calib_dataloader = get_dataset_dataloader(
-        dataset_name=args.dataset,
-        tokenizer=tokenizer,
-        batch_size=args.batch_size,
-        num_samples=args.calib_size,
-        device=device,
-        include_labels=include_labels,
-    )
+#    calib_dataloader = get_dataset_dataloader(
+#        dataset_name=args.dataset,
+#        tokenizer=tokenizer,
+#        batch_size=args.batch_size,
+#        num_samples=args.calib_size,
+#        device=device,
+#        include_labels=include_labels,
+#    )
     from ..datasets.dummy_dataloader import LLMDummyDataLoader
     calib_dataloader = LLMDummyDataLoader(args.calib_size)
 
@@ -186,6 +185,8 @@ def llm_quantize(args):
         QUANT_CFG_CHOICES,
         KV_QUANT_CFG_CHOICES,
     )
+    model.to(torch.float16)
+    model.eval().cuda()
     model = quantize_model(model, quant_cfg, args,
                            calib_dataloader, False)
     export_llm_model(model, args.qformat, hf_config, args.export_dir)
