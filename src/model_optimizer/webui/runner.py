@@ -253,11 +253,11 @@ class Runner:
                     cmd_list.extend(self._prepare_llm_quantize_cli(args))
                     print(f'quantize [quantize] cmd_list {cmd_list}')
 
-#                with open(running_log_path, 'a+') as log_f:
-#                    self.quantizer = Popen(
-#                        cmd_list, env=env, stdout=log_f, stderr=PIPE, text=True)
-                self.quantizer = Popen(cmd_list, env=env, text=True)
-                yield from self.monitor()
+                with open(running_log_path, 'a+') as log_f:
+                    self.quantizer = Popen(
+                        cmd_list, env=env, stdout=log_f, stderr=PIPE, text=True)
+#                self.quantizer = Popen(cmd_list, env=env, text=True)
+                    yield from self.monitor()
             else:
                 model_name = args["model_path"]
                 if model_name.endswith('.onnx'):
