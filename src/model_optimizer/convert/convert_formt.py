@@ -5,14 +5,15 @@ from typing import Optional, Any
 
 import shutil
 
-from ultralytics import YOLO
-from ultralytics.nn.tasks import SegmentationModel
+#from ultralytics import YOLO
+#from ultralytics.nn.tasks import SegmentationModel
 
 from ..progress.write import write_quantize_progress
 
 def pt2onnx(model_path, export_dir):
     print(f'pt2onnx {model_path} to {export_dir}')
-    model = YOLO(model_path, task='segment')
+#    model = YOLO(model_path, task='segment')
+    model = None
 
     write_quantize_progress(export_dir, 10, 1, 3, 10, 100) 
     
@@ -38,6 +39,12 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
     parser.add_argument('--export_dir', type=str, required=True)
     print(f'[cli] convert_model args {args[1:]}')
     args = parser.parse_args(args[1:])
+
+    model_name = args.model_name
+    if model_name.startswith('pi05'):
+        from .pi0 import convert_pi05_model
+        convert_pi05_model(args.model_name, args.model_path, args.export_dir)
+        return
 
     name, model_type = os.path.splitext(args.model_name)
     convert_func = model_convert_methods[f'{model_type[1:]}2{args.export_type}']

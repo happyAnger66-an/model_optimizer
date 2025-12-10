@@ -33,10 +33,11 @@ def quantize_onnx(model_path, calibrate_data, export_dir, quant_mode, calibrate_
 def quantize_cli(args):
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_path', type=str, required=True)
+    parser.add_argument('--config_name', type=str, default="pi05_libero")
     parser.add_argument('--model_type', type=str, default="onnx")
     parser.add_argument('--qformat', type=str, default="fp8")
     parser.add_argument('--calibrate_data', type=str, required=True)
-    parser.add_argument('--calibrate_method', type=str, default="entropy")
+    parser.add_argument('--calibrate_method', type=str, default="max")
     parser.add_argument('--export_dir', type=str, required=True)
     args = parser.parse_args(args[1:])
     print(f'[cli] quantize args {args}')
@@ -44,6 +45,9 @@ def quantize_cli(args):
     if args.model_type == "llm":
         args.dataset = args.calibrate_data
         llm_quantize(args)
+    elif args.model_path.find('pi05_libero/vit'):
+        from .pi05_ptq import quantize_pi05_vit
+        quantize_pi05_vit(args)
     else:
         quantize_onnx(args.model_path,
                   args.calibrate_data, args.export_dir, args.qformat, args.calibrate_method)

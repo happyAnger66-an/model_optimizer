@@ -35,6 +35,8 @@ def build_onnx(model_path, output_dir):
 def build_cli(args):
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_path', type=str, required=True)
+    parser.add_argument('--model_shape', type=str, required=True)
+    parser.add_argument('--extra_flag', type=str)
     parser.add_argument('--export_dir', type=str, required=True)
     args = parser.parse_args(args[1:])
     print(f'[cli] quantize args {args}')
