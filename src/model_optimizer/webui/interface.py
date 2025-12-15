@@ -5,6 +5,7 @@ import gradio as gr
 
 from .engine import Engine
 from .components.quantize import create_quantize_tab
+from .components.profile import create_profile_tab
 from .components.compile import create_compile_tab
 from .components.eval import create_eval_tab
 from .components.top import create_top
@@ -26,6 +27,9 @@ def create_ui(demo_mode: bool = False) -> "gr.Blocks":
 
         with gr.Tab("量化"):
             engine.manager.add_elems("quantize", create_quantize_tab(engine))
+        
+        with gr.Tab("profile"):
+            engine.manager.add_elems("profile", create_profile_tab(engine))
 
         with gr.Tab("编译"):
             engine.manager.add_elems("compile", create_compile_tab(engine))

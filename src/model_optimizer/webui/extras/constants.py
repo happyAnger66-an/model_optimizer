@@ -7,6 +7,7 @@ SUPPORTED_MODELS = OrderedDict()
 DEFAULT_TEMPLATE = defaultdict(str)
 
 RUNNING_LOG = "running_log.txt"
+PROGRESS_LOG = "progress.jsonl"
 QUANTIZE_LOG = "quantize_log.jsonl"
 TRAINER_LOG = "trainer_log.jsonl"
 

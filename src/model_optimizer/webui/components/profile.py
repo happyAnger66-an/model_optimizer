@@ -28,16 +28,11 @@ def create_profile_tab(engine: "Engine") -> dict[str, "Component"]:
     elem_dict = dict()
 
     with gr.Row():
-        dataset_dir = gr.Textbox(value=None, scale=2)
+        e2e_profile = gr.Checkbox(value=False)
+        layer_profile = gr.Checkbox(value=False)
 
-    input_elems.update({dataset_dir})
-    elem_dict.update(dict(dataset_dir=dataset_dir))
-
-    with gr.Row():
-        predict = gr.Checkbox(value=True)
-
-    input_elems.update({predict})
-    elem_dict.update(dict(predict=predict))
+    input_elems.update({e2e_profile, layer_profile})
+    elem_dict.update(dict(e2e_profile=e2e_profile, layer_profile=layer_profile))
 
     with gr.Row():
         output_dir = gr.Textbox()
@@ -47,10 +42,16 @@ def create_profile_tab(engine: "Engine") -> dict[str, "Component"]:
 
     with gr.Row():
         start_btn = gr.Button(variant="primary")
-        stop_btn = gr.Button(variant="stop")
+    
+    with gr.Row():
+        layer_prof = gr.DataFrame(visible=True)
+    
+    with gr.Row():
+        e2e_prof = gr.DataFrame(visible=False)
+   
+    elem_dict.update(dict(e2e_prof=e2e_prof, layer_prof=layer_prof))
 
     with gr.Row():
-        resume_btn = gr.Checkbox(visible=False, interactive=False)
         progress_bar = gr.Slider(visible=False, interactive=False)
 
     with gr.Row():
@@ -59,16 +60,12 @@ def create_profile_tab(engine: "Engine") -> dict[str, "Component"]:
     elem_dict.update(
         dict(
             start_btn=start_btn,
-            stop_btn=stop_btn,
-            resume_btn=resume_btn,
             progress_bar=progress_bar,
             output_box=output_box,
         )
     )
-    output_elems = [output_box, progress_bar]
+    output_elems = [output_box, progress_bar, layer_prof, e2e_prof]
 
-    start_btn.click(engine.runner.run_eval, input_elems, output_elems)
-    stop_btn.click(engine.runner.set_abort)
-    resume_btn.change(engine.runner.monitor, outputs=output_elems, concurrency_limit=None)
+    start_btn.click(engine.runner.run_profile, input_elems, output_elems)
 
     return elem_dict

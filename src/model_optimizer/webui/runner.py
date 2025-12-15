@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
     from .manager import Manager
 
+from .runners.profile import ProfileCommand
 
 class Runner:
     r"""A class to manage the running status of the trainers."""
@@ -35,12 +36,17 @@ class Runner:
         """ State """
         self.aborted = False
         self.running = False
+        self.cmd_runner = None
 
     def set_abort(self) -> None:
         self.aborted = True
         if self.quantizer is not None:
             abort_process(self.quantizer.pid)
 
+    def run_profile(self, data):
+        self.cmd_runner = ProfileCommand(self.manager, data)
+        yield from self.cmd_runner.run()
+    
     def run_eval(self, data):
         yield from self._launch(data, do_quantize=False)
     

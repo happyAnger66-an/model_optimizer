@@ -48,6 +48,7 @@ class Manager:
 
         Example: top.lang, train.dataset
         """
+#        print(f'ei: {elem_id}: {self._id_to_elem}')
         return self._id_to_elem[elem_id]
 
     def get_id_by_elem(self, elem: "Component") -> str:

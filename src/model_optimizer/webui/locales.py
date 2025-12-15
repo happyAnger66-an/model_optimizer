@@ -130,6 +130,42 @@ LOCALES = {
             "info": "是否进行性能评估。",
         },
     },
+    "e2e_profile": {
+        "en": {
+            "label": "Do e2e performance",
+            "info": "Do e2e performance evaluation.",
+        },
+        "zh": {
+            "label": "进行e2e性能评估",
+            "info": "是否进行e2e性能评估。",
+        },
+    },
+    "layer_profile": {
+        "en": {
+            "label": "Do layer performance",
+            "info": "Do layer performance evaluation.",
+        },
+        "zh": {
+            "label": "进行layer性能评估",
+            "info": "是否进行layer性能评估。",
+        },
+    },
+    "e2e_prof": {
+        "en": {
+            "label": "e2e performance datas",
+        },
+        "zh": {
+            "label": "e2e性能数据",
+        },
+    },
+    "layer_prof": {
+        "en": {
+            "label": "layer performance datas",
+        },
+        "zh": {
+            "label": "layer性能数据",
+        },
+    },
     "extra_compile_args": {
         "en": {
             "label": "Extra compile args",
@@ -468,7 +504,11 @@ LOCALES = {
 ALERTS = {
     "err_conflict": {
         "en": "A process is in running, please abort it first.",
-        "zh": "任务已存在，请先中断训练。",
+        "zh": "任务已存在，请先中断训练.",
+    },
+    "err_profile_conflict": {
+        "en": "e2e and layer profile simultaneously are not supported.",
+        "zh": "不能同时对e2e和layer进行profile."
     },
     "err_exists": {
         "en": "You have loaded a model, please unload it first.",

@@ -24,6 +24,7 @@ USAGE = (
     + "| Usage:                                                             |\n"
     + "|   model_optimizer-cli quantize: quantize a model |\n"
     + "|   model_optimizer-cli convert: convert a model format |\n"
+    + "|   model_optimizer-cli profile: profile a model |\n"
     + "|   model_optimizer-cli calibrate: calibrate a model |\n"
     + "|   model_optimizer-cli build -h: build a onnx model to engine |\n"
     + "|   model_optimizer-cli eval -h: eval model |\n"
@@ -59,6 +60,9 @@ def launch():
     elif command == "quantize":
         from .quantization.cli import quantize_cli
         quantize_cli(sys.argv)
+    elif command == "profile":
+        from .profile.cli import profile_cli
+        profile_cli(sys.argv)
     elif command == "convert":
         from .convert.convert_formt import convert_model
         convert_model(sys.argv)
