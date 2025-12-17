@@ -15,7 +15,8 @@ def create_top() -> dict[str, "Component"]:
 
     with gr.Row():
         available_models = list(SUPPORTED_MODELS.keys())
-        model_name = gr.Dropdown(choices=available_models, value=None, scale=2)
+        print(f'available models {available_models}')
+        model_name = gr.Dropdown(choices=available_models, value=None, scale=3)
         model_path = gr.Textbox(label="模型路径")
 
     return dict(

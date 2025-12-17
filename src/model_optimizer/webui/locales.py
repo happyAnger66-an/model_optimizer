@@ -510,6 +510,10 @@ ALERTS = {
         "en": "e2e and layer profile simultaneously are not supported.",
         "zh": "不能同时对e2e和layer进行profile."
     },
+    "err_profile_model_type": {
+        "en": "support onnx model only.",
+        "zh": "目前只支持onnx模型."
+    },
     "err_exists": {
         "en": "You have loaded a model, please unload it first.",
         "zh": "模型已存在，请先卸载模型。",

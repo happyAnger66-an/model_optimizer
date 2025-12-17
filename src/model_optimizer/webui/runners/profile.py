@@ -22,6 +22,8 @@ class ProfileCommand(CommandRunner):
         pass
 
     def check_inputs(self):
+        if not self.model_path.endswith(".onnx"):
+            return self.alert('err_profile_model_type')
         e2e_profile = self.get_data_elem_by_id('profile.e2e_profile')
         layer_profile = self.get_data_elem_by_id('profile.layer_profile')
         output_dir = self.get_data_elem_by_id('profile.output_dir')
