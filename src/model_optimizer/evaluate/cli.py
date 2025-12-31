@@ -19,10 +19,6 @@ def eval_yolo(model_path, dataset_dir, batch_size, output_dir):
     with open(log_file, 'a+') as f:
         build_pipe = Popen(
             cmd_list, env=env,  stdout=f, stderr=STDOUT, text=True)
-
-        build_pipe = Popen(
-            cmd_list, env=env, stdout=f, stderr=STDOUT, text=True)
-        
         try:
             stderr = build_pipe.communicate(timeout=100)[1]
             return_code = build_pipe.returncode

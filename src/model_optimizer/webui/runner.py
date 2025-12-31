@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from .manager import Manager
 
 from .runners.profile import ProfileCommand
+from .runners.export import ExportCommand
 
 class Runner:
     r"""A class to manage the running status of the trainers."""
@@ -42,6 +43,10 @@ class Runner:
         self.aborted = True
         if self.quantizer is not None:
             abort_process(self.quantizer.pid)
+    
+    def run_export(self, data):
+        self.cmd_runner = ExportCommand(self.manager, data)
+        yield from self.cmd_runner.run()
 
     def run_profile(self, data):
         self.cmd_runner = ProfileCommand(self.manager, data)

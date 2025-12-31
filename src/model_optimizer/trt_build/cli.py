@@ -25,7 +25,7 @@ def build_onnx(model_path, output_dir):
             cmd_list, env=env,  stdout=f, stderr=STDOUT, text=True)
     
         try:
-            stderr = build_pipe.communicate(timeout=100)[1]
+            stderr = build_pipe.communicate(timeout=300)[1]
             return_code = build_pipe.returncode
         except TimeoutExpired:
             print(f'build_onnx {model_path} Timeout')

@@ -26,12 +26,17 @@ if TYPE_CHECKING:
 def create_profile_tab(engine: "Engine") -> dict[str, "Component"]:
     input_elems = engine.manager.get_base_elems()
     elem_dict = dict()
+    
+    with gr.Row():
+        shapes = gr.Textbox(value=None, scale=2)
+        extra_compile_args = gr.Textbox(value=None, scale=3)
+    elem_dict.update(dict(shapes=shapes, extra_compile_args=extra_compile_args))
 
     with gr.Row():
         e2e_profile = gr.Checkbox(value=False)
         layer_profile = gr.Checkbox(value=False)
 
-    input_elems.update({e2e_profile, layer_profile})
+    input_elems.update({e2e_profile, layer_profile, shapes, extra_compile_args})
     elem_dict.update(dict(e2e_profile=e2e_profile, layer_profile=layer_profile))
 
     with gr.Row():

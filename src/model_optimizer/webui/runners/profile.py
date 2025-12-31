@@ -17,6 +17,8 @@ class ProfileCommand(CommandRunner):
         self.e2e_profile, self.layer_profile, self.outbox = None, None, None
         self.layer_prof = None
         self.e2e_prof = None
+        self.shapes = None
+        self.extra_args = None
 
     def initialize(self):
         pass
@@ -36,6 +38,8 @@ class ProfileCommand(CommandRunner):
         self.progress_bar = self.get_elem_by_id('profile.progress_bar')
         self.e2e_prof = self.get_elem_by_id('profile.e2e_prof')
         self.layer_prof = self.get_elem_by_id('profile.layer_prof')
+        self.shapes = self.get_data_elem_by_id('profile.shapes')
+        self.extra_args = self.get_data_elem_by_id('profile.extra_compile_args')
         self.output_path = output_dir
         print(f'output_path {self.output_path}')
         return
@@ -52,6 +56,23 @@ class ProfileCommand(CommandRunner):
         if self.layer_profile:
             cli_args.extend(["--layer_profile", f'{self.layer_profile}'])
 
+        extra_args = ""        
+        if self.shapes:
+            min_shapes, opt_shapes, max_shapes = self.shapes.strip().split(";")
+            if min_shapes:
+                extra_args+=f"--minShapes={min_shapes}"
+            
+            if opt_shapes:
+                extra_args+=f" --optShapes={max_shapes}"
+            
+            if max_shapes:
+                extra_args+=f" --maxShapes={max_shapes}"
+
+        if self.extra_args:
+            extra_args += f" {self.extra_args}"
+
+        if extra_args:
+            cli_args.extend(["--extra_args", extra_args]) 
         return cli_args
 
     def get_layer_profile(self):
@@ -80,8 +101,9 @@ class ProfileCommand(CommandRunner):
 
     def monitor_phase(self, phase, return_dict):
         if phase == "finish":
-            layer_infos = self.get_layer_profile()
-            return_dict[self.layer_prof] = pd.DataFrame(dict(layer_infos))
+            if self.layer_profile:
+                layer_infos = self.get_layer_profile()
+                return_dict[self.layer_prof] = pd.DataFrame(dict(layer_infos))
 #            print(f'return dict {return_dict}')
     
     def run(self):

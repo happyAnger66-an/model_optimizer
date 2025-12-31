@@ -6,6 +6,7 @@ import gradio as gr
 from .engine import Engine
 from .components.quantize import create_quantize_tab
 from .components.profile import create_profile_tab
+from .components.export import create_export_tab
 from .components.compile import create_compile_tab
 from .components.eval import create_eval_tab
 from .components.top import create_top
@@ -24,6 +25,9 @@ def create_ui(demo_mode: bool = False) -> "gr.Blocks":
         engine.manager.add_elems("head", {"title": title})
         engine.manager.add_elems("top", create_top())
         lang: gr.Dropdown = engine.manager.get_elem_by_id("top.lang")
+        
+        with gr.Tab("导出"):
+            engine.manager.add_elems("export", create_export_tab(engine))
 
         with gr.Tab("量化"):
             engine.manager.add_elems("quantize", create_quantize_tab(engine))

@@ -63,6 +63,7 @@ class CommandRunner:
         pass
     
     def monitor(self, finalize=True):
+        print('monitor')
         r"""Monitorgit the training progress and logs."""
         self.aborted = False
         self.running = True
@@ -108,7 +109,6 @@ class CommandRunner:
             finish_log = ALERTS["info_finished"][self.lang] + \
                     "\n\n" + running_log
         else:
-            print(stderr)
             finish_info = ALERTS["err_failed"][self.lang]
             finish_log = ALERTS["err_failed"][self.lang] + \
                 f" Exit code: {return_code}\n\n```\n{stderr}\n```\n"

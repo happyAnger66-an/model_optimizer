@@ -90,6 +90,26 @@ LOCALES = {
             "info": "量化bit（FP only）。",
         },
     },
+    "simplifier": {
+        "en": {
+            "label": "simplifier model",
+            "info": "simplifier model (use onnx_simplifier).",
+        },
+        "zh": {
+            "label": "优化模型",
+            "info": "优化模型(使用onnx_simplifier).",
+        },
+    },
+    "export_format": {
+        "en": {
+            "label": "export_format",
+            "info": "export_format (onnx).",
+        },
+        "zh": {
+            "label": "导出格式",
+            "info": "导出格式(只支持onnx).",
+        },
+    },
     "quantization_method": {
         "en": {
             "label": "Quantization method",
