@@ -64,7 +64,8 @@ def convert_vit(model_name, model_path, export_dir):
     pi_model = get_pi0_model(model_name, model_path)
 
     paligemma = pi_model.paligemma_with_expert.paligemma.model
-    vit_model = Pi05Vit(paligemma.vision_tower, paligemma.multi_modal_projector).to(torch.float16)
+    config = pi_model.paligemma_with_expert.paligemma.config
+    vit_model = Pi05Vit(config, paligemma.vision_tower, paligemma.multi_modal_projector).to(torch.float16)
     vit_model.eval().cuda()
 
     pixel_values = torch.randn((1, 3, 224, 224),

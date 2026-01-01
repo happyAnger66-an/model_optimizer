@@ -3,8 +3,9 @@ from openpi.models_pytorch.pi0_pytorch import PI0Pytorch
 
 
 class Pi05Vit(torch.nn.Module):
-    def __init__(self, vision_tower, multi_modal_projector, **kwargs):
+    def __init__(self, config, vision_tower, multi_modal_projector, **kwargs):
         super().__init__(**kwargs)
+        self.config = config
         self.vision_tower = vision_tower
         self.multi_modal_projector = multi_modal_projector
 
@@ -13,6 +14,7 @@ class Pi05Vit(torch.nn.Module):
         image_outputs = self.vision_tower(pixel_values)
         selected_image_feature = image_outputs.last_hidden_state
         image_features = self.multi_modal_projector(selected_image_feature)
+        image_features = image_features / (self.config.text_config.hidden_size ** 0.5)
         print(f'Pi05Vit output: {image_features.shape}')
         return image_features
 
