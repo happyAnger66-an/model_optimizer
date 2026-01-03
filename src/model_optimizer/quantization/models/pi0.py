@@ -29,5 +29,8 @@ class Pi0LLM(torch.nn.Module):
         prefix_output = self.llm(inputs_embeds=inputs_embeds,
                                  attention_mask=attention_mask,
                                  position_ids=position_ids)
-#        return prefix_output.last_hidden_state
-        return prefix_output.past_key_values, prefix_output.last_hidden_state
+        k_v_caches = []
+        for keys, values, _ in prefix_output.past_key_values:
+            k_v_caches.append((keys, values))
+            
+        return k_v_caches, prefix_output.last_hidden_state

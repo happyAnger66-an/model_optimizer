@@ -54,6 +54,15 @@ register_model_group(
 
 register_model_group(
     models={
+        "Qwen3-VL": {
+            DownloadSource.DEFAULT: "Qwen/Qwen3-VL-2B-Instruct",
+        }
+    },
+    template="qwen3",
+)
+
+register_model_group(
+    models={
         "pi05_libero": {
             DownloadSource.DEFAULT: "lerobot/pi05_base",
         }
