@@ -58,12 +58,11 @@ def pt2onnx(model_path, export_dir, simplifier=True):
     print(f'copy {onnx_path} to {export_dir}')
     shutil.copy(onnx_path, f"{export_dir}")
     write_quantize_progress(export_dir, 20, 1, 3, 20, 100)
-
-    if simplifier:
-        simplifier_model(export_model_path, export_dir)
+    return export_model_path
 
 
-def qwen3_vl2onnx(model_path, export_dir, simplifier=True):
+
+def qwen3_vl2onnx(model_path, export_dir):
     print(f'qwen3_vl2onnx {model_path} to {export_dir}')
     from transformers import Qwen3VLForConditionalGeneration
     print('loading qwen3_vl model ...')
@@ -78,7 +77,8 @@ def qwen3_vl2onnx(model_path, export_dir, simplifier=True):
     print(f'wrapper_model {wrapper_model}')
 
     from .qwen3_vl import convert_qwen3_vl
-    convert_qwen3_vl(wrapper_model, export_dir)
+    model, export_model_path = convert_qwen3_vl(wrapper_model, export_dir)
+    return export_model_path
 
 
 model_convert_methods = {
@@ -98,17 +98,23 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
     args = parser.parse_args(args[1:])
 
     model_name = args.model_name
+    export_model_path = None
     if model_name.startswith('pi05'):
         from .pi0 import convert_pi05_model
         if '/' in model_name:
             model_name, model_type = model_name.split('/')
-        convert_pi05_model(model_name, args.model_path, args.export_dir)
-        return
+        print(f'convert pi05 {model_type}')
+        convert_pi05_model(args, model_name, model_type)
     else:
         convert_func = model_convert_methods[f'{model_name}']
-        convert_func(args.model_path, args.export_dir, args.simplifier)
-        return
+        _, export_model_path = convert_func(args.model_path, args.export_dir)
+    return
+    if args.simplifier:
+        simplifier_model(export_model_path, args.export_dir)
+    return
+
+
     name, model_type = os.path.splitext(args.model_name)
     convert_func = model_convert_methods[f'{model_type[1:]}2{args.export_type}']
 
-    convert_func(args.model_path, args.export_dir, args.simplifier)
+    convert_func(args.model_path, args.export_dir)

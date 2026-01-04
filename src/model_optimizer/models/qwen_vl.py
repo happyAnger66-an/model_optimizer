@@ -18,9 +18,8 @@ class QwenVLWrapper(torch.nn.Module):
 #        print(f'prefix_output.past_key_values {prefix_output.past_key_values}')
         if prefix_output.past_key_values is not None:
             for keys, values in prefix_output.past_key_values:
-                print(f'keys {keys.shape} values {values.shape}')
+        #        print(f'keys {keys.shape} values {values.shape}')
                 k_v_caches.append((keys, values))
 
-        print(f'return ')
         return k_v_caches, prefix_output.last_hidden_state
         #return k_v_caches

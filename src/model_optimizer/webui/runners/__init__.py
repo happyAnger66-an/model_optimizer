@@ -88,7 +88,7 @@ class CommandRunner:
                 yield return_dict
 
             try:
-                stderr = self.exec_process.communicate(timeout=2)[1]
+                stderr = self.exec_process.communicate(timeout=10)[1]
                 return_code = self.exec_process.returncode
             except TimeoutExpired:
                 continue

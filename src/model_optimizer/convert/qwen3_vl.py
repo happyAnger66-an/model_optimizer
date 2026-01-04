@@ -30,6 +30,7 @@ def convert_qwen3_vl(model, export_dir):
             # Add position_ids to input names
             input_names=["input_ids", "attention_mask", "position_ids"],
             output_names=["k_v_caches", "last_hidden_state"],
+            #output_names=["last_hidden_state"],
             opset_version=19,
             dynamo=False,
             do_constant_folding=True,
@@ -41,4 +42,4 @@ def convert_qwen3_vl(model, export_dir):
         )
     end = time.time()
     print(f"export onnx to {output_dir} done cost:{end - start}s")
-    return model
+    return model, f'{output_dir}/qwen3_vl.onnx'

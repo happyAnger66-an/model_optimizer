@@ -78,3 +78,21 @@ register_model_group(
     },
     template="pi05",
 )
+
+register_model_group(
+    models={
+        "pi05_libero/llm": {
+            DownloadSource.DEFAULT: "lerobot/pi05_base",
+        }
+    },
+    template="pi05",
+)
+
+register_model_group(
+    models={
+        "pi05_libero/gemma_expert": {
+            DownloadSource.DEFAULT: "lerobot/pi05_base",
+        }
+    },
+    template="pi05",
+)

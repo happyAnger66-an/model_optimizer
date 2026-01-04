@@ -4,7 +4,7 @@ import torch
 from openpi.training import config as _config
 from openpi.policies import policy_config
 
-from .models.pi0 import Pi05Vit
+from ..models.pi0 import Pi05Vit
 from .cfg import build_quant_cfg, QUANT_CFG_CHOICES
 from ..calibrate.pi0 import ViTCalibrationDataset, get_data_loader
 
