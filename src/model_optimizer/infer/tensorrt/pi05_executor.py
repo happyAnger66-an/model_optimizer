@@ -8,8 +8,8 @@ from ...models.pi05.model_pi05 import Pi05Model
 from .trt_torch import Engine
 
 
-def embed_image(self, pixel_values):
-    self.get_image_features(pixel_values)
+#def embed_image(self, pixel_values):
+#    self.get_image_features(pixel_values)
 
 class Pi05TensorRTExecutor(Executor):
     def __init__(self, config, pytorch_model_path, engine_path):
@@ -23,8 +23,8 @@ class Pi05TensorRTExecutor(Executor):
     def load_model(self):
         self._release_pytorch_model()
         self._setup_trt_engine()
-        self.pi05_model.paligemma_with_expert.embed_image = partial(
-            embed_image, self.pi05_model.paligemma_with_expert.paligemma.model)
+      #  self.pi05_model.paligemma_with_expert.embed_image = partial(
+      #      embed_image, self.pi05_model.paligemma_with_expert.paligemma.model)
         self.pi05_model.paligemma_with_expert.embed_language_tokens = self.embedding_layer
 
     def infer(self, input_data):
