@@ -61,7 +61,6 @@ def pt2onnx(model_path, export_dir, simplifier=True):
     return export_model_path
 
 
-
 def qwen3_vl2onnx(model_path, export_dir):
     print(f'qwen3_vl2onnx {model_path} to {export_dir}')
     from transformers import Qwen3VLForConditionalGeneration
@@ -100,7 +99,7 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
     model_name = args.model_name
     export_model_path = None
     if model_name.startswith('pi05'):
-        from .pi0 import convert_pi05_model
+        from .pi05 import convert_pi05_model
         if '/' in model_name:
             model_name, model_type = model_name.split('/')
         print(f'convert pi05 {model_type}')
@@ -112,7 +111,6 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
     if args.simplifier:
         simplifier_model(export_model_path, args.export_dir)
     return
-
 
     name, model_type = os.path.splitext(args.model_name)
     convert_func = model_convert_methods[f'{model_type[1:]}2{args.export_type}']
