@@ -6,6 +6,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class Vit(torch.nn.Module):
     def __init__(self, config, vision_tower, multi_modal_projector, **kwargs):
         super().__init__(**kwargs)
@@ -25,8 +26,8 @@ class Vit(torch.nn.Module):
 
     @classmethod
     def export_onnx(cls, pi05_model, export_dir):
-        vit_model = cls(pi05_model.config, pi05_model.vision_tower,
-                        pi05_model.multi_modal_projector).to(torch.float16)
+        vit_model = cls(pi05_model.config, pi05_model.paligemma_with_expert.paligemma.model.vision_tower,
+                        pi05_model.paligemma_with_expert.paligemma.model.multi_modal_projector).to(torch.float16)
         vit_model.eval().cuda()
 
         pixel_values = torch.randn(

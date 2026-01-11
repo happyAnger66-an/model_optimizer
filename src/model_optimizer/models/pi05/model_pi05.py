@@ -16,7 +16,7 @@ class Pi05Model(Model):
         super().__init__(model_name, model_path)
 
     def load(self, config):
-        self.pi_model = self._get_pi0_model(self.model_name, self.model_path)
+        self.pi05_model = self._get_pi0_model(self.model_name, self.model_path)
 
     def _get_pi0_model(self):
         config = _config.get_config(self.model_name)
@@ -25,12 +25,16 @@ class Pi05Model(Model):
 
         return pi_model
 
+    @property
+    def model(self):
+        return self.pi05_model
+
     def forward(self, *args, **kwargs):
         raise NotImplementedError
 
     def export_onnx(self, *args, **kwargs):
         export_dir = args[0]
-        vit_model = Vit.export_onnx(self.pi_model, export_dir)
-        llm_model = LLM.export_onnx(self.pi_model, export_dir)
-        expert_model = Expert.export_onnx(self.pi_model, export_dir)
+        vit_model = Vit.export_onnx(self.pi05_model, export_dir)
+        llm_model = LLM.export_onnx(self.pi05_model, export_dir)
+        expert_model = Expert.export_onnx(self.pi05_model, export_dir)
         return vit_model, llm_model, expert_model
