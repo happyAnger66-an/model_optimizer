@@ -32,6 +32,9 @@ class Pi05Model(Model):
     def forward(self, *args, **kwargs):
         raise NotImplementedError
 
+    def quantize(self, *args, **kwargs):
+        quant_cfg = args[0]
+
     def export_onnx(self, *args, **kwargs):
         export_dir = args[0]
         vit_model = Vit.export_onnx(self.pi05_model, export_dir)

@@ -1,0 +1,14 @@
+{
+    "quant_algo": "W8A8_SQ_PER_CHANNEL" ,
+    "kv_cache_quant_algo": "",
+    "group_size": 16,
+    "group_size_kv_cache": 16,
+    "exclude_modules": [
+        "lm_head",
+        "router",
+        "vocab_embedding",
+        "position_embedding",
+        "block_embedding",
+        "shared_expert_gate"
+    ]
+}

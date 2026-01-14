@@ -24,6 +24,10 @@ class Vit(torch.nn.Module):
         logger.info(f'Pi05Vit output: {image_features.shape}')
         return image_features
 
+    def quantize(self, quant_cfg, calib_data, calib_method):
+        from ...quantization.quantization_utils import quantize
+        quantize(self, quant_cfg, calib_data, calib_method)
+
     @classmethod
     def export_onnx(cls, pi05_model, export_dir):
         vit_model = cls(pi05_model.config, pi05_model.paligemma_with_expert.paligemma.model.vision_tower,

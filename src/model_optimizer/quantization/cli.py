@@ -11,13 +11,13 @@ def quantize_onnx(model_path, calibrate_data, export_dir, quant_mode, calibrate_
     model_name = os.path.basename(model_path)
     export_name = model_name.replace('.', '_')
     calib_datas = np.load(calibrate_data)
-    from modelopt.onnx.quantization import quantize
-    from modelopt.onnx.logging_config import configure_logging
     
     content = f'quantize begin {model_path} mode: {quant_mode} method: {calibrate_method} to {export_dir}.'
     write_running_log(export_dir, content)
-
     write_quantize_progress(export_dir, 85, 3, 3, 85, 100)
+    
+    from modelopt.onnx.quantization import quantize
+    from modelopt.onnx.logging_config import configure_logging
     configure_logging(log_file=f'{export_dir}/{RUNNING_LOG}')
     quant_outfile = f"{export_dir}/{export_name}_quant_{quant_mode}_{calibrate_method}.onnx"
     quantize(onnx_path=model_path,
@@ -26,6 +26,7 @@ def quantize_onnx(model_path, calibrate_data, export_dir, quant_mode, calibrate_
              calibration_method=calibrate_method,
              output_path=quant_outfile
              )
+    
     write_quantize_progress(export_dir, 100, 3, 3, 100, 100)
     content = f'quantize done to: {quant_outfile}'
     write_running_log(export_dir, content)
@@ -33,14 +34,21 @@ def quantize_onnx(model_path, calibrate_data, export_dir, quant_mode, calibrate_
 def quantize_cli(args):
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_path', type=str, required=True)
-    parser.add_argument('--config_name', type=str, default="pi05_libero")
-    parser.add_argument('--model_type', type=str, default="onnx")
-    parser.add_argument('--qformat', type=str, default="fp8")
+#    parser.add_argument('--config_name', type=str, default="pi05_libero")
+    parser.add_argument('--model_name', type=str, default="pi05_libero")
+    parser.add_argument('--model_type', type=str, default="hf")
+    parser.add_argument('--quantize_cfg', type=str, required=True)
     parser.add_argument('--calibrate_data', type=str, required=True)
     parser.add_argument('--calibrate_method', type=str, default="max")
     parser.add_argument('--export_dir', type=str, required=True)
     args = parser.parse_args(args[1:])
     print(f'[cli] quantize args {args}')
+
+    model_name =  args.model_name
+    if model_name.startswith('pi05'):
+        from ..models.pi05.model_pi05 import Pi05Model
+        pi05_model = Pi05Model(model_name, args.model_path)
+        pi05_model.load()
 
     if args.model_type == "llm":
         args.dataset = args.calibrate_data
