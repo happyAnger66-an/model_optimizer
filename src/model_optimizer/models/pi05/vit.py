@@ -1,3 +1,4 @@
+from ..model import Model
 import os
 import time
 import torch
@@ -7,7 +8,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class Vit(torch.nn.Module):
+class Vit(torch.nn.Module, Model):
     def __init__(self, config, vision_tower, multi_modal_projector, **kwargs):
         super().__init__(**kwargs)
         self.config = config
@@ -23,10 +24,6 @@ class Vit(torch.nn.Module):
             (self.config.text_config.hidden_size ** 0.5)
         logger.info(f'Pi05Vit output: {image_features.shape}')
         return image_features
-
-    def quantize(self, quant_cfg, calib_data, calib_method):
-        from ...quantization.quantization_utils import quantize
-        quantize(self, quant_cfg, calib_data, calib_method)
 
     @classmethod
     def export_onnx(cls, pi05_model, export_dir):

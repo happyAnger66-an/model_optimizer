@@ -1,10 +1,14 @@
-import os, time
+import os
+import time
 import torch
 
+from transformers import AutoTokenizer
+from ..model import Model
 
 import logging
 
 logger = logging.getLogger(__name__)
+
 
 class LLM(torch.nn.Module):
     def __init__(self, llm, **kwargs):
@@ -21,7 +25,19 @@ class LLM(torch.nn.Module):
             k_v_caches.append((keys, values))
 
         return k_v_caches, prefix_output.last_hidden_state
-   
+
+    def quantize(self, model_dir, quant_cfg, calib_data, calib_method):
+        tokenizer = AutoTokenizer.from_pretrained(model_dir,
+                                                  trust_remote_code=True)
+        # Set tokenizer padding token if needed
+        if tokenizer.pad_token != "<unk>":
+            tokenizer.pad_token = tokenizer.eos_token
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        from model_optimizer.quantization.llm_quantization import quantize_llm
+        quantize_llm(self, tokenizer, quant_cfg, calib_data, calib_method)
+
     @classmethod
     def export_onnx(cls, pi_model, export_dir):
         del pi_model.paligemma_with_expert.gemma_expert
@@ -39,13 +55,13 @@ class LLM(torch.nn.Module):
                                     device="cuda",
                                     )
         attention_mask = torch.randn((1, 1, 968, 968),
-                                    dtype=torch.float32,
-                                    device="cuda",
-                                    )
+                                     dtype=torch.float32,
+                                     device="cuda",
+                                     )
         position_ids = torch.randint(1, 1000, (1, 968),
-                                    dtype=torch.int64,
-                                    device="cuda",
-                                    )
+                                     dtype=torch.int64,
+                                     device="cuda",
+                                     )
     # am: torch.Size([1, 1, 968, 968]) - torch.float32, pi: torch.Size([1, 968])-torch.int64 prefix: torch.Size([1, 968, 2048])-torch.bfloat16
         with torch.inference_mode():
             torch.onnx.export(
@@ -54,7 +70,7 @@ class LLM(torch.nn.Module):
                 (inputs_embeds, attention_mask, position_ids),
                 f"{output_dir}/llm.onnx",
                 input_names=["inputs_embeds", "attention_mask",
-                            "position_ids"],  # Add position_ids to input names
+                             "position_ids"],  # Add position_ids to input names
                 output_names=["last_hidden_state"],
                 opset_version=19,
                 dynamo=False,
