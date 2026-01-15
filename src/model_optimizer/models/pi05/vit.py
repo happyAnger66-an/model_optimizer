@@ -26,6 +26,12 @@ class Vit(torch.nn.Module, Model):
         return image_features
 
     @classmethod
+    def construct_from_name_path(cls, model_name, model_path):
+        from .model_pi05 import Pi05Model
+        pi05_model = Pi05Model.construct_from_name_path(model_name, model_path)
+        return cls.construct_model(pi05_model)
+
+    @classmethod
     def construct_model(cls, pi05_model, dtype=torch.float16):
         vit_model = cls(pi05_model.config,
                         pi05_model.paligemma_with_expert.paligemma.model.vision_tower,

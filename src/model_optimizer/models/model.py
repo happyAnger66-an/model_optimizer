@@ -1,6 +1,7 @@
 import torch.nn as nn
 
 
+
 class Model:
     def __init__(self, model_name, model_path):
         self.model_name = model_name
