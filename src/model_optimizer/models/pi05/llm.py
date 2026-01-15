@@ -2,9 +2,8 @@ import os
 import time
 import torch
 
-from transformers import AutoTokenizer
 from ..model import Model
-
+from ..token import get_tokenizer
 import logging
 
 logger = logging.getLogger(__name__)
@@ -27,23 +26,22 @@ class LLM(torch.nn.Module):
         return k_v_caches, prefix_output.last_hidden_state
 
     def quantize(self, model_dir, quant_cfg, calib_data, calib_method):
-        tokenizer = AutoTokenizer.from_pretrained(model_dir,
-                                                  trust_remote_code=True)
-        # Set tokenizer padding token if needed
-        if tokenizer.pad_token != "<unk>":
-            tokenizer.pad_token = tokenizer.eos_token
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
+        tokenizer = get_tokenizer(model_dir)
 
         from model_optimizer.quantization.llm_quantization import quantize_llm
         quantize_llm(self, tokenizer, quant_cfg, calib_data, calib_method)
 
     @classmethod
+    def construct_model(cls, pi05_model, dtype=torch.float16):
+        paligemma = pi05_model.paligemma_with_expert.paligemma.model
+        llm_model = cls(paligemma.get_decoder()).to(dtype)
+        return llm_model
+
+    @classmethod
     def export_onnx(cls, pi_model, export_dir):
         del pi_model.paligemma_with_expert.gemma_expert
 
-        paligemma = pi_model.paligemma_with_expert.paligemma.model
-        llm_model = cls(paligemma.get_decoder()).to(torch.float16)
+        llm_model = cls.construct_model(pi_model, dtype=torch.float16)
         llm_model.eval().cuda()
 
         output_dir = export_dir

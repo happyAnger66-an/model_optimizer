@@ -20,11 +20,15 @@ class Expert(torch.nn.Module):
         return output.last_hidden_state
    
     @classmethod
-    def export_onnx(cls, pi05_model, export_dir):
+    def construct_model(cls, pi05_model, dtype=torch.float16):
         gemma_expert_model = pi05_model.paligemma_with_expert.gemma_expert.model
         config = pi05_model.paligemma_with_expert.gemma_expert.config
+        expert_model = cls(config, gemma_expert_model).to(dtype)
+        return expert_model
 
-        expert_model = cls(config, gemma_expert_model).to(torch.float16)
+    @classmethod
+    def export_onnx(cls, pi05_model, export_dir):
+        expert_model = cls.construct_model(pi05_model, dtype=torch.float16)
         expert_model.eval().cuda()
 
         logger.info(f'gemma_expert_model {expert_model.gemma_expert}')
@@ -33,7 +37,7 @@ class Expert(torch.nn.Module):
         attention_mask = torch.randn((1, 1, 10, 978),
                                     dtype=torch.float16,
                                     device="cuda")
-        position_ids = torch.randint(1, config.vocab_size, (1, 10),
+        position_ids = torch.randint(1, expert_model.config.vocab_size, (1, 10),
                                     dtype=torch.int64,
                                     device="cuda")
         inputs_embeds = torch.randn((1, 10, 1024),

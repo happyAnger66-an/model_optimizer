@@ -26,9 +26,15 @@ class Vit(torch.nn.Module, Model):
         return image_features
 
     @classmethod
+    def construct_model(cls, pi05_model, dtype=torch.float16):
+        vit_model = cls(pi05_model.config,
+                        pi05_model.paligemma_with_expert.paligemma.model.vision_tower,
+                        pi05_model.paligemma_with_expert.paligemma.model.multi_modal_projector).to(dtype)
+        return vit_model
+
+    @classmethod
     def export_onnx(cls, pi05_model, export_dir):
-        vit_model = cls(pi05_model.config, pi05_model.paligemma_with_expert.paligemma.model.vision_tower,
-                        pi05_model.paligemma_with_expert.paligemma.model.multi_modal_projector).to(torch.float16)
+        vit_model = cls.construct_model(pi05_model, dtype=torch.float16)
         vit_model.eval().cuda()
 
         pixel_values = torch.randn(

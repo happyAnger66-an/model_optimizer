@@ -33,9 +33,9 @@ def quantize_onnx(model_path, calibrate_data, export_dir, quant_mode, calibrate_
 
 def quantize_cli(args):
     parser = argparse.ArgumentParser()
+    parser.add_argument('--model_name', type=str, default="pi05_libero")
     parser.add_argument('--model_path', type=str, required=True)
 #    parser.add_argument('--config_name', type=str, default="pi05_libero")
-    parser.add_argument('--model_name', type=str, default="pi05_libero")
     parser.add_argument('--model_type', type=str, default="hf")
     parser.add_argument('--quantize_cfg', type=str, required=True)
     parser.add_argument('--calibrate_data', type=str, required=True)
@@ -49,6 +49,13 @@ def quantize_cli(args):
         from ..models.pi05.model_pi05 import Pi05Model
         pi05_model = Pi05Model(model_name, args.model_path)
         pi05_model.load()
+
+        model_names = model_name.split('/')
+        if len(model_names) == 2:
+            sub_model_name = model_names[-1]
+            pi05_model.quantize_sub_model(sub_model_name)
+        else:
+            pi05_model.quantize()
 
     if args.model_type == "llm":
         args.dataset = args.calibrate_data

@@ -35,6 +35,17 @@ class Pi05Model(Model):
     def quantize(self, *args, **kwargs):
         quant_cfg = args[0]
 
+    def quantize_sub_model(self, *args, **kwargs):
+        sub_model_name, model_dir,quant_cfg, calib_data, calib_method = args
+        if sub_model_name == "vit":
+            sub_model = Vit.construct_model(self.pi05_model)
+        elif sub_model_name == "llm":
+            sub_model = LLM.construct_model(self.pi05_model)
+        elif sub_model_name == "expert":
+            sub_model = Expert.construct_model(self.pi05_model)
+        else:
+            raise ValueError(f"Invalid sub model name: {sub_model_name}")
+        sub_model.quantize(model_dir, quant_cfg, calib_data, calib_method)
     def export_onnx(self, *args, **kwargs):
         export_dir = args[0]
         vit_model = Vit.export_onnx(self.pi05_model, export_dir)
