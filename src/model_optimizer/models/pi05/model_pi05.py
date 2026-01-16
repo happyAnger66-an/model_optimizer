@@ -11,20 +11,49 @@ from .vit import Vit
 from .llm import LLM
 from .expert import Expert
 
+from model_optimizer.infer.tensorrt.trt_torch import Engine
 
 class Pi05Model(Model):
-    def __init__(self, model_name, model_path):
+    def __init__(self, model_name, model_path, pi05_model=None):
         super().__init__(model_name, model_path)
-
+        self.pi05_model = pi05_model
+        self.embedding_layer = None
     def load(self, config):
+        if self.pi05_model is not None:
+            raise ValueError("pi05_model is already set")
         self.pi05_model = self._get_pi0_model(self.model_name, self.model_path)
 
     def _get_pi0_model(self):
         config = _config.get_config(self.model_name)
         policy = policy_config.create_trained_policy(config, self.model_path)
-        pi_model = policy._model
+        pi05_model = policy._model
 
-        return pi_model
+        return pi05_model
+
+    def _release_pytorch_model(self):
+        if hasattr(self.pi05_model.paligemma_with_expert.paligemma.model, "vision_tower"):
+            del self.pi05_model.paligemma_with_expert.paligemma.model.vision_tower
+
+        self.embedding_layer = self.pi05_model.paligemma_with_expert.paligemma.get_input_embeddings()
+        if hasattr(self.pi05_model.paligemma_with_expert.paligemma.model, "language_model"):
+            del self.pi05_model.paligemma_with_expert.paligemma.model.language_model
+
+        if hasattr(self.pi05_model.paligemma_with_expert.gemma_expert, "model"):
+            del self.pi05_model.paligemma_with_expert.gemma_expert.model
+        if hasattr(self.pi05_model.paligemma_with_expert.gemma_expert, "lm_head"):
+            del self.pi05_model.paligemma_with_expert.gemma_expert.lm_head
+        torch.cuda.empty_cache()
+    def setup_tensorrt(self, engine_path, device="cuda"):
+        self._release_pytorch_model()
+        vit_engine = Engine(os.path.join(engine_path, "vit.engine"))
+        llm_engine = Engine(os.path.join(engine_path, "llm.engine"))
+        expert_engine = Engine(os.path.join(engine_path, "expert.engine"))
+        self.pi05_model.paligemma_with_expert.paligemma.model.vision_tower = vit_engine
+        self.pi05_model.paligemma_with_expert.embed_language_tokens = self.embedding_layer
+        self.pi05_model.paligemma_with_expert.paligemma.model.language_model = llm_engine
+
+        self.pi05_model.paligemma_with_expert.gemma_expert.model = expert_engine
+        return self
 
     @classmethod
     def construct_from_name_path(cls, model_name, model_path):

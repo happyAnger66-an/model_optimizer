@@ -1,4 +1,5 @@
 import json
+from addict import Dict
 
 def _flat_num_bits(num_bits_str):
     return tuple([int(bit) for bit in num_bits_str.split(',')])
@@ -16,7 +17,7 @@ def normalize_quant_cfg(quant_cfg):
 
 def load_quant_json(json_file):
     with open(json_file) as f:
-        return json.load(f)
+        return Dict(json.load(f))
 
 def get_model_input_shape(model_name):
     """Get the input shape from timm model configuration."""

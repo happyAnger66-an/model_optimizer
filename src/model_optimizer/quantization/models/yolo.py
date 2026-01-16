@@ -92,6 +92,7 @@ if __name__ == "__main__":
     import time
 
     parser = argparse.ArgumentParser()
+    parser.add_argument('--model_name', type=str, required=True)
     parser.add_argument('--model_path', type=str, required=True)
     parser.add_argument('--onnx_path', type=str)
     parser.add_argument('--model_task', type=str, default="segment")

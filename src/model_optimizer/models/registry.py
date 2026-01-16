@@ -20,5 +20,7 @@ def init_registry():
     
     from .pi05.expert import Expert
     register_model_cls("pi05_libero/expert", Expert)
-    
+
+    from .yolo import YoloModel
+    register_model_cls("yolo", YoloModel)
 init_registry()
