@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 def create_top() -> dict[str, "Component"]:
     with gr.Row():
         lang = gr.Dropdown(
-            choices=["zh", "en"], value=None, scale=1)
+            choices=["zh", "en"], value="zh", scale=1)
 
     with gr.Row():
         available_models = list(SUPPORTED_MODELS.keys())

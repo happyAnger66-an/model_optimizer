@@ -35,23 +35,38 @@ def quantize_onnx(model_path, calibrate_data, export_dir, quant_mode, calibrate_
 
 
 def quantize_cli(args):
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model_name', type=str, default="pi05_libero")
-    parser.add_argument('--model_path', type=str, required=True)
+    parser = argparse.ArgumentParser(
+        description='模型量化工具：支持多种模型格式的量化操作',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='示例用法:\n'
+               '  quantize_cli --model_path model.onnx --quantize_cfg config.json \\\n'
+               '               --calibrate_data data.npz --export_dir ./output'
+    )
+    parser.add_argument('--model_name', type=str, default="pi05_libero",
+                       help='模型名称，用于注册表中查找对应的模型类 (默认: pi05_libero)')
+    parser.add_argument('--model_path', type=str, required=True,
+                       help='模型文件路径 (必需)')
 #    parser.add_argument('--config_name', type=str, default="pi05_libero")
-    parser.add_argument('--model_type', type=str, default="hf")
-    parser.add_argument('--quantize_cfg', type=str, required=True)
-    parser.add_argument('--calibrate_data', type=str, required=True)
-    parser.add_argument('--calibrate_method', type=str, default="max")
-    parser.add_argument('--export_dir', type=str, required=True)
+    parser.add_argument('--model_type', type=str, default="hf",
+                       help='模型类型，例如: hf, llm 等 (默认: hf)')
+    parser.add_argument('--quantize_cfg', type=str, required=True,
+                       help='量化配置文件路径，包含量化参数配置 (必需)')
+    parser.add_argument('--calibrate_data', type=str, required=True,
+                       help='校准数据文件路径，用于量化校准的输入数据 (必需)')
+    parser.add_argument('--calibrate_method', type=str, default="max",
+                       help='校准方法，可选值: max, entropy, awq_clip, rtn_dq 等 (默认: max)')
+    parser.add_argument('--export_dir', type=str, required=True,
+                       help='导出目录，量化后的模型将保存到此目录 (必需)')
     args = parser.parse_args(args[1:])
     print(f'[cli] quantize args {args}')
 
-    from ..models.registry import get_model_cls
     model_name = args.model_name
+    model_path = args.model_path
+    
+    from ..models.registry import get_model_cls
     model_cls = get_model_cls(model_name)
-    model = model_cls.construct_from_name_path(model_name, args.model_path)
-    model.quantize(args.model_path, args.quantize_cfg, args.calibrate_data,
+    model = model_cls.construct_from_name_path(model_name, model_path)
+    model.quantize(model_path, args.quantize_cfg, args.calibrate_data,
                    args.calibrate_method)
 
 

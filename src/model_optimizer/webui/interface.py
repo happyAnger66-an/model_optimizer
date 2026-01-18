@@ -45,6 +45,15 @@ def create_ui(demo_mode: bool = False) -> "gr.Blocks":
             engine.manager.add_elems("optimize", create_compile_tab(engine))
 
         engine.manager.add_elems("footer", create_footer())
+        
+        # 初始化时设置默认语言为中文（在所有组件添加完成后）
+        demo.load(
+            fn=lambda: engine.change_lang("zh"),
+            inputs=None,
+            outputs=engine.manager.get_elem_list(),
+            queue=False
+        )
+        
         lang.change(engine.change_lang, [
                     lang], engine.manager.get_elem_list(), queue=False)
         lang.input(save_config, inputs=[lang], queue=False)
