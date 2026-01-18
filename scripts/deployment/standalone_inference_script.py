@@ -19,7 +19,7 @@ import tyro
 from openpi.training import config as _config
 from openpi.policies import policy_config, BasePolicy
 
-from model_optimizer.models.pi05.policy import create_trt_policy
+from model_optimizer.models.pi05.policy import create_tensorrt_policy
 
 warnings.simplefilter("ignore", category=FutureWarning)
 
