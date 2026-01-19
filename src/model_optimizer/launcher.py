@@ -23,7 +23,7 @@ USAGE = (
     + "\n"
     + "| Usage:                                                             |\n"
     + "|   model_optimizer-cli quantize: quantize a model |\n"
-    + "|   model_optimizer-cli convert: convert a model format |\n"
+    + "|   model_optimizer-cli export: export a model format |\n"
     + "|   model_optimizer-cli profile: profile a model |\n"
     + "|   model_optimizer-cli calibrate: calibrate a model |\n"
     + "|   model_optimizer-cli build -h: build a onnx model to engine |\n"
@@ -41,7 +41,7 @@ def launch():
     WELCOME = (
         "-" * 58
         + "\n"
-        + f"| Welcome to Model Factory, version {VERSION}"
+        + f"| Welcome to Model optimizer, version {VERSION}"
         + " " * (21 - len(VERSION))
         + "|\n|"
         + " " * 56
@@ -63,7 +63,7 @@ def launch():
     elif command == "profile":
         from .profile.cli import profile_cli
         profile_cli(sys.argv)
-    elif command == "convert":
+    elif command == "export":
         from .convert.convert_formt import convert_model
         convert_model(sys.argv)
     elif command == "calibrate":

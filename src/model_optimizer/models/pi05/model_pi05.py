@@ -6,7 +6,7 @@ from openpi.models_pytorch.pi0_pytorch import PI0Pytorch
 from openpi.training import config as _config
 from openpi.policies import policy_config
 
-from ..model import Model, register_model
+from ..model import Model
 from .vit import Vit
 from .llm import LLM
 from .expert import Expert
