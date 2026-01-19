@@ -66,8 +66,9 @@ def quantize_cli(args):
     from ..models.registry import get_model_cls
     model_cls = get_model_cls(model_name)
     model = model_cls.construct_from_name_path(model_name, model_path)
-    model.quantize(model_path, args.quantize_cfg, args.calibrate_data,
+    model.quantize(args.quantize_cfg, args.calibrate_data,
                    args.calibrate_method)
+    model.export(args.export_dir)
 
 
 '''

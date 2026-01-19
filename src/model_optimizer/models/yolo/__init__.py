@@ -18,6 +18,7 @@ class YoloModel(Model):
     def __init__(self, model_name, model_path):
         super().__init__(model_name, model_path)
         self.model = YOLO(model_path)
+        self.original_train_method = None
 
     def load(self, config):
         self.model = self._get_yolo_model(self.model_name, self.model_path)
@@ -28,36 +29,24 @@ class YoloModel(Model):
     def quantize(self, quant_cfg, calib_data, calib_method):
         pass
 
-    def pt_quantize(self, quant_cfg, quant_mode, calib_data, export_dir):
-        model = self.model
-        print(f'quant cfg {quant_cfg}')
-        calib_data = YoLoCalibrationData(calib_data)
+    def get_calibrate_dataset(self, calib_data):
+        return YoLoCalibrationData(calib_data)
 
-        def calibrate_loop(model):
-            for idx, data in enumerate(calib_data):
-                if data is None:
-                    print('calibrate data is None')
-                    continue
-
-                print(f'calibration idx {idx} data:{data}')
-                model(data)
-
-        model.eval()
-        original_train_method = model.train
-        model.train = hook_yolo_train_method
-
+    def quantize_start(self, quant_cfg, quant_mode, calib_data, export_dir):
+        self.model.eval()
+        self.original_train_method = self.model.train
+        self.model.train = hook_yolo_train_method
+        
         def hook_input(model, arg, kwargs):
             print(f'hook input {type(arg)} {len(arg)} {arg[0].shape} {arg[0].dtype} kwargs:{kwargs}')
-        hook_module_inputs(model, hook_input, SegmentationModel)
+        hook_module_inputs(self.model, hook_input, SegmentationModel)
 
-        mto.quantize(model, mtq.INT8_DEFAULT_CFG,
-                    forward_loop=calibrate_loop)
-        print(f'quantize summary')
-        mto.print_quant_summary(model)
-        model.train = original_train_method
+    def quantize_end(self):
+        self.model.train = self.original_train_method
 
-        model.export(format="onnx", dynamic=True, simplify=True)
-        print(f'export to {export_dir}/{self.model_name}_quant.onnx done.')
+    def export(self, export_dir):
+        self.model.export(format="onnx", dynamic=True, simplify=True)
+
     def onnx_quantize(self, quant_cfg, quant_mode, calib_data, export_dir):
         from modelopt.onnx.quantization import quantize
         model = self.model
