@@ -27,7 +27,7 @@ def register_model_group(
 
 register_model_group(
     models={
-        "yolo_tube.pt": {
+        "yolo_tube": {
             DownloadSource.DEFAULT: "CohereForAI/aya-23-8B",
         }
     },
@@ -36,7 +36,7 @@ register_model_group(
 
 register_model_group(
     models={
-        "resnet50-v1-12.pt": {
+        "resnet50-v1-12": {
             DownloadSource.DEFAULT: "CohereForAI/aya-23-8B",
         }
     },

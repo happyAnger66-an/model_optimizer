@@ -23,4 +23,8 @@ def init_registry():
 
     from .yolo import YoloModel
     register_model_cls("yolo", YoloModel)
+    
+    from .yolo import YoloModel
+    register_model_cls("yolo_tube", YoloModel)
+
 init_registry()

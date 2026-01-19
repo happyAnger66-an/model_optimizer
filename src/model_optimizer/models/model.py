@@ -10,13 +10,20 @@ class Model:
         self.model_name = model_name
         self.model_path = model_path
 
+    def simplifier_model(self, model_path, output_dir):
+        raise NotImplementedError
+
     def load(self, config):
         raise NotImplementedError
+
+    @classmethod
+    def construct_from_name_path(cls, model_name, model_path):
+        return cls(model_name, model_path)
 
     def export_onnx(self, *args, **kwargs):
         raise NotImplementedError
 
-    def quantize_start(self, quant_cfg, quant_mode, calib_data, export_dir):
+    def quantize_start(self, quant_cfg, calib_data, calib_method):
         pass
 
     def quantize_end(self):

@@ -97,7 +97,14 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
     args = parser.parse_args(args[1:])
 
     model_name = args.model_name
-    export_model_path = None
+    model_path = args.model_path
+
+    from ..models.registry import get_model_cls
+    model_cls = get_model_cls(model_name)
+    model = model_cls.construct_from_name_path(model_name, model_path)
+    model.export(args.export_dir)
+
+'''
     if model_name.startswith('pi05'):
         from .pi05 import convert_pi05_model
         if '/' in model_name:
@@ -116,3 +123,4 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
     convert_func = model_convert_methods[f'{model_type[1:]}2{args.export_type}']
 
     convert_func(args.model_path, args.export_dir)
+'''
