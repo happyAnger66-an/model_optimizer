@@ -7,6 +7,5 @@ run:
 	--gpus all \
 	-v ${PWD}:/workspace \
 	-v ${HOME}:/srcs \
-	--env PYTHONPATH=$PYTHONPATH:/srcs/sources/e2e_model/openpi/src/:/srcs/sources/e2e_model/openpi/packages/openpi-client/src \
 	model_optimizer_x86 \
 	/bin/bash

@@ -1,8 +1,11 @@
 FROM nvcr.io/nvidia/tensorrt:25.11-py3
 
-WORKDIR /workspace
 COPY requirements.txt /workspace/requirements.txt
+COPY Dockerfile/requirements_pi05.txt /workspace/requirements_pi05.txt
+COPY Dockerfile/install_pi05.sh /workspace/install_pi05.sh
+
+WORKDIR /workspace
 RUN pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-COPY install_pi05.sh /workspace/install_pi05.sh
-RUN ./install_pi05.sh
+RUN apt-get update && apt-get install ffmpeg libsm6 libxext6  -y
+RUN bash install_pi05.sh
