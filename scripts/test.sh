@@ -1,0 +1,1 @@
+model-opt quantize --model_name yolo --model_path /srcs/.cache/modelscope/hub/models/AI-ModelScope/YOLO11/yolo11n-seg.pt  --calibrate_data /root/.cache/kagglehub/datasets/ultralytics/coco128/versions/3/coco128/images/train2017/ --export_dir /tmp/quantize/ --quantize_cfg config/quant_cfg.py

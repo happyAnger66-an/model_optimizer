@@ -27,12 +27,12 @@ class YoloModel(Model):
         return self.model
 
     def quantize(self, quant_cfg, calib_data, calib_method):
-        pass
+        super().quantize(quant_cfg, calib_data, calib_method)
 
     def get_calibrate_dataset(self, calib_data):
         return YoLoCalibrationData(calib_data)
 
-    def quantize_start(self, quant_cfg, quant_mode, calib_data, export_dir):
+    def quantize_start(self, quant_cfg, quant_mode, calib_data):
         self.model.eval()
         self.original_train_method = self.model.train
         self.model.train = hook_yolo_train_method

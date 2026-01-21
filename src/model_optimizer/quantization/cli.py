@@ -34,6 +34,11 @@ def quantize_onnx(model_path, calibrate_data, export_dir, quant_mode, calibrate_
     write_running_log(export_dir, content)
 
 
+def get_quant_cfg(quant_cfg_file):
+    from model_optimizer.config.config import load_settings
+    settings = load_settings(quant_cfg_file)
+    return settings.QUANT_CFG
+
 def quantize_cli(args):
     parser = argparse.ArgumentParser(
         description='模型量化工具：支持多种模型格式的量化操作',
@@ -66,7 +71,10 @@ def quantize_cli(args):
     from ..models.registry import get_model_cls
     model_cls = get_model_cls(model_name)
     model = model_cls.construct_from_name_path(model_name, model_path)
-    model.quantize(args.quantize_cfg, args.calibrate_data,
+
+    quant_cfg = get_quant_cfg(args.quantize_cfg)
+    print(f'quant_cfg: {quant_cfg}')
+    model.quantize(quant_cfg, args.calibrate_data,
                    args.calibrate_method)
     model.export(args.export_dir)
 

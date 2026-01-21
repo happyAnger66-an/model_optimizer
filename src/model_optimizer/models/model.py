@@ -33,10 +33,10 @@ class Model:
         self.quantize_start(quant_cfg, calib_data, calib_method)
 
         calibrate_loop = self.get_model_calibrate_loop(calib_data)
-        mto.quantize(self.model, quant_cfg,
+        mtq.quantize(self.model, quant_cfg,
                      forward_loop=calibrate_loop)
         print(f'quantize summary')
-        mto.print_quant_summary(self.model)
+        mtq.print_quant_summary(self.model)
 
         self.quantize_end()
 
