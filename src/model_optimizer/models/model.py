@@ -16,6 +16,9 @@ class Model:
     def load(self, config):
         raise NotImplementedError
 
+    def verify(self, verify_data):
+        raise NotImplementedError
+
     @classmethod
     def construct_from_name_path(cls, model_name, model_path):
         return cls(model_name, model_path)

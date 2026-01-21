@@ -60,6 +60,10 @@ def quantize_cli(args):
                        help='校准数据文件路径，用于量化校准的输入数据 (必需)')
     parser.add_argument('--calibrate_method', type=str, default="max",
                        help='校准方法，可选值: max, entropy, awq_clip, rtn_dq 等 (默认: max)')
+    parser.add_argument('--verify', type=bool, default=True,
+                       help='是否验证量化后的模型，可选值: true, false (默认: true)')
+    parser.add_argument('--verify_data', type=str, default=None,
+                       help='验证数据文件路径，用于验证量化后的模型 (可选)')
     parser.add_argument('--export_dir', type=str, required=True,
                        help='导出目录，量化后的模型将保存到此目录 (必需)')
     args = parser.parse_args(args[1:])
@@ -76,6 +80,9 @@ def quantize_cli(args):
     print(f'quant_cfg: {quant_cfg}')
     model.quantize(quant_cfg, args.calibrate_data,
                    args.calibrate_method)
+
+    if args.verify:
+        model.verify(args.verify_data)
     model.export(args.export_dir)
 
 
