@@ -31,7 +31,7 @@ class YoloModel(Model):
 
     def verify(self, verify_data):
         print(f'verify {verify_data}')
-        self.model.val()
+        self.model.val(data=verify_data)
     def get_calibrate_dataset(self, calib_data):
         return YoLoCalibrationData(calib_data)
 
