@@ -16,7 +16,7 @@ class Model:
     def load(self, config):
         raise NotImplementedError
 
-    def verify(self, verify_data):
+    def val(self, val_data):
         raise NotImplementedError
 
     @classmethod

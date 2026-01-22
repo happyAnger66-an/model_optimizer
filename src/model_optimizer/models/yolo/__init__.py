@@ -29,9 +29,9 @@ class YoloModel(Model):
     def quantize(self, quant_cfg, calib_data, calib_method):
         super().quantize(quant_cfg, calib_data, calib_method)
 
-    def verify(self, verify_data):
-        print(f'verify {verify_data}')
-        self.model.val(data=verify_data)
+    def val(self, val_data):
+        print(f'val {val_data}')
+        self.model.val(data=val_data)
     def get_calibrate_dataset(self, calib_data):
         return YoLoCalibrationData(calib_data)
 

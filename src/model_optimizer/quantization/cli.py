@@ -75,14 +75,19 @@ def quantize_cli(args):
     from ..models.registry import get_model_cls
     model_cls = get_model_cls(model_name)
     model = model_cls.construct_from_name_path(model_name, model_path)
+    
+    if args.verify:
+        print(f'verify model {args.verify_data} before quantize')
+        model.val(args.verify_data)
 
     quant_cfg = get_quant_cfg(args.quantize_cfg)
-    print(f'quant_cfg: {quant_cfg}')
+    print(f' !!!!!! quant_cfg: {quant_cfg} !!!!!!!!!')
     model.quantize(quant_cfg, args.calibrate_data,
                    args.calibrate_method)
 
     if args.verify:
-        model.verify(args.verify_data)
+        print(f'verify model {args.verify_data} after quantize')
+        model.val(args.verify_data)
     model.export(args.export_dir)
 
 
