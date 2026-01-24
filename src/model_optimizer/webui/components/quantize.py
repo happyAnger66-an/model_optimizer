@@ -39,6 +39,21 @@ def create_quantize_tab(engine: "Engine") -> dict[str, "Component"]:
 
     with gr.Row():
         output_box = gr.Markdown()
+    
+    # INSERT_YOUR_CODE
+    with gr.Row():
+        result_file_url = gr.Textbox(label="结果文件URL", visible=True, interactive=True)
+        download_btn = gr.Button("下载结果文件")
+
+    def file_download_link(url):
+        # Construct a markdown link, so user can right-click or click to download
+        if url and url.strip():
+            return f"[点击这里下载结果文件]({url})"
+        else:
+            return "暂无可用的结果文件链接"
+
+    download_output = gr.Markdown(visible=True)
+    download_btn.click(fn=file_download_link, inputs=[result_file_url], outputs=download_output)
 
     input_elems.update(
         {output_dir, quantization_bit, calibrate_method, dataset_dir})

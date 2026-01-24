@@ -16,7 +16,7 @@ class Model:
     def load(self, config):
         raise NotImplementedError
 
-    def val(self, val_data):
+    def val(self, val_data, batch_size, output_dir):
         raise NotImplementedError
 
     @classmethod

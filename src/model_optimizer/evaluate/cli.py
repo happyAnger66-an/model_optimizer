@@ -29,11 +29,21 @@ def eval_yolo(model_path, dataset_dir, batch_size, output_dir):
 
 def eval_cli(args):
     parser = argparse.ArgumentParser()
+    parser.add_argument('--model_name', type=str, required=True)
     parser.add_argument('--model_path', type=str, required=True)
-    parser.add_argument('--dataset_dir', type=str, required=True)
+    parser.add_argument('--dataset', type=str, required=True)
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--batch_size', type=int, default=1)
     args = parser.parse_args(args[1:])
     print(f'[cli] eval args {args}')
 
-    eval_yolo(args.model_path, args.dataset_dir, args.batch_size, args.output_dir)
+    model_name = args.model_name
+    model_path = args.model_path
+    
+    from model_optimizer.models.registry import get_model_cls
+    model_cls = get_model_cls(model_name)
+    model = model_cls.construct_from_name_path(model_name, model_path)
+
+
+    model.val(args.dataset, args.batch_size, args.output_dir)
+#    eval_yolo(args.model_path, args.dataset_dir, args.batch_size, args.output_dir)
