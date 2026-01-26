@@ -33,10 +33,11 @@ class YoloModel(Model):
     def _get_yolo_model(self):
         return self.model
 
-    def quantize(self, quant_cfg, calib_data, calib_method):
-        #super().quantize(quant_cfg, calib_data, calib_method)
+    def quantize(self, quant_cfg, calib_data, calib_method, export_dir):
+        # super().quantize(quant_cfg, calib_data, calib_method)
         onnx_path = self.model.export(
             format="onnx", dynamic=True, simplify=True)
+        self.onnx_quantize(quant_cfg, calib_data, export_dir)
 
     def val(self, val_data, batch_size, output_dir):
         print(f'val {val_data}')
@@ -58,15 +59,16 @@ class YoloModel(Model):
                 f'hook input {type(arg)} {len(arg)} {arg[0].shape} {arg[0].dtype} kwargs:{kwargs}')
         hook_module_inputs(self.model, hook_input, SegmentationModel)
 
-    def quantize_end(self):
+    def quantize_end(self, export_dir):
         self.model.train = self.original_train_method
 
     def export(self, export_dir):
-        save_path = self.model.export(format="onnx", save_dir=export_dir, dynamic=True, simplify=True)
+        save_path = self.model.export(
+            format="onnx", dynamic=True, simplify=True)
         export_model_name = os.path.basename(self.model_path)
         shutil.move(save_path, f"{export_dir}/{export_model_name}.onnx")
 
-    def onnx_quantize(self, quant_cfg, quant_mode, calib_data, export_dir):
+    def onnx_quantize(self, quant_cfg, calib_data, export_dir):
         from modelopt.onnx.quantization import quantize
         model = self.model
         model.eval()
@@ -83,9 +85,11 @@ class YoloModel(Model):
 
         yolo_calib_collector.stop_collect()
 
+        print(
+            f'onnx quantize {self.model_path} {quant_cfg["mode"]} {quant_cfg["algorithm"]} to {export_dir}')
         quantize(
             onnx_path=self.model_path,
-            quantize_mode=quant_mode,       # fp8, int8, int4 etc.
+            quantize_mode=quant_cfg["mode"],       # fp8, int8, int4 etc.
             calibration_data=yolo_calib_collector.datas,
             # max, entropy, awq_clip, rtn_dq etc.
             calibration_method=quant_cfg["algorithm"],

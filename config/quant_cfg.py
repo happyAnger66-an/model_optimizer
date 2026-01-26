@@ -2,3 +2,4 @@ from modelopt.torch.quantization import INT8_DEFAULT_CFG, INT8_SMOOTHQUANT_CFG, 
 QUANT_CFG = INT8_DEFAULT_CFG
 
 QUANT_CFG["algorithm"] = "max"
+QUANT_CFG["mode"] = "int8"

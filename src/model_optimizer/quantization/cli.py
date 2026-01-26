@@ -86,7 +86,7 @@ def quantize_cli(args):
     quant_cfg = get_quant_cfg(args.quantize_cfg)
     print(f' !!!!!! quant_cfg: {quant_cfg} !!!!!!!!!')
     model.quantize(quant_cfg, args.calibrate_data,
-                   args.calibrate_method)
+                   args.calibrate_method, args.export_dir)
 
     if args.verify:
         print(f'verify model {args.verify_data} after quantize')
@@ -96,7 +96,7 @@ def quantize_cli(args):
     if old_metric and new_metric:
         old_metric.compare(new_metric)
 
-    model.export(args.export_dir)
+#    model.export(args.export_dir)
 
 
 '''

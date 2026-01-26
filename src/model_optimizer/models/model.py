@@ -29,10 +29,10 @@ class Model:
     def quantize_start(self, quant_cfg, calib_data, calib_method):
         pass
 
-    def quantize_end(self):
+    def quantize_end(self, export_dir):
         pass
 
-    def quantize(self, quant_cfg, calib_data, calib_method):
+    def quantize(self, quant_cfg, calib_data, calib_method, export_dir):
         self.quantize_start(quant_cfg, calib_data, calib_method)
 
         calibrate_loop = self.get_model_calibrate_loop(calib_data)
@@ -41,7 +41,7 @@ class Model:
         print(f'quantize summary')
         mtq.print_quant_summary(self.model)
 
-        self.quantize_end()
+        self.quantize_end(export_dir)
 
         # from model_optimizer.quantization.quantization_utils import quantize_model
         # quantize_model(self, quant_cfg, calib_data, calib_method)
