@@ -26,6 +26,9 @@ class YoloModel(Model):
         super().__init__(model_name, model_path)
         self.model = YOLO(model_path)
         self.original_train_method = None
+        self.onnx_path = None
+        self.onnx_quantize_path = None
+        self.is_quantized = False
 
     def load(self, config):
         self.model = self._get_yolo_model(self.model_name, self.model_path)
@@ -33,19 +36,29 @@ class YoloModel(Model):
     def _get_yolo_model(self):
         return self.model
 
-    def quantize(self, quant_cfg, calib_data, calib_method, export_dir):
+    def quantize(self, quant_cfg, calib_data, calib_method, export_dir, input_shapes=None):
         # super().quantize(quant_cfg, calib_data, calib_method)
-        onnx_path = self.model.export(
+        self.onnx_path = self.model.export(
             format="onnx", dynamic=True, simplify=True)
-        self.onnx_quantize(quant_cfg, calib_data, export_dir)
+        self.onnx_quantize(quant_cfg, calib_data, export_dir, input_shapes)
 
     def val(self, val_data, batch_size, output_dir):
         print(f'val {val_data}')
-        # kwargs = {"save_dir": output_dir, "save_txt": True}
-        kwargs = {"save_dir": output_dir}
-        metrics = self.model.val(data=val_data, **kwargs)
-        return YoloMetric(metrics)
+        if self.is_quantized:
+            return self.val_onnx(val_data, batch_size, output_dir)
+        else:
+            # kwargs = {"save_dir": output_dir, "save_txt": True}
+            kwargs = {"save_dir": output_dir}
+            metrics = self.model.val(data=val_data, **kwargs)
+            return YoloMetric(metrics)
 
+    def val_onnx(self, val_data, batch_size, output_dir):
+        onnx_model = YOLO(self.onnx_quantize_path)
+        kwargs = {"save_dir": output_dir}
+        metrics = onnx_model.val(data=val_data, **kwargs)
+        return YoloMetric(metrics)
+        
+        
     def get_calibrate_dataset(self, calib_data):
         return YoLoCalibrationData(calib_data)
 
@@ -68,7 +81,7 @@ class YoloModel(Model):
         export_model_name = os.path.basename(self.model_path)
         shutil.move(save_path, f"{export_dir}/{export_model_name}.onnx")
 
-    def onnx_quantize(self, quant_cfg, calib_data, export_dir):
+    def onnx_quantize(self, quant_cfg, calib_data, export_dir, input_shapes=None):
         from modelopt.onnx.quantization import quantize
         model = self.model
         model.eval()
@@ -76,7 +89,7 @@ class YoloModel(Model):
         model.train = hook_yolo_train_method
 
         from model_optimizer.calibrate.collector.collector import YOLOCalibCollector
-        yolo_calib_collector = YOLOCalibCollector()
+        yolo_calib_collector = YOLOCalibCollector(input_shapes)
         yolo_calib_collector.start_collect(SegmentationModel, model)
 
         calib_data = YoLoCalibrationData(calib_data)
@@ -86,13 +99,15 @@ class YoloModel(Model):
         yolo_calib_collector.stop_collect()
 
         print(
-            f'onnx quantize {self.model_path} {quant_cfg["mode"]} {quant_cfg["algorithm"]} to {export_dir}')
+            f'onnx quantize {self.onnx_path} {quant_cfg["mode"]} {quant_cfg["algorithm"]} to {export_dir}')
+        self.onnx_quantize_path = f"{export_dir}/{self.model_name}_quant.onnx"
         quantize(
-            onnx_path=self.model_path,
+            onnx_path=self.onnx_path,
             quantize_mode=quant_cfg["mode"],       # fp8, int8, int4 etc.
             calibration_data=yolo_calib_collector.datas,
             # max, entropy, awq_clip, rtn_dq etc.
             calibration_method=quant_cfg["algorithm"],
-            output_path=f"{export_dir}/{self.model_name}_quant.onnx",
+            output_path=self.onnx_quantize_path
         )
+        self.is_quantized = True
         print(f'quantize done.')

@@ -67,6 +67,8 @@ def quantize_cli(args):
                         help='验证数据文件路径，用于验证量化后的模型 (可选)')
     parser.add_argument('--export_dir', type=str, required=True,
                         help='导出目录，量化后的模型将保存到此目录 (必需)')
+    parser.add_argument('--input_shapes', type=str, default=None,
+                        help='输入数据形状，用于量化校准的输入数据 (可选)')
     args = parser.parse_args(args[1:])
     print(f'[cli] quantize args {args}')
 
@@ -86,7 +88,7 @@ def quantize_cli(args):
     quant_cfg = get_quant_cfg(args.quantize_cfg)
     print(f' !!!!!! quant_cfg: {quant_cfg} !!!!!!!!!')
     model.quantize(quant_cfg, args.calibrate_data,
-                   args.calibrate_method, args.export_dir)
+                   args.calibrate_method, args.export_dir, args.input_shapes)
 
     if args.verify:
         print(f'verify model {args.verify_data} after quantize')
