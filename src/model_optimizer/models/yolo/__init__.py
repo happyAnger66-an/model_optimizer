@@ -39,7 +39,7 @@ class YoloModel(Model):
     def quantize(self, quant_cfg, calib_data, calib_method, export_dir, input_shapes=None):
         # super().quantize(quant_cfg, calib_data, calib_method)
         self.onnx_path = self.model.export(
-            format="onnx", dynamic=True, simplify=True)
+            format="onnx", dynamic=False, simplify=True)
         self.onnx_quantize(quant_cfg, calib_data, export_dir, input_shapes)
 
     def val(self, val_data, batch_size, output_dir):
