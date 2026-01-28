@@ -93,6 +93,7 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
     parser.add_argument('--export_type', type=str, default="onnx")
     parser.add_argument('--export_dir', type=str, required=True)
     parser.add_argument('--simplifier', type=bool, default=True)
+    parser.add_argument('--verify_data', type=str, default=None)
     print(f'[cli] convert_model args {args[1:]}')
     args = parser.parse_args(args[1:])
 
@@ -102,7 +103,14 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
     from ..models.registry import get_model_cls
     model_cls = get_model_cls(model_name)
     model = model_cls.construct_from_name_path(model_name, model_path)
-    model.export(args.export_dir)
+    export_model_path = model.export(args.export_dir)
+
+    if args.verify_data:
+        export_model = model_cls.construct_from_name_path(
+            model_name, export_model_path)
+        export_model.val(args.verify_data, batch_size=1,
+                         output_dir=args.export_dir)
+
 
 '''
     if model_name.startswith('pi05'):

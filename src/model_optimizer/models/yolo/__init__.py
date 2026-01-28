@@ -24,7 +24,7 @@ def hook_yolo_train_method(model):
 class YoloModel(Model):
     def __init__(self, model_name, model_path):
         super().__init__(model_name, model_path)
-        self.model = YOLO(model_path)
+        self.model = YOLO(model_path, task="segment")
         self.original_train_method = None
         self.onnx_path = None
         self.onnx_quantize_path = None
@@ -38,8 +38,12 @@ class YoloModel(Model):
 
     def quantize(self, quant_cfg, calib_data, calib_method, export_dir, input_shapes=None):
         # super().quantize(quant_cfg, calib_data, calib_method)
-        self.onnx_path = self.model.export(
-            format="onnx", dynamic=False, simplify=True)
+        if self.model_path.endswith('.onnx'):
+            self.onnx_path = self.model_path
+        else:
+            self.onnx_path = self.model.export(
+                format="onnx", dynamic=False, simplify=True)
+            print(f'export onnx model {self.onnx_path} from {self.model_path}')
         self.onnx_quantize(quant_cfg, calib_data, export_dir, input_shapes)
 
     def val(self, val_data, batch_size, output_dir):
@@ -53,12 +57,11 @@ class YoloModel(Model):
             return YoloMetric(metrics)
 
     def val_onnx(self, val_data, batch_size, output_dir):
-        onnx_model = YOLO(self.onnx_quantize_path)
+        onnx_model = YOLO(self.onnx_quantize_path, task="segment")
         kwargs = {"save_dir": output_dir}
         metrics = onnx_model.val(data=val_data, imgsz=640, **kwargs)
         return YoloMetric(metrics)
-        
-        
+
     def get_calibrate_dataset(self, calib_data):
         return YoLoCalibrationData(calib_data)
 
@@ -77,14 +80,16 @@ class YoloModel(Model):
 
     def export(self, export_dir):
         save_path = self.model.export(
-            format="onnx", dynamic=True, simplify=True)
-        export_model_name = os.path.basename(self.model_path)
-        shutil.move(save_path, f"{export_dir}/{export_model_name}.onnx")
+            format="onnx", dynamic=False, simplify=True)
+        export_model_name = os.path.basename(self.model_path).split('.')[0]
+        export_model_path = f"{export_dir}/{export_model_name}.onnx"
+        shutil.move(save_path, export_model_path)
+        return export_model_path
 
     def onnx_quantize(self, quant_cfg, calib_data, export_dir, input_shapes=None):
         from modelopt.onnx.quantization import quantize
         model = self.model
-        model.eval()
+#        model.eval()
         original_train_method = model.train
         model.train = hook_yolo_train_method
 
