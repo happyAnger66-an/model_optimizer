@@ -41,7 +41,8 @@ class YOLOCalibCollector:
     def stop_collect(self):
         #        for data in self._datas:
         #            print(f"{type(data)} {data.shape}")
-        self.calib_dict["images"] = np.concatenate(self._datas[1:])
+#        self.calib_dict["images"] = np.concatenate(self._datas[1:])
+        self.calib_dict["images"] = np.concatenate(self._datas[:])
         print(f'collect {len(self.calib_dict["images"])} inputs')
         for hook in self.hooks:
             hook.remove()

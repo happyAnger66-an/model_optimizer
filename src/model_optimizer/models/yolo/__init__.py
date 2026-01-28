@@ -49,13 +49,13 @@ class YoloModel(Model):
         else:
             # kwargs = {"save_dir": output_dir, "save_txt": True}
             kwargs = {"save_dir": output_dir}
-            metrics = self.model.val(data=val_data, **kwargs)
+            metrics = self.model.val(data=val_data, imgsz=640, **kwargs)
             return YoloMetric(metrics)
 
     def val_onnx(self, val_data, batch_size, output_dir):
         onnx_model = YOLO(self.onnx_quantize_path)
         kwargs = {"save_dir": output_dir}
-        metrics = onnx_model.val(data=val_data, **kwargs)
+        metrics = onnx_model.val(data=val_data, imgsz=640, **kwargs)
         return YoloMetric(metrics)
         
         
