@@ -34,6 +34,7 @@ def eval_cli(args):
     parser.add_argument('--dataset', type=str, required=True)
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--batch_size', type=int, default=1)
+    parser.add_argument('--hook_layers', type=bool, default=False)
     args = parser.parse_args(args[1:])
     print(f'[cli] eval args {args}')
 
