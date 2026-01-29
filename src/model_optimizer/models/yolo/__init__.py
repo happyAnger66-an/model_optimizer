@@ -14,7 +14,7 @@ import modelopt.torch.opt as mto
 import modelopt.torch.quantization as mtq
 
 from model_optimizer.evaluate.metrics.yolo_metric import YoloMetric
-
+from onnx2pytorch import ConvertModel
 
 def hook_yolo_train_method(model):
     print(f'hook yolo train called in quantization. Do nothing...')
@@ -24,6 +24,11 @@ def hook_yolo_train_method(model):
 class YoloModel(Model):
     def __init__(self, model_name, model_path):
         super().__init__(model_name, model_path)
+        self.is_onnx = False
+        if self.model_path.endswith('.onnx'):
+            self.is_onnx = True
+            pt_model = ConvertModel(self.model_path)
+            print(f'{pt_model.named_modules()}')
         self.model = YOLO(model_path, task="segment")
         self.original_train_method = None
         self.onnx_path = None
@@ -47,7 +52,7 @@ class YoloModel(Model):
         self.onnx_quantize(quant_cfg, calib_data, export_dir, input_shapes)
 
     def val(self, val_data, batch_size, output_dir):
-        print(f'val {val_data}')
+#        print(f'val {val_data}')
         if self.is_quantized:
             return self.val_onnx(val_data, batch_size, output_dir)
         else:
@@ -89,7 +94,7 @@ class YoloModel(Model):
     def onnx_quantize(self, quant_cfg, calib_data, export_dir, input_shapes=None):
         from modelopt.onnx.quantization import quantize
         model = self.model
-#        model.eval()
+        model.eval()
         original_train_method = model.train
         model.train = hook_yolo_train_method
 
