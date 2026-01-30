@@ -25,6 +25,36 @@ class Vit(torch.nn.Module, Model):
         logger.info(f'Pi05Vit output: {image_features.shape}')
         return image_features
 
+    def export(self, export_dir):
+        self.eval().cuda()
+
+        pixel_values = torch.randn(
+            (1, 3, 224, 224), dtype=torch.float16, device="cuda")
+
+        output_dir = export_dir
+        os.makedirs(output_dir, exist_ok=True)
+        start = time.time()
+        logger.info("Start export onnx ...")
+        with torch.inference_mode():
+            torch.onnx.export(
+                self,
+                (pixel_values),  # Include position_ids in ONNX export
+                f"{output_dir}/vit.onnx",
+                # Add position_ids to input names
+                input_names=["pixel_values"],
+                output_names=["vit_embeds"],
+                opset_version=19,
+                dynamo=False,
+                do_constant_folding=True,
+                dynamic_axes={
+                    "pixel_values": {0: "batch_size"},
+                    "vit_embeds": {0: "batch_size"},
+                },
+            )
+        end = time.time()
+        logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
+        return self
+
     @classmethod
     def construct_from_name_path(cls, model_name, model_path):
         from .model_pi05 import Pi05Model
@@ -33,7 +63,7 @@ class Vit(torch.nn.Module, Model):
 
     @classmethod
     def construct_model(cls, pi05_model, dtype=torch.float16):
-        vit_model = cls(pi05_model.config,
+        vit_model = cls(pi05_model.paligemma_with_expert.paligemma.config,
                         pi05_model.paligemma_with_expert.paligemma.model.vision_tower,
                         pi05_model.paligemma_with_expert.paligemma.model.multi_modal_projector).to(dtype)
         return vit_model

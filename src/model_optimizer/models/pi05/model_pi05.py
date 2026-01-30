@@ -18,13 +18,25 @@ class Pi05Model(Model):
         super().__init__(model_name, model_path)
         self.pi05_model = pi05_model
         self.embedding_layer = None
-    def load(self, config):
+        self.load()
+
+    def __getattr__(self, name):
+        return getattr(self.pi05_model, name)
+
+    @property
+    def config(self):
+        return self.pi05_model.config
+
+    def load(self):
         if self.pi05_model is not None:
             raise ValueError("pi05_model is already set")
-        self.pi05_model = self._get_pi0_model(self.model_name, self.model_path)
+        self.pi05_model = self._get_pi0_model()
 
     def _get_pi0_model(self):
         config = _config.get_config(self.model_name)
+        print(f'pi05 model config: {config}')
+#        import pdb;pdb.set_trace()
+#        config.model.dtype='float16'
         policy = policy_config.create_trained_policy(config, self.model_path)
         pi05_model = policy._model
 
@@ -57,7 +69,9 @@ class Pi05Model(Model):
 
     @classmethod
     def construct_from_name_path(cls, model_name, model_path):
-        return cls(model_name, model_path)
+        real_name = model_name.split("/")[0]
+        print(f'pi05 model name: {real_name}')
+        return cls(real_name, model_path)
     
     @property
     def model(self):

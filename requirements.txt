@@ -8,10 +8,11 @@ opencv-python-headless
 onnx>=1.12.0,<=1.19.1
 onnxslim>=0.1.71
 onnxruntime-gpu
+onnx2pytorch
 
 nvidia-modelopt[all]
 safetensors==0.7.0
-
+transformers==4.53.2
 #YOLO
 ultralytics
 
