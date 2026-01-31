@@ -17,8 +17,9 @@ class Expert(torch.nn.Module, Model):
     def forward(self, attention_mask, position_ids, inputs_embeds, past_key_values=None):
         logger.info(
             f'Pi05Expert input attention_mask: {attention_mask.shape} position_ids: {position_ids.shape} inputs_embeds: {inputs_embeds.shape}')
+        time_emb = torch.zeros(1, 1024, dtype=torch.float32, device="cuda")
         output = self.gemma_expert(attention_mask=attention_mask, position_ids=position_ids,
-                                   inputs_embeds=inputs_embeds)
+                                   inputs_embeds=inputs_embeds, adarms_cond=time_emb)
         logger.info(f'Pi05Expert output: {output.last_hidden_state.shape}')
         return output.last_hidden_state
 
