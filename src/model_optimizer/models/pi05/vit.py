@@ -3,6 +3,8 @@ import os
 import time
 import torch
 
+from termcolor import colored
+
 import logging
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,7 @@ class Vit(torch.nn.Module, Model):
         os.makedirs(output_dir, exist_ok=True)
         start = time.time()
         logger.info("Start export onnx ...")
+        print(colored(f"Start Vit export onnx...", "green"))
         with torch.inference_mode():
             torch.onnx.export(
                 self,
@@ -53,6 +56,8 @@ class Vit(torch.nn.Module, Model):
             )
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
+        print(
+            colored(f"Vit export onnx done to {output_dir} cost:{end - start}s", "green"))
         return self
 
     @classmethod

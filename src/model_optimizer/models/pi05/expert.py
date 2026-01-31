@@ -4,6 +4,7 @@ import torch
 
 import logging
 from ..model import Model
+from termcolor import colored
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class Expert(torch.nn.Module, Model):
         os.makedirs(output_dir, exist_ok=True)
         start = time.time()
         logger.info("Start export onnx ...")
+        print(colored(f"Start Expert export onnx...", "green"))
 
         logger.info(f'gemma_expert_model {self.gemma_expert}')
         logger.info(f'config {self.config}')
@@ -79,6 +81,8 @@ class Expert(torch.nn.Module, Model):
             )
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
+        print(
+            colored(f"Expert export onnx done to {output_dir} cost:{end - start}s", "green"))
         return self
 
     @classmethod

@@ -6,6 +6,8 @@ from ..model import Model
 from ..token import get_tokenizer
 import logging
 
+from termcolor import colored
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,7 +22,7 @@ class LLM(torch.nn.Module, Model):
                                  attention_mask=attention_mask,
                                  position_ids=position_ids)
         k_v_caches = []
-        #for keys, values, _ in prefix_output.past_key_values:
+        # for keys, values, _ in prefix_output.past_key_values:
         for keys, values in prefix_output.past_key_values:
             k_v_caches.append((keys, values))
 
@@ -51,6 +53,7 @@ class LLM(torch.nn.Module, Model):
         os.makedirs(output_dir, exist_ok=True)
         start = time.time()
         logger.info("Start export onnx ...")
+        print(colored(f"Start LLM export onnx...", "green"))
         inputs_embeds = torch.randn((1, 968, 2048),
                                     dtype=torch.float16,
                                     device="cuda",
@@ -84,6 +87,8 @@ class LLM(torch.nn.Module, Model):
             )
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
+        print(
+            colored(f"LLM export onnx done to {output_dir} cost:{end - start}s", "green"))
         return self
 
     @classmethod
