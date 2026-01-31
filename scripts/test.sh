@@ -1,3 +1,4 @@
 /usr/local/lib/python3.12/dist-packages/ultralytics/cfg/default.yaml
+export model-opt export --model_name pi05_libero/expert --model_path /srcs/sources/opensrc/robot/openpi/pytorch_pi05_libero/ --export_dir /tmp/pi05/export
 model-opt eval --model_name yolo --model_path /srcs/.cache/modelscope/hub/models/AI-ModelScope/YOLO11/yolo11n-seg.pt --dataset coco128-seg.yaml --output_dir /tmp/eval/
 model-opt quantize --model_name yolo --model_path /srcs/.cache/modelscope/hub/models/AI-ModelScope/YOLO11/yolo11n-seg.pt  --calibrate_data /root/.cache/kagglehub/datasets/ultralytics/coco128/versions/3/coco128/images/train2017/ --export_dir /tmp/quantize/ --quantize_cfg config/quant_cfg.py

@@ -13,6 +13,7 @@ from .expert import Expert
 
 from model_optimizer.infer.tensorrt.trt_torch import Engine
 
+
 class Pi05Model(Model):
     def __init__(self, model_name, model_path, pi05_model=None):
         super().__init__(model_name, model_path)
@@ -55,6 +56,7 @@ class Pi05Model(Model):
         if hasattr(self.pi05_model.paligemma_with_expert.gemma_expert, "lm_head"):
             del self.pi05_model.paligemma_with_expert.gemma_expert.lm_head
         torch.cuda.empty_cache()
+
     def setup_tensorrt(self, engine_path, device="cuda"):
         self._release_pytorch_model()
         vit_engine = Engine(os.path.join(engine_path, "vit.engine"))
@@ -72,7 +74,7 @@ class Pi05Model(Model):
         real_name = model_name.split("/")[0]
         print(f'pi05 model name: {real_name}')
         return cls(real_name, model_path)
-    
+
     @property
     def model(self):
         return self.pi05_model
@@ -95,9 +97,13 @@ class Pi05Model(Model):
             raise ValueError(f"Invalid sub model name: {sub_model_name}")
         sub_model.quantize(model_dir, quant_cfg, calib_data, calib_method)
 
-    def export_onnx(self, *args, **kwargs):
-        export_dir = args[0]
-        vit_model = Vit.export_onnx(self.pi05_model, export_dir)
-        llm_model = LLM.export_onnx(self.pi05_model, export_dir)
-        expert_model = Expert.export_onnx(self.pi05_model, export_dir)
+    def export(self, output_dir):
+        vit_model = Vit.construct_model(self.pi05_model)
+        vit_model.export(output_dir)
+
+        llm_model = LLM.construct_model(self.pi05_model)
+        llm_model.export(output_dir)
+
+        expert_model = Expert.construct_model(self.pi05_model)
+        expert_model.export(output_dir)
         return vit_model, llm_model, expert_model
