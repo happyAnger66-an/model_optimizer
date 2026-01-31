@@ -9,7 +9,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class LLM(torch.nn.Module):
+class LLM(torch.nn.Module, Model):
     def __init__(self, llm, **kwargs):
         super().__init__(**kwargs)
         self.llm = llm

@@ -3,11 +3,12 @@ import time
 import torch
 
 import logging
+from ..model import Model
 
 logger = logging.getLogger(__name__)
 
 
-class Expert(torch.nn.Module):
+class Expert(torch.nn.Module, Model):
     def __init__(self, config, gemma_expert, **kwargs):
         super().__init__(**kwargs)
         self.config = config
@@ -33,6 +34,50 @@ class Expert(torch.nn.Module):
         config = pi05_model.paligemma_with_expert.gemma_expert.config
         expert_model = cls(config, gemma_expert_model).to(dtype)
         return expert_model
+
+    def export(self, export_dir):
+        self.eval().cuda()
+
+        output_dir = export_dir
+        os.makedirs(output_dir, exist_ok=True)
+        start = time.time()
+        logger.info("Start export onnx ...")
+
+        logger.info(f'gemma_expert_model {self.gemma_expert}')
+        logger.info(f'config {self.config}')
+
+        attention_mask = torch.randn((1, 1, 10, 978),
+                                     dtype=torch.float16,
+                                     device="cuda")
+        position_ids = torch.randint(1, self.config.vocab_size, (1, 10),
+                                     dtype=torch.int64,
+                                     device="cuda")
+        inputs_embeds = torch.randn((1, 10, 1024),
+                                    dtype=torch.float16,
+                                    device="cuda")
+
+        output_path = f"{output_dir}/expert.onnx"
+        with torch.inference_mode():
+            torch.onnx.export(
+                self,
+                # Include position_ids in ONNX export
+                (attention_mask, position_ids, inputs_embeds),
+                output_path,
+                input_names=["attention_mask", "position_ids",
+                             "inputs_embeds"],  # Add position_ids to input names
+                output_names=["hidden_states"],
+                opset_version=19,
+                dynamo=False,
+                do_constant_folding=True,
+                dynamic_axes={
+                    "attention_mask": {0: "batch_size", 2: "action_seq_len", 3: "llm_seq_len"},
+                    "position_ids": {0: "batch_size", 1: "seq_len"},
+                    "inputs_embeds": {0: "batch_size", 1: "seq_len"},
+                },
+            )
+        end = time.time()
+        logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
+        return self
 
     @classmethod
     def export_onnx(cls, pi05_model, export_dir):
