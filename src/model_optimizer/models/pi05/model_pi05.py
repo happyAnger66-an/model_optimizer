@@ -10,6 +10,7 @@ from ..model import Model
 from .vit import Vit
 from .llm import LLM
 from .expert import Expert
+from termcolor import colored
 
 from model_optimizer.infer.tensorrt.trt_torch import Engine
 
@@ -19,7 +20,9 @@ class Pi05Model(Model):
         super().__init__(model_name, model_path)
         self.pi05_model = pi05_model
         self.embedding_layer = None
+        print(colored(f"Start Pi05Model load...", "green"))
         self.load()
+        print(colored(f"Pi05Model load done.", "green"))
 
     def __getattr__(self, name):
         return getattr(self.pi05_model, name)
