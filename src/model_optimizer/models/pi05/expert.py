@@ -38,6 +38,7 @@ class Expert(torch.nn.Module, Model):
 
     def export(self, export_dir):
         self.eval().cuda()
+        self.to(torch.float16)
 
         output_dir = export_dir
         os.makedirs(output_dir, exist_ok=True)
