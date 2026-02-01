@@ -16,8 +16,10 @@ class Pi05TensorRTExecutor(Executor):
         super().__init__(policy)
         pi05_model = Pi05Model(policy)
         self.pi05_model = pi05_model.model
+    def load_model(self, config=None):
+        if config is None:
+            return
 
-    def load_model(self):
         self._release_pytorch_model()
         self._setup_trt_engine()
       #  self.pi05_model.paligemma_with_expert.embed_image = partial(

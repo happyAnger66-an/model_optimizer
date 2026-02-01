@@ -41,7 +41,8 @@ class Pi05Model(Model):
 
     def load(self):
         if self.pi05_model is not None:
-            raise ValueError(colored("pi05_model is already set", "red"))
+            print(colored("pi05_model is already set", "red"))
+            return
         self.pi05_model = self._get_pi0_model()
 
     def _get_pi0_model(self):

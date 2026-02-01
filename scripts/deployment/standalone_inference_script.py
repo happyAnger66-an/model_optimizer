@@ -16,10 +16,13 @@ from model_optimizer.models.pi05 import Pi05Model
 # from gr00t.data.embodiment_tags import EmbodimentTag
 # from gr00t.policy.gr00t_policy import Gr00tPolicy
 # from gr00t.policy.policy import BasePolicy
+from openpi_client.base_policy import BasePolicy
 from openpi.training import config as _config
-from openpi.training import download
+from openpi.training import data_loader as _data_loader
+from openpi.training.data_loader import DataLoader
 from openpi.policies import policy_config
-from openpi.policies.policy import Policy
+
+import dataclasses
 from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
@@ -78,134 +81,6 @@ def set_seed(seed: int = 0):
 
     # PyTorch requires this to be set for some CUDA kernels
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
-
-class TensorRTDiTWrapper:
-    """Wrapper for TensorRT DiT engine."""
-
-    def __init__(self, engine_path: str, device: int = 0):
-        import tensorrt as trt
-
-        self.device = device
-
-        # Ensures CUDA driver is properly loaded
-        if torch.cuda.is_available():
-            torch.cuda.init()
-            torch.cuda.set_device(device)  # Set the specified CUDA device
-            logging.info(f"CUDA initialized via PyTorch: device {device}")
-        else:
-            raise RuntimeError("CUDA not available for TensorRT")
-
-        self.trt_logger = trt.Logger(trt.Logger.WARNING)
-        self.runtime = trt.Runtime(self.trt_logger)
-
-        with open(engine_path, "rb") as f:
-            self.engine = self.runtime.deserialize_cuda_engine(f.read())
-
-        if self.engine is None:
-            raise RuntimeError(
-                f"Failed to load TensorRT engine from {engine_path}")
-
-        self.context = self.engine.create_execution_context()
-        logging.info(f"TensorRT engine loaded: {engine_path}")
-
-    def __call__(self, sa_embs, vl_embs, timestep, image_mask=None, backbone_attention_mask=None):
-        """Forward pass through TensorRT DiT."""
-        # Setup context bindings
-        sa_embs = sa_embs.to(f"cuda:{self.device}").contiguous()
-        vl_embs = vl_embs.to(f"cuda:{self.device}").contiguous()
-        timestep = timestep.to(
-            f"cuda:{self.device}").contiguous()  # Keep as int64
-
-        if image_mask is not None:
-            image_mask = image_mask.to(f"cuda:{self.device}").contiguous()
-        if backbone_attention_mask is not None:
-            backbone_attention_mask = backbone_attention_mask.to(
-                f"cuda:{self.device}").contiguous()
-
-        self.context.set_input_shape("sa_embs", sa_embs.shape)
-        self.context.set_input_shape("vl_embs", vl_embs.shape)
-        self.context.set_input_shape("timestep", timestep.shape)
-        if image_mask is not None:
-            self.context.set_input_shape("image_mask", image_mask.shape)
-        if backbone_attention_mask is not None:
-            self.context.set_input_shape(
-                "backbone_attention_mask", backbone_attention_mask.shape)
-
-        self.context.set_tensor_address("sa_embs", sa_embs.data_ptr())
-        self.context.set_tensor_address("vl_embs", vl_embs.data_ptr())
-        self.context.set_tensor_address("timestep", timestep.data_ptr())
-        if image_mask is not None:
-            self.context.set_tensor_address(
-                "image_mask", image_mask.data_ptr())
-        if backbone_attention_mask is not None:
-            self.context.set_tensor_address(
-                "backbone_attention_mask", backbone_attention_mask.data_ptr()
-            )
-
-        # Output in BF16 (matches ONNX export and engine precision)
-        output_shape = self.context.get_tensor_shape("output")
-        output = torch.empty(
-            tuple(output_shape), dtype=torch.bfloat16, device=f"cuda:{self.device}"
-        )
-        self.context.set_tensor_address("output", output.data_ptr())
-
-        success = self.context.execute_async_v3(
-            torch.cuda.current_stream().cuda_stream)
-        if not success:
-            raise RuntimeError("TensorRT inference failed")
-
-        return output
-
-
-def replace_dit_with_tensorrt(policy: Gr00tPolicy | Any, trt_engine_path: str, device: int = 0):
-    """Replace the DiT forward method with TensorRT inference."""
-    trt_dit = TensorRTDiTWrapper(trt_engine_path, device=device)
-
-    def trt_forward(
-        hidden_states,
-        encoder_hidden_states,
-        timestep,
-        encoder_attention_mask=None,
-        return_all_hidden_states=False,
-        image_mask=None,
-        backbone_attention_mask=None,
-    ):
-        """
-        TensorRT wrapper matching DiT forward signature.
-
-        Maps DiT parameter names to ONNX export names:
-        - hidden_states -> sa_embs
-        - encoder_hidden_states -> vl_embs
-        - timestep -> timestep
-        - image_mask, backbone_attention_mask passed through
-        """
-        output = trt_dit(
-            sa_embs=hidden_states,
-            vl_embs=encoder_hidden_states,
-            timestep=timestep,
-            image_mask=image_mask,
-            backbone_attention_mask=backbone_attention_mask,
-        )
-
-        # DiT returns (output, all_hidden_states) when return_all_hidden_states=True
-        if return_all_hidden_states:
-            # TensorRT only returns the final output, not intermediate states
-            # For inference, we don't need intermediate states, so raise
-            # as this seems invalid config for inference
-            raise RuntimeError(
-                "TensorRT only returns the final output. Check inference config")
-        else:
-            return output
-
-    policy.model.action_head.model.forward = trt_forward
-    logging.info(" DiT replaced with TensorRT engine")
-
-
-###############################################################################
-# TENSORRT Module Wrappers End
-###############################################################################
-
 
 def plot_trajectory_results(
     state_joints_across_time: np.ndarray,
@@ -291,7 +166,7 @@ def plot_trajectory_results(
     plt.close()  # Close the figure to free memory
 
 
-def parse_observation_gr00t(
+def parse_observation(
     obs: dict[str, Any], modality_configs: dict[str, Any]
 ) -> dict[str, Any]:
     new_obs = {}
@@ -311,7 +186,7 @@ def parse_observation_gr00t(
     return new_obs
 
 
-def parse_action_gr00t(action: dict[str, Any]) -> dict[str, Any]:
+def parse_action(action: dict[str, Any]) -> dict[str, Any]:
     # Unbatch and add prefix
     return {f"action.{key}": action[key][0] for key in action}
 
@@ -320,8 +195,8 @@ def prepare_observation_data(
     traj: pd.DataFrame,
     step_count: int,
     modality_configs: dict[str, Any],
-    embodiment_tag: EmbodimentTag,
-    loader: LeRobotEpisodeLoader,
+    embodiment_tag,
+    loader: DataLoader,
 ) -> dict[str, Any]:
     """
     Prepare observation data for inference (CPU-only operations).
@@ -359,11 +234,11 @@ def prepare_observation_data(
 
 def run_single_trajectory(
     policy: BasePolicy,
-    loader: LeRobotEpisodeLoader,
+    loader: DataLoader,
     traj_id: int,
-    embodiment_tag: EmbodimentTag,
-    steps=300,
-    action_horizon=16,
+    embodiment_tag,
+    steps=100,
+    action_horizon=10,
     skip_timing_steps=1,
 ):
     """
@@ -599,7 +474,7 @@ class ArgsConfig:
     dataset_path: str = "demo_data/robot_sim.PickNPlace/"
     """Path to the dataset."""
 
-    embodiment_tag: EmbodimentTag = EmbodimentTag.GR1
+    embodiment_tag: str = "pi05"
     """Embodiment tag to use."""
 
     model_path: str | None = None
@@ -676,9 +551,9 @@ def main(args: ArgsConfig):
 
     if local_model_path is not None:
         config = _config.get_config(args.config_name)
-        checkpoint_dir = download.maybe_download(
-            "gs://openpi-assets/checkpoints/pi0_fast_droid")
-
+#        checkpoint_dir = download.maybe_download(
+#           "gs://openpi-assets/checkpoints/pi0_fast_droid")
+        checkpoint_dir = local_model_path
         # Create a trained policy.
         policy = policy_config.create_trained_policy(config, checkpoint_dir)
 
@@ -701,28 +576,24 @@ def main(args: ArgsConfig):
     model_load_time = time.time() - model_load_start
     logging.info(f"Model loading time: {model_load_time:.4f} seconds")
 
-    # Get the supported modalities for the policy
-    modality = policy.get_modality_config()
-    logging.info(f"Current modality config: \n{modality}")
-
     # Dataset creation
     logging.info("\n" + "=" * 80)
     logging.info("=== Step 2: Creating Dataset Loader ===")
     logging.info("=" * 80)
     dataset_load_start = time.time()
 
-    dataset = LeRobotEpisodeLoader(
-        dataset_path=args.dataset_path,
-        modality_configs=modality,
-        video_backend=args.video_backend,
-        video_backend_kwargs=None,
-    )
-
+    config = dataclasses.replace(config, batch_size=1)
+    data_loader = _data_loader.create_data_loader(
+        config,
+        # Skip since we may not have the data available.
+        skip_norm_stats=True,
+        num_batches=2,
+        shuffle=True,)
     dataset_load_time = time.time() - dataset_load_start
     logging.info(
         f"Dataset loader creation time: {dataset_load_time:.4f} seconds")
 
-    logging.info(f"Dataset length: {len(dataset)}")
+    logging.info(f"Dataset length: {len(data_loader)}")
     logging.info(f"Running evaluation on trajectories: {args.traj_ids}")
 
     # Evaluation loop
@@ -736,7 +607,7 @@ def main(args: ArgsConfig):
     pred_actions = []
 
     for traj_id in args.traj_ids:
-        if traj_id >= len(dataset):
+        if traj_id >= len(data_loader):
             logging.warning(
                 f"Trajectory ID {traj_id} is out of range. Skipping.")
             continue
@@ -752,7 +623,7 @@ def main(args: ArgsConfig):
             obs,
         ) = run_single_trajectory(
             policy,
-            dataset,
+            data_loader,
             traj_id,
             args.embodiment_tag,
             steps=args.steps,
