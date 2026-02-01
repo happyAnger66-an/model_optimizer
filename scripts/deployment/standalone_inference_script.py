@@ -578,7 +578,7 @@ def main(args: ArgsConfig):
         f"Dataset loader creation time: {dataset_load_time:.4f} seconds")
 
     dataset_len = len(data_loader._data_loader.torch_loader.dataset)
-    logging.info(f"Dataset length: {len(dataset_len)}")
+    logging.info(f"Dataset length: {dataset_len}")
     logging.info(f"Running evaluation on trajectories: {args.traj_ids}")
 
     # Evaluation loop
