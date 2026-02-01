@@ -8,16 +8,13 @@ from ...models.pi05.model_pi05 import Pi05Model
 from .trt_torch import Engine
 
 
-#def embed_image(self, pixel_values):
+# def embed_image(self, pixel_values):
 #    self.get_image_features(pixel_values)
 
 class Pi05TensorRTExecutor(Executor):
-    def __init__(self, config, pytorch_model_path, engine_path):
-        super().__init__(config)
-        self.pytorch_model_path = pytorch_model_path
-        self.engine_path = engine_path
-        pi05_model = Pi05Model(config.model_name, pytorch_model_path)
-        pi05_model.load()
+    def __init__(self, policy):
+        super().__init__(policy)
+        pi05_model = Pi05Model(policy)
         self.pi05_model = pi05_model.model
 
     def load_model(self):
@@ -27,8 +24,8 @@ class Pi05TensorRTExecutor(Executor):
       #      embed_image, self.pi05_model.paligemma_with_expert.paligemma.model)
         self.pi05_model.paligemma_with_expert.embed_language_tokens = self.embedding_layer
 
-    def infer(self, input_data):
-        self.pi05_model.sample_actions(input_data)
+    def __getattr__(self, name):
+        return getattr(self.policy, name)
 
     def _setup_trt_engine(self):
         vit_engine = Engine(os.path.join(self.engine_path, "vit.engine"))
@@ -49,3 +46,14 @@ class Pi05TensorRTExecutor(Executor):
         if hasattr(self.pi05_model.paligemma_with_expert.gemma_expert, "lm_head"):
             del self.pi05_model.paligemma_with_expert.gemma_expert.lm_head
         torch.cuda.empty_cache()
+
+
+class Pi05PyTorchExecutor(Executor):
+    def __init__(self, policy):
+        super().__init__(policy)
+        self.pi05_model = Pi05Model(policy)
+
+    def load_model(self):
+        self.pi05_model.model.action_head.model.forward = torch.compile(
+            self.pi05_model.model.action_head.model.forward, mode="max-autotune"
+        )

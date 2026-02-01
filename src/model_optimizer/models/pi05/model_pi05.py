@@ -24,21 +24,29 @@ class Pi05Model(Model):
         self.load()
         print(colored(f"Pi05Model load done.", "green"))
 
+    def __init__(self, policy):
+        self.pi05_model = policy._model
+        self.embedding_layer = None
+
     def __getattr__(self, name):
         return getattr(self.pi05_model, name)
 
+    @property
+    def model(self):
+        return self.pi05_model
+    
     @property
     def config(self):
         return self.pi05_model.config
 
     def load(self):
         if self.pi05_model is not None:
-            raise ValueError("pi05_model is already set")
+            raise ValueError(colored("pi05_model is already set", "red"))
         self.pi05_model = self._get_pi0_model()
 
     def _get_pi0_model(self):
         config = _config.get_config(self.model_name)
-        print(f'pi05 model config: {config}')
+        print(colored(f'pi05 model config: {config}', "dark_grey"))
 #        import pdb;pdb.set_trace()
 #        config.model.dtype='float16'
         policy = policy_config.create_trained_policy(config, self.model_path)

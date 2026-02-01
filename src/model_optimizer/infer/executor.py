@@ -1,9 +1,9 @@
 class Executor:
-    def __init__(self, model_config):
-        self.model_config = model_config
+    def __init__(self, policy):
+        self.policy = policy
 
     def load_model(self):
         pass
 
-    def infer(self, *args, **kwargs):
-        pass
+    def __getattr__(self, name):
+        return getattr(self.policy, name)

@@ -10,16 +10,22 @@ import time
 from typing import Any, Literal
 import warnings
 
+from model_optimizer.models.pi05 import Pi05Model
+# from gr00t.data.dataset.lerobot_episode_loader import LeRobotEpisodeLoader
+# from gr00t.data.dataset.sharded_single_step_dataset import extract_step_data
+# from gr00t.data.embodiment_tags import EmbodimentTag
+# from gr00t.policy.gr00t_policy import Gr00tPolicy
+# from gr00t.policy.policy import BasePolicy
+from openpi.training import config as _config
+from openpi.training import download
+from openpi.policies import policy_config
+from openpi.policies.policy import Policy
 from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 import tyro
 
-from openpi.training import config as _config
-from openpi.policies import policy_config, BasePolicy
-
-from model_optimizer.models.pi05.policy import create_tensorrt_policy
 
 warnings.simplefilter("ignore", category=FutureWarning)
 
@@ -73,6 +79,129 @@ def set_seed(seed: int = 0):
     # PyTorch requires this to be set for some CUDA kernels
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
+
+class TensorRTDiTWrapper:
+    """Wrapper for TensorRT DiT engine."""
+
+    def __init__(self, engine_path: str, device: int = 0):
+        import tensorrt as trt
+
+        self.device = device
+
+        # Ensures CUDA driver is properly loaded
+        if torch.cuda.is_available():
+            torch.cuda.init()
+            torch.cuda.set_device(device)  # Set the specified CUDA device
+            logging.info(f"CUDA initialized via PyTorch: device {device}")
+        else:
+            raise RuntimeError("CUDA not available for TensorRT")
+
+        self.trt_logger = trt.Logger(trt.Logger.WARNING)
+        self.runtime = trt.Runtime(self.trt_logger)
+
+        with open(engine_path, "rb") as f:
+            self.engine = self.runtime.deserialize_cuda_engine(f.read())
+
+        if self.engine is None:
+            raise RuntimeError(
+                f"Failed to load TensorRT engine from {engine_path}")
+
+        self.context = self.engine.create_execution_context()
+        logging.info(f"TensorRT engine loaded: {engine_path}")
+
+    def __call__(self, sa_embs, vl_embs, timestep, image_mask=None, backbone_attention_mask=None):
+        """Forward pass through TensorRT DiT."""
+        # Setup context bindings
+        sa_embs = sa_embs.to(f"cuda:{self.device}").contiguous()
+        vl_embs = vl_embs.to(f"cuda:{self.device}").contiguous()
+        timestep = timestep.to(
+            f"cuda:{self.device}").contiguous()  # Keep as int64
+
+        if image_mask is not None:
+            image_mask = image_mask.to(f"cuda:{self.device}").contiguous()
+        if backbone_attention_mask is not None:
+            backbone_attention_mask = backbone_attention_mask.to(
+                f"cuda:{self.device}").contiguous()
+
+        self.context.set_input_shape("sa_embs", sa_embs.shape)
+        self.context.set_input_shape("vl_embs", vl_embs.shape)
+        self.context.set_input_shape("timestep", timestep.shape)
+        if image_mask is not None:
+            self.context.set_input_shape("image_mask", image_mask.shape)
+        if backbone_attention_mask is not None:
+            self.context.set_input_shape(
+                "backbone_attention_mask", backbone_attention_mask.shape)
+
+        self.context.set_tensor_address("sa_embs", sa_embs.data_ptr())
+        self.context.set_tensor_address("vl_embs", vl_embs.data_ptr())
+        self.context.set_tensor_address("timestep", timestep.data_ptr())
+        if image_mask is not None:
+            self.context.set_tensor_address(
+                "image_mask", image_mask.data_ptr())
+        if backbone_attention_mask is not None:
+            self.context.set_tensor_address(
+                "backbone_attention_mask", backbone_attention_mask.data_ptr()
+            )
+
+        # Output in BF16 (matches ONNX export and engine precision)
+        output_shape = self.context.get_tensor_shape("output")
+        output = torch.empty(
+            tuple(output_shape), dtype=torch.bfloat16, device=f"cuda:{self.device}"
+        )
+        self.context.set_tensor_address("output", output.data_ptr())
+
+        success = self.context.execute_async_v3(
+            torch.cuda.current_stream().cuda_stream)
+        if not success:
+            raise RuntimeError("TensorRT inference failed")
+
+        return output
+
+
+def replace_dit_with_tensorrt(policy: Gr00tPolicy | Any, trt_engine_path: str, device: int = 0):
+    """Replace the DiT forward method with TensorRT inference."""
+    trt_dit = TensorRTDiTWrapper(trt_engine_path, device=device)
+
+    def trt_forward(
+        hidden_states,
+        encoder_hidden_states,
+        timestep,
+        encoder_attention_mask=None,
+        return_all_hidden_states=False,
+        image_mask=None,
+        backbone_attention_mask=None,
+    ):
+        """
+        TensorRT wrapper matching DiT forward signature.
+
+        Maps DiT parameter names to ONNX export names:
+        - hidden_states -> sa_embs
+        - encoder_hidden_states -> vl_embs
+        - timestep -> timestep
+        - image_mask, backbone_attention_mask passed through
+        """
+        output = trt_dit(
+            sa_embs=hidden_states,
+            vl_embs=encoder_hidden_states,
+            timestep=timestep,
+            image_mask=image_mask,
+            backbone_attention_mask=backbone_attention_mask,
+        )
+
+        # DiT returns (output, all_hidden_states) when return_all_hidden_states=True
+        if return_all_hidden_states:
+            # TensorRT only returns the final output, not intermediate states
+            # For inference, we don't need intermediate states, so raise
+            # as this seems invalid config for inference
+            raise RuntimeError(
+                "TensorRT only returns the final output. Check inference config")
+        else:
+            return output
+
+    policy.model.action_head.model.forward = trt_forward
+    logging.info(" DiT replaced with TensorRT engine")
+
+
 ###############################################################################
 # TENSORRT Module Wrappers End
 ###############################################################################
@@ -112,7 +241,8 @@ def plot_trajectory_results(
         return
 
     # Always plot and save
-    fig, axes = plt.subplots(nrows=num_plots, ncols=1, figsize=(8, 4 * num_plots))
+    fig, axes = plt.subplots(nrows=num_plots, ncols=1,
+                             figsize=(8, 4 * num_plots))
 
     # Handle case where there's only one subplot
     if num_plots == 1:
@@ -132,7 +262,8 @@ def plot_trajectory_results(
         # only when the robot uses actions directly as joint commands.
         # Therefore, do not plot them if this is not the case.
         if state_joints_across_time.shape == gt_action_across_time.shape:
-            ax.plot(state_joints_across_time[:, action_idx], label="state joints")
+            ax.plot(state_joints_across_time[:,
+                    action_idx], label="state joints")
         ax.plot(gt_action_across_time[:, action_idx], label="gt action")
         ax.plot(pred_action_across_time[:, action_idx], label="pred action")
 
@@ -160,7 +291,7 @@ def plot_trajectory_results(
     plt.close()  # Close the figure to free memory
 
 
-def parse_observation_pi05(
+def parse_observation_gr00t(
     obs: dict[str, Any], modality_configs: dict[str, Any]
 ) -> dict[str, Any]:
     new_obs = {}
@@ -180,7 +311,7 @@ def parse_observation_pi05(
     return new_obs
 
 
-def parse_action_pi05(action: dict[str, Any]) -> dict[str, Any]:
+def parse_action_gr00t(action: dict[str, Any]) -> dict[str, Any]:
     # Unbatch and add prefix
     return {f"action.{key}": action[key][0] for key in action}
 
@@ -208,7 +339,8 @@ def prepare_observation_data(
         Parsed observation ready for inference
     """
     # Extract step data from trajectory
-    data_point = extract_step_data(traj, step_count, modality_configs, embodiment_tag)
+    data_point = extract_step_data(
+        traj, step_count, modality_configs, embodiment_tag)
 
     # Build observation dictionary
     obs = {}
@@ -283,8 +415,10 @@ def run_single_trajectory(
     # Inference loop with async prefetching
     num_inference_steps = len(range(0, actual_steps, action_horizon))
     logging.info(f"\nRunning {num_inference_steps} inference steps...")
-    logging.info(f"(Skipping first {skip_timing_steps} step(s) for timing statistics)")
-    logging.info("Using async prefetching: preparing step i+1 while GPU processes step i")
+    logging.info(
+        f"(Skipping first {skip_timing_steps} step(s) for timing statistics)")
+    logging.info(
+        "Using async prefetching: preparing step i+1 while GPU processes step i")
     logging.info("-" * 80)
 
     # Create thread pool for async data preparation (single worker is sufficient)
@@ -342,7 +476,8 @@ def run_single_trajectory(
             # the np.atleast_1d is to ensure the action is a 1D array, handle where single value is returned
             concat_pred_action = np.concatenate(
                 [
-                    np.atleast_1d(np.atleast_1d(action_chunk[f"action.{key}"])[j])
+                    np.atleast_1d(np.atleast_1d(
+                        action_chunk[f"action.{key}"])[j])
                     for key in action_keys
                 ],
                 axis=0,
@@ -353,7 +488,8 @@ def run_single_trajectory(
     executor.shutdown(wait=True)
 
     logging.info("\n" + "-" * 80)
-    logging.info(f"All inference steps completed for current trajectory-id {traj_id}")
+    logging.info(
+        f"All inference steps completed for current trajectory-id {traj_id}")
 
     obs = []
     for key in parsed_obs.keys():
@@ -399,7 +535,8 @@ def evaluate_predictions(
         return np.concatenate([np_dict[column] for column in columns], axis=-1)
 
     # plot the joints
-    state_joints_across_time = extract_state_joints(traj, [f"state.{key}" for key in state_keys])
+    state_joints_across_time = extract_state_joints(
+        traj, [f"state.{key}" for key in state_keys])
     gt_action_across_time = extract_state_joints(traj, [f"action.{key}" for key in action_keys])[
         :actual_steps
     ]
@@ -437,6 +574,8 @@ def evaluate_predictions(
 @dataclass
 class ArgsConfig:
     """Configuration for evaluating a policy."""
+    config_name: str = "pi05_libero"
+    """Config name to use."""
 
     host: str = "127.0.0.1"
     """Host to connect to."""
@@ -453,7 +592,8 @@ class ArgsConfig:
     action_horizon: int = 16
     """Action horizon to evaluate."""
 
-    video_backend: Literal["decord", "torchvision_av", "torchcodec"] = "torchcodec"
+    video_backend: Literal["decord",
+                           "torchvision_av", "torchcodec"] = "torchcodec"
     """Video backend to use for various codec options. h264: decord or av: torchvision_av"""
 
     dataset_path: str = "demo_data/robot_sim.PickNPlace/"
@@ -468,10 +608,10 @@ class ArgsConfig:
     inference_mode: Literal["pytorch", "tensorrt"] = "pytorch"
     """Inference mode: 'pytorch' (default) or 'tensorrt'."""
 
-    trt_engine_path: str = "./groot_n1d6_onnx/dit_model_bf16.trt"
+    trt_engine_path: str = "./pi05/expert.trt"
     """Path to TensorRT engine file (.trt). Used only when inference_mode='tensorrt'."""
 
-    denoising_steps: int = 4
+    denoising_steps: int = 10
     """Number of denoising steps to use."""
 
     save_plot_path: str | None = None
@@ -518,13 +658,15 @@ def main(args: ArgsConfig):
         if match:
             try:
                 global_step = int(match.group(1))
-                logging.info(f"Extracted global_step {global_step} from checkpoint path")
+                logging.info(
+                    f"Extracted global_step {global_step} from checkpoint path")
             except ValueError:
                 logging.warning(
                     f"Could not parse step number from checkpoint path: {local_model_path}"
                 )
         else:
-            logging.warning(f"Could not find checkpoint-<step> pattern in path: {local_model_path}")
+            logging.warning(
+                f"Could not find checkpoint-<step> pattern in path: {local_model_path}")
 
     # Model loading
     logging.info("\n" + "=" * 80)
@@ -533,23 +675,24 @@ def main(args: ArgsConfig):
     model_load_start = time.time()
 
     if local_model_path is not None:
-        policy = create_tensorrt_policy(
-            embodiment_tag=args.embodiment_tag,
-            model_path=local_model_path,
-            engine_path=args.trt_engine_path,
-            device="cuda" if torch.cuda.is_available() else "cpu",
-        )
+        config = _config.get_config(args.config_name)
+        checkpoint_dir = download.maybe_download(
+            "gs://openpi-assets/checkpoints/pi0_fast_droid")
+
+        # Create a trained policy.
+        policy = policy_config.create_trained_policy(config, checkpoint_dir)
 
         # Apply inference mode: TensorRT or PyTorch
         if args.inference_mode == "tensorrt":
-            logging.info(f"Replacing DiT with TensorRT engine: {args.trt_engine_path}")
+            from model_optimizer.infer.tensorrt.pi05_executor import Pi05TensorRTExecutor
+            executor = Pi05TensorRTExecutor(policy)
+            executor.load_model()
             logging.info(" TensorRT mode enabled")
         else:
-            # PyTorch mode with torch.compile
-            policy.model.action_head.model.forward = torch.compile(
-                policy.model.action_head.model.forward, mode="max-autotune"
-            )
-            logging.info(" PyTorch mode enabled with torch.compile")
+            from model_optimizer.infer.pytorch.pi05_executor import Pi05PyTorchExecutor
+            executor = Pi05PyTorchExecutor(policy)
+            executor.load_model()
+            logging.info(" PyTorch mode enabled")
 
         if torch.cuda.is_available():
             torch.backends.cudnn.benchmark = True
@@ -576,7 +719,8 @@ def main(args: ArgsConfig):
     )
 
     dataset_load_time = time.time() - dataset_load_start
-    logging.info(f"Dataset loader creation time: {dataset_load_time:.4f} seconds")
+    logging.info(
+        f"Dataset loader creation time: {dataset_load_time:.4f} seconds")
 
     logging.info(f"Dataset length: {len(dataset)}")
     logging.info(f"Running evaluation on trajectories: {args.traj_ids}")
@@ -593,7 +737,8 @@ def main(args: ArgsConfig):
 
     for traj_id in args.traj_ids:
         if traj_id >= len(dataset):
-            logging.warning(f"Trajectory ID {traj_id} is out of range. Skipping.")
+            logging.warning(
+                f"Trajectory ID {traj_id} is out of range. Skipping.")
             continue
 
         logging.info(f"Running trajectory: {traj_id}")
@@ -654,18 +799,24 @@ def main(args: ArgsConfig):
         logging.info("=" * 80)
         logging.info("\nInitialization:")
         logging.info(f"  Model loading time:          {model_load_time:.4f}s")
-        logging.info(f"  Dataset loader creation:     {dataset_load_time:.4f}s")
+        logging.info(
+            f"  Dataset loader creation:     {dataset_load_time:.4f}s")
 
         if all_timings:
             # Aggregate timing statistics
-            total_episode_load = sum(t["episode_load_time"] for t in all_timings)
-            total_data_prep = sum(sum(t["data_prep_times"]) for t in all_timings)
-            total_inference = sum(sum(t["inference_times"]) for t in all_timings)
+            total_episode_load = sum(t["episode_load_time"]
+                                     for t in all_timings)
+            total_data_prep = sum(sum(t["data_prep_times"])
+                                  for t in all_timings)
+            total_inference = sum(sum(t["inference_times"])
+                                  for t in all_timings)
 
             # Count total inference steps
-            total_inference_steps = sum(len(t["inference_times"]) for t in all_timings)
+            total_inference_steps = sum(
+                len(t["inference_times"]) for t in all_timings)
 
-            logging.info(f"\nPer-Trajectory Timings ({len(all_timings)} trajectories):")
+            logging.info(
+                f"\nPer-Trajectory Timings ({len(all_timings)} trajectories):")
             logging.info(
                 f"  Total episode loading:       {total_episode_load:.4f}s  (avg: {total_episode_load / len(all_timings):.4f}s)"
             )
@@ -677,16 +828,21 @@ def main(args: ArgsConfig):
             )
 
             logging.info("\nInference Statistics:")
-            logging.info(f"  Total inference steps:       {total_inference_steps}")
+            logging.info(
+                f"  Total inference steps:       {total_inference_steps}")
             logging.info(
                 f"  Avg inference time per step: {total_inference / total_inference_steps:.4f}s"
             )
 
             # Collect all inference times for min/max/p90
-            all_inf_times = [t for timing in all_timings for t in timing["inference_times"]]
-            logging.info(f"  Min inference time:          {min(all_inf_times):.4f}s")
-            logging.info(f"  Max inference time:          {max(all_inf_times):.4f}s")
-            logging.info(f"  P90 inference time:          {np.percentile(all_inf_times, 90):.4f}s")
+            all_inf_times = [
+                t for timing in all_timings for t in timing["inference_times"]]
+            logging.info(
+                f"  Min inference time:          {min(all_inf_times):.4f}s")
+            logging.info(
+                f"  Max inference time:          {max(all_inf_times):.4f}s")
+            logging.info(
+                f"  P90 inference time:          {np.percentile(all_inf_times, 90):.4f}s")
 
     logging.info("=" * 80)
     logging.info("Done")
