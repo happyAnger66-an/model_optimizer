@@ -10,6 +10,7 @@ ml_collections==1.0.0
 sentencepiece
 tqdm_loggable
 numpydantic>=1.6.6
-lerobot
+lerobot==0.3.3
+datasets==3.0
 av>=15.0.0,<16.0.0
 gcsfs

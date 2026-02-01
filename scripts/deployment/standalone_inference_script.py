@@ -10,7 +10,6 @@ import time
 from typing import Any, Literal
 import warnings
 
-from model_optimizer.models.pi05 import Pi05Model
 # from gr00t.data.dataset.lerobot_episode_loader import LeRobotEpisodeLoader
 # from gr00t.data.dataset.sharded_single_step_dataset import extract_step_data
 # from gr00t.data.embodiment_tags import EmbodimentTag
@@ -81,6 +80,7 @@ def set_seed(seed: int = 0):
 
     # PyTorch requires this to be set for some CUDA kernels
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
 
 def plot_trajectory_results(
     state_joints_across_time: np.ndarray,
@@ -525,23 +525,7 @@ def main(args: ArgsConfig):
     local_model_path = args.model_path
 
     # Extract global_step and checkpoint directory name from checkpoint path
-    global_step = None
     assert local_model_path is not None, "Provide valid model_path for inference"
-    if local_model_path:
-        # Search for pattern "checkpoint-{number}" anywhere in the path
-        match = re.search(r"checkpoint-(\d+)", local_model_path)
-        if match:
-            try:
-                global_step = int(match.group(1))
-                logging.info(
-                    f"Extracted global_step {global_step} from checkpoint path")
-            except ValueError:
-                logging.warning(
-                    f"Could not parse step number from checkpoint path: {local_model_path}"
-                )
-        else:
-            logging.warning(
-                f"Could not find checkpoint-<step> pattern in path: {local_model_path}")
 
     # Model loading
     logging.info("\n" + "=" * 80)
@@ -593,7 +577,8 @@ def main(args: ArgsConfig):
     logging.info(
         f"Dataset loader creation time: {dataset_load_time:.4f} seconds")
 
-    logging.info(f"Dataset length: {len(data_loader)}")
+    dataset_len = len(data_loader._data_loader.torch_loader.dataset)
+    logging.info(f"Dataset length: {len(dataset_len)}")
     logging.info(f"Running evaluation on trajectories: {args.traj_ids}")
 
     # Evaluation loop
@@ -607,7 +592,7 @@ def main(args: ArgsConfig):
     pred_actions = []
 
     for traj_id in args.traj_ids:
-        if traj_id >= len(data_loader):
+        if traj_id >= dataset_len:
             logging.warning(
                 f"Trajectory ID {traj_id} is out of range. Skipping.")
             continue
