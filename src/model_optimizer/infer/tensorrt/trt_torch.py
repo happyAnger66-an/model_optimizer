@@ -20,6 +20,7 @@ import os
 import tensorrt as trt
 import torch
 
+from transformers.modeling_outputs import BaseModelOutputWithPooling
 
 def torch_type(trt_type):
     mapping = {
@@ -110,7 +111,7 @@ class Engine(object):
             assert runtime_shape == x.shape, f"Invalid input shape: {runtime_shape} != {x.shape}"
             assert (
                 dtype == x.dtype
-            ), f"Invalid tensor dtype, excepted dtype is {dtype}, but got {x.dtype}"
+            ), f"Invalid tensor dtype {name}, excepted dtype is {dtype}, but got {x.dtype}"
             assert x.is_cuda, f"Invalid tensor device, excepted device is cuda, but got {x.device}"
             x = x.cuda().contiguous()
             self.execution_context.set_tensor_address(name, x.data_ptr())
@@ -128,7 +129,7 @@ class Engine(object):
             ), f"Invalid input[{name}] shape: {x.shape}, but the expected shape is: {runtime_shape}"
             assert (
                 dtype == x.dtype
-            ), f"Invalid tensor[{name}] dtype, expected dtype is {dtype}, but got {x.dtype}"
+            ), f"Invalid tensor {name} dtype, expected dtype is {dtype}, but got {x.dtype}"
             assert (
                 x.is_cuda
             ), f"Invalid tensor[{name}] device, expected device is cuda, but got {x.device}"
@@ -145,6 +146,7 @@ class Engine(object):
             self.execution_context.set_tensor_address(name, output_tensor.data_ptr())
             reference_tensors.append(output_tensor)
 
+#        import pdb; pdb.set_trace()
         self.execution_context.execute_async_v3(stream.cuda_stream)
         stream.synchronize()
         assert len(reference_tensors) == len(self.in_meta) + len(
@@ -152,11 +154,17 @@ class Engine(object):
         ), f"Invalid input tensors. The expected I/O tensors are {len(self.in_meta) + len(self.out_meta)}, but got {len(reference_tensors)}"
 
         if return_list:
+            print(f"return_list: {return_list}")
             return [
                 reference_tensors[len(self.in_meta) + i] for i, item in enumerate(self.out_meta)
             ]
         else:
-            return {
-                item[0]: reference_tensors[len(self.in_meta) + i]
-                for i, item in enumerate(self.out_meta)
-            }
+            output = BaseModelOutputWithPooling(
+                last_hidden_state=reference_tensors[len(self.in_meta)]
+            )
+            print(f"output: {output}")
+            return output
+            #return {
+            #    item[0]: reference_tensors[len(self.in_meta) + i]
+            #    for i, item in enumerate(self.out_meta)
+            #}

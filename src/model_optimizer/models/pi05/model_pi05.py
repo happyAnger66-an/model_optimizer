@@ -16,17 +16,18 @@ from model_optimizer.infer.tensorrt.trt_torch import Engine
 
 
 class Pi05Model(Model):
-    def __init__(self, model_name, model_path, pi05_model=None):
+    def __init__(self, model_name, model_path=None, pi05_model=None):
+        if model_path is None:
+            self.pi05_model = model_name._model
+            self.embedding_layer = None
+            return
+
         super().__init__(model_name, model_path)
         self.pi05_model = pi05_model
         self.embedding_layer = None
         print(colored(f"Start Pi05Model load...", "green"))
         self.load()
         print(colored(f"Pi05Model load done.", "green"))
-
-    def __init__(self, policy):
-        self.pi05_model = policy._model
-        self.embedding_layer = None
 
     def __getattr__(self, name):
         return getattr(self.pi05_model, name)

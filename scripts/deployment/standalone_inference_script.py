@@ -9,7 +9,6 @@ import re
 import time
 from typing import Any, Literal
 import warnings
-
 # from gr00t.data.dataset.lerobot_episode_loader import LeRobotEpisodeLoader
 # from gr00t.data.dataset.sharded_single_step_dataset import extract_step_data
 # from gr00t.data.embodiment_tags import EmbodimentTag
@@ -28,6 +27,7 @@ import pandas as pd
 import torch
 import tyro
 
+from termcolor import colored
 
 warnings.simplefilter("ignore", category=FutureWarning)
 
@@ -82,154 +82,9 @@ def set_seed(seed: int = 0):
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 
-def plot_trajectory_results(
-    state_joints_across_time: np.ndarray,
-    gt_action_across_time: np.ndarray,
-    pred_action_across_time: np.ndarray,
-    traj_id: int,
-    state_keys: list[str],
-    action_keys: list[str],
-    action_horizon: int,
-    save_plot_path: str,
-) -> None:
-    """
-    Plot and save trajectory results comparing ground truth and predicted actions.
-
-    Args:
-        state_joints_across_time: Array of state joints over time
-        gt_action_across_time: Ground truth actions over time
-        pred_action_across_time: Predicted actions over time
-        traj_id: Trajectory ID
-        state_keys: List of state modality keys
-        action_keys: List of action modality keys
-        action_horizon: Action horizon used for inference
-        save_plot_path: Path to save the plot
-    """
-    actual_steps = len(gt_action_across_time)
-    action_dim = gt_action_across_time.shape[1]
-
-    indices_to_plot = list(range(action_dim))
-
-    num_plots = len(indices_to_plot)
-    if num_plots == 0:
-        logging.warning("No valid indices to plot")
-        return
-
-    # Always plot and save
-    fig, axes = plt.subplots(nrows=num_plots, ncols=1,
-                             figsize=(8, 4 * num_plots))
-
-    # Handle case where there's only one subplot
-    if num_plots == 1:
-        axes = [axes]
-
-    # Add a global title showing the modality keys
-    fig.suptitle(
-        f"Trajectory {traj_id} - State: {', '.join(state_keys)} | Action: {', '.join(action_keys)}",
-        fontsize=16,
-        color="blue",
-    )
-
-    for plot_idx, action_idx in enumerate(indices_to_plot):
-        ax = axes[plot_idx]
-
-        # The dimensions of state_joints and action are the same
-        # only when the robot uses actions directly as joint commands.
-        # Therefore, do not plot them if this is not the case.
-        if state_joints_across_time.shape == gt_action_across_time.shape:
-            ax.plot(state_joints_across_time[:,
-                    action_idx], label="state joints")
-        ax.plot(gt_action_across_time[:, action_idx], label="gt action")
-        ax.plot(pred_action_across_time[:, action_idx], label="pred action")
-
-        # put a dot every ACTION_HORIZON
-        for j in range(0, actual_steps, action_horizon):
-            if j == 0:
-                ax.plot(
-                    j,
-                    gt_action_across_time[j, action_idx],
-                    "ro",
-                    label="inference point",
-                )
-            else:
-                ax.plot(j, gt_action_across_time[j, action_idx], "ro")
-
-        ax.set_title(f"Action {action_idx}")
-        ax.legend()
-
-    plt.tight_layout()
-
-    # Create filename with trajectory ID
-    Path(save_plot_path).parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(save_plot_path)
-
-    plt.close()  # Close the figure to free memory
-
-
-def parse_observation(
-    obs: dict[str, Any], modality_configs: dict[str, Any]
-) -> dict[str, Any]:
-    new_obs = {}
-    for modality in ["video", "state", "language"]:
-        new_obs[modality] = {}
-        for key in modality_configs[modality].modality_keys:
-            if modality == "language":
-                parsed_key = key
-            else:
-                parsed_key = f"{modality}.{key}"
-            arr = obs[parsed_key]
-            # Add batch dimension
-            if isinstance(arr, str):
-                new_obs[modality][key] = [[arr]]
-            else:
-                new_obs[modality][key] = arr[None, :]
-    return new_obs
-
-
 def parse_action(action: dict[str, Any]) -> dict[str, Any]:
     # Unbatch and add prefix
     return {f"action.{key}": action[key][0] for key in action}
-
-
-def prepare_observation_data(
-    traj: pd.DataFrame,
-    step_count: int,
-    modality_configs: dict[str, Any],
-    embodiment_tag,
-    loader: DataLoader,
-) -> dict[str, Any]:
-    """
-    Prepare observation data for inference (CPU-only operations).
-
-    This function is designed to run asynchronously on CPU while GPU performs inference.
-
-    Args:
-        traj: Trajectory data
-        step_count: Current step in trajectory
-        modality_configs: Modality configuration
-        embodiment_tag: Embodiment tag
-        loader: Data loader with modality configs
-
-    Returns:
-        Parsed observation ready for inference
-    """
-    # Extract step data from trajectory
-    data_point = extract_step_data(
-        traj, step_count, modality_configs, embodiment_tag)
-
-    # Build observation dictionary
-    obs = {}
-    for k, v in data_point.states.items():
-        obs[f"state.{k}"] = v  # (T, D)
-    for k, v in data_point.images.items():
-        obs[f"video.{k}"] = np.array(v)  # (T, H, W, C)
-    for language_key in loader.modality_configs["language"].modality_keys:
-        obs[language_key] = data_point.text
-
-    # Parse observation to expected format
-    parsed_obs = parse_observation_gr00t(obs, loader.modality_configs)
-
-    return parsed_obs
 
 
 def run_single_trajectory(
@@ -260,190 +115,44 @@ def run_single_trajectory(
     logging.info(f"=== Running Trajectory {traj_id} ===")
     logging.info("=" * 80)
 
-    # Timing accumulators
-    timing_dict = {
-        "episode_load_time": 0.0,
-        "data_prep_times": [],
-        "inference_times": [],
-    }
+    i = 0
+    # for data in loader:
+    #    i += 1
+    #    if i > 10:
+    #        break
 
-    # Load episode
-    episode_load_start = time.time()
-    traj = loader[traj_id]
-    timing_dict["episode_load_time"] = time.time() - episode_load_start
+    # Inference timing (GPU processing - CPU prepares next step in parallel)
+    #    obs, action = data
+#        inputs_data = obs.to_dict()
+    #    input_datas = {
+    #        "observation/image": obs.images["base_0_rgb"].squeeze(0),
+    #        "observation/wrist_image": obs.images["left_wrist_0_rgb"].squeeze(0),
+    #        "observation/state": obs.state.squeeze(0)[0:8],
+    #        "prompt": obs.tokenized_prompt.squeeze(0),
+    #        "tokenized_prompt": obs.tokenized_prompt.squeeze(0),
+    #        "tokenized_prompt_mask": obs.tokenized_prompt_mask.squeeze(0),
+    #    }
 
-    traj_length = len(traj)
-    actual_steps = min(steps, traj_length)
-    logging.info(
-        f"Using {actual_steps} steps (requested: {steps}, trajectory length: {traj_length})"
-    )
-
-    pred_action_across_time = []
-
-    # Extract state and action keys separately and sort for consistent order
-    state_keys = loader.modality_configs["state"].modality_keys
-    action_keys = loader.modality_configs["action"].modality_keys
-
-    modality_configs = deepcopy(loader.modality_configs)
-    modality_configs.pop("action")
-
-    # Inference loop with async prefetching
-    num_inference_steps = len(range(0, actual_steps, action_horizon))
-    logging.info(f"\nRunning {num_inference_steps} inference steps...")
-    logging.info(
-        f"(Skipping first {skip_timing_steps} step(s) for timing statistics)")
-    logging.info(
-        "Using async prefetching: preparing step i+1 while GPU processes step i")
-    logging.info("-" * 80)
-
-    # Create thread pool for async data preparation (single worker is sufficient)
-    executor = ThreadPoolExecutor(max_workers=1)
-
-    # List of step counts to process
-    step_counts = list(range(0, actual_steps, action_horizon))
-
-    # Prefetch first observation
-    future_obs = executor.submit(
-        prepare_observation_data,
-        traj,
-        step_counts[0],
-        modality_configs,
-        embodiment_tag,
-        loader,
-    )
-
-    for step_idx, step_count in enumerate(step_counts):
-        logging.info(
-            f"\n[Step {step_idx + 1}/{num_inference_steps}] Processing timestep {step_count}"
-        )
-
-        # Wait for data preparation to complete (should be ready from prefetch)
-        data_prep_start = time.time()
-        parsed_obs = future_obs.result()  # Blocks until ready
-        data_prep_time = time.time() - data_prep_start
-
-        # Prefetch NEXT observation while GPU runs inference on current one
-        if step_idx + 1 < len(step_counts):
-            next_step_count = step_counts[step_idx + 1]
-            future_obs = executor.submit(
-                prepare_observation_data,
-                traj,
-                next_step_count,
-                modality_configs,
-                embodiment_tag,
-                loader,
-            )
-
-        # Inference timing (GPU processing - CPU prepares next step in parallel)
+    from openpi.policies.libero_policy import make_libero_example
+    for i in range(10):
+      #      "observation/action": inputs_data["action"],
+      #      "observation/image": inputs_data["image"]["base_0_rgb"],
+      #      "observation/wrist_image": inputs_data["image"]["left_wrist_0_rgb"],
+      #      "prompt": inputs_data["tokenized_prompt"],
+      #  }
+        obs = make_libero_example()
+    #    obs = {
+    #        "observation/state": np.random.rand(8),
+    #        "observation/image": np.random.randn(224, 224, 3).astype(np.float16),
+    #        "observation/wrist_image": np.random.randn(224, 224, 3).astype(np.float16),
+    #        "prompt": "do something",
+    #    }
         inference_start = time.time()
-        _action_chunk, _ = policy.get_action(parsed_obs)
+    #    import pdb; pdb.set_trace()
+        _action_chunk, _ = policy.infer(obs)
         inference_time = time.time() - inference_start
-
-        # Only record timing after skipping the first N steps (warmup)
-        if step_idx >= skip_timing_steps:
-            timing_dict["data_prep_times"].append(data_prep_time)
-            timing_dict["inference_times"].append(inference_time)
-
-        # Action processing
-        action_chunk = parse_action_gr00t(_action_chunk)
-        for j in range(action_horizon):
-            # NOTE: concat_pred_action = action[f"action.{modality_keys[0]}"][j]
-            # the np.atleast_1d is to ensure the action is a 1D array, handle where single value is returned
-            concat_pred_action = np.concatenate(
-                [
-                    np.atleast_1d(np.atleast_1d(
-                        action_chunk[f"action.{key}"])[j])
-                    for key in action_keys
-                ],
-                axis=0,
-            )
-            pred_action_across_time.append(concat_pred_action)
-
-    # Clean up thread pool
-    executor.shutdown(wait=True)
-
-    logging.info("\n" + "-" * 80)
-    logging.info(
-        f"All inference steps completed for current trajectory-id {traj_id}")
-
-    obs = []
-    for key in parsed_obs.keys():
-        vals = []
-        if isinstance(parsed_obs[key], np.ndarray):
-            vals.append(parsed_obs[key])
-        elif isinstance(parsed_obs[key], list):
-            vals.append(np.array(parsed_obs[key]))
-        elif isinstance(parsed_obs[key], dict):
-            for k in parsed_obs[key].keys():
-                vals.append(np.array(parsed_obs[key][k]))
-
-        for val in vals:
-            if np.issubdtype(val.dtype, np.number):
-                obs.append(val.flatten())
-    obs = np.concatenate(obs, axis=-1)
-
-    return (
-        state_keys,
-        action_keys,
-        np.array(pred_action_across_time),
-        traj,
-        actual_steps,
-        timing_dict,
-        obs,
-    )
-
-
-def evaluate_predictions(
-    state_keys,
-    action_keys,
-    pred_action_across_time,
-    traj,
-    traj_id,
-    actual_steps,
-    action_horizon,
-    save_plot_path=None,
-):
-    def extract_state_joints(traj: pd.DataFrame, columns: list[str]):
-        np_dict = {}
-        for column in columns:
-            np_dict[column] = np.vstack([arr for arr in traj[column]])
-        return np.concatenate([np_dict[column] for column in columns], axis=-1)
-
-    # plot the joints
-    state_joints_across_time = extract_state_joints(
-        traj, [f"state.{key}" for key in state_keys])
-    gt_action_across_time = extract_state_joints(traj, [f"action.{key}" for key in action_keys])[
-        :actual_steps
-    ]
-    pred_action_across_time = np.array(pred_action_across_time)[:actual_steps]
-    assert gt_action_across_time.shape == pred_action_across_time.shape, (
-        f"gt_action: {gt_action_across_time.shape}, pred_action: {pred_action_across_time.shape}"
-    )
-
-    # calc MSE and MAE across time
-    mse = np.mean((gt_action_across_time - pred_action_across_time) ** 2)
-    mae = np.mean(np.abs(gt_action_across_time - pred_action_across_time))
-
-    logging.info(f"Unnormalized Action MSE across single traj: {mse}")
-    logging.info(f"Unnormalized Action MAE across single traj: {mae}")
-
-    logging.info(f"state_joints vs time {state_joints_across_time.shape}")
-    logging.info(f"gt_action_joints vs time {gt_action_across_time.shape}")
-    logging.info(f"pred_action_joints vs time {pred_action_across_time.shape}")
-
-    # Plot trajectory results
-    plot_trajectory_results(
-        state_joints_across_time=state_joints_across_time,
-        gt_action_across_time=gt_action_across_time,
-        pred_action_across_time=pred_action_across_time,
-        traj_id=traj_id,
-        state_keys=state_keys,
-        action_keys=action_keys,
-        action_horizon=action_horizon,
-        save_plot_path=save_plot_path or f"/tmp/stand_alone_inference/traj_{traj_id}.jpeg",
-    )
-
-    return mse, mae
+        print(
+            colored(f"Inference time: {inference_time:.4f} seconds", "green"))
 
 
 @dataclass
@@ -485,6 +194,15 @@ class ArgsConfig:
 
     trt_engine_path: str = "./pi05/expert.trt"
     """Path to TensorRT engine file (.trt). Used only when inference_mode='tensorrt'."""
+
+    vit_engine: str = "vit.engine"
+    """Path to TensorRT vision engine file (.trt). Used only when inference_mode='tensorrt'."""
+
+    llm_engine: str = "llm.engine"
+    """Path to TensorRT language model engine file (.trt). Used only when inference_mode='tensorrt'."""
+
+    expert_engine: str = "expert.engine"
+    """Path to TensorRT expert engine file (.trt). Used only when inference_mode='tensorrt'."""
 
     denoising_steps: int = 10
     """Number of denoising steps to use."""
@@ -544,11 +262,20 @@ def main(args: ArgsConfig):
         # Apply inference mode: TensorRT or PyTorch
         if args.inference_mode == "tensorrt":
             from model_optimizer.infer.tensorrt.pi05_executor import Pi05TensorRTExecutor
+            print(colored(" TensorRT mode enabled", "yellow"))
             executor = Pi05TensorRTExecutor(policy)
-            executor.load_model()
+            config = {
+                "vit_engine": args.vit_engine,
+                "engine_path": args.trt_engine_path,
+            }
+            import addict
+            config = addict.Dict(config)
+#            import pdb; pdb.set_trace()
+            executor.load_model(config)
             logging.info(" TensorRT mode enabled")
         else:
             from model_optimizer.infer.pytorch.pi05_executor import Pi05PyTorchExecutor
+            print(colored(" PyTorch mode enabled", "yellow"))
             executor = Pi05PyTorchExecutor(policy)
             executor.load_model()
             logging.info(" PyTorch mode enabled")
@@ -566,20 +293,23 @@ def main(args: ArgsConfig):
     logging.info("=" * 80)
     dataset_load_start = time.time()
 
-    config = dataclasses.replace(config, batch_size=1)
-    data_loader = _data_loader.create_data_loader(
-        config,
-        # Skip since we may not have the data available.
-        skip_norm_stats=True,
-        num_batches=2,
-        shuffle=True,)
-    dataset_load_time = time.time() - dataset_load_start
-    logging.info(
-        f"Dataset loader creation time: {dataset_load_time:.4f} seconds")
+    # config = dataclasses.replace(config, batch_size=1)
+    # data_loader = _data_loader.create_data_loader(
+    #    config,
+    #    # Skip since we may not have the data available.
+    #    skip_norm_stats=True,
+    #    num_batches=2,
+    #    shuffle=True,
+    #    framework='pytorch')
+    # dataset_load_time = time.time() - dataset_load_start
+    # logging.info(
+    #    f"Dataset loader creation time: {dataset_load_time:.4f} seconds")
 
-    dataset_len = len(data_loader._data_loader.torch_loader.dataset)
-    logging.info(f"Dataset length: {dataset_len}")
-    logging.info(f"Running evaluation on trajectories: {args.traj_ids}")
+    # dataset = data_loader._data_loader.torch_loader.dataset
+    # dataset_len = len(dataset)
+    # print(colored(f"Dataset length: {dataset_len}", "green"))
+    # logging.info(f"Dataset length: {dataset_len}")
+    # logging.info(f"Running evaluation on trajectories: {args.traj_ids}")
 
     # Evaluation loop
     logging.info("\n" + "=" * 80)
@@ -591,118 +321,17 @@ def main(args: ArgsConfig):
     all_timings = []
     pred_actions = []
 
-    for traj_id in args.traj_ids:
-        if traj_id >= dataset_len:
-            logging.warning(
-                f"Trajectory ID {traj_id} is out of range. Skipping.")
-            continue
+    run_single_trajectory(
+        policy,
+        None,
+        0,
+        args.embodiment_tag,
+        steps=args.steps,
+        action_horizon=args.action_horizon,
+        skip_timing_steps=args.skip_timing_steps,
+    )
 
-        logging.info(f"Running trajectory: {traj_id}")
-        (
-            state_keys,
-            action_keys,
-            pred_action_across_time,
-            traj,
-            actual_steps,
-            timing_dict,
-            obs,
-        ) = run_single_trajectory(
-            policy,
-            data_loader,
-            traj_id,
-            args.embodiment_tag,
-            steps=args.steps,
-            action_horizon=args.action_horizon,
-            skip_timing_steps=args.skip_timing_steps,
-        )
-        pred_actions.append(pred_action_across_time)
-
-        if args.get_performance_stats:
-            mse, mae = evaluate_predictions(
-                state_keys,
-                action_keys,
-                pred_action_across_time,
-                traj,
-                traj_id,
-                actual_steps,
-                args.action_horizon,
-                save_plot_path=None,
-            )
-
-            logging.info(f"MSE for trajectory {traj_id}: {mse}, MAE: {mae}")
-            all_mse.append(mse)
-            all_mae.append(mae)
-            all_timings.append(timing_dict)
-
-    if args.get_performance_stats:
-        # Final performance summary
-        logging.info("\n" + "=" * 80)
-        logging.info("=== EVALUATION SUMMARY ===")
-        logging.info("=" * 80)
-
-        if all_mse:
-            avg_mse = np.mean(np.array(all_mse))
-            avg_mae = np.mean(np.array(all_mae))
-            logging.info("\nMetrics:")
-            logging.info(f"  Average MSE across all trajs: {avg_mse:.6f}")
-            logging.info(f"  Average MAE across all trajs: {avg_mae:.6f}")
-        else:
-            logging.info("No valid trajectories were evaluated.")
-
-        # Detailed timing summary
-        logging.info("\n" + "=" * 80)
-        logging.info("=== DETAILED TIMING SUMMARY ===")
-        logging.info("=" * 80)
-        logging.info("\nInitialization:")
-        logging.info(f"  Model loading time:          {model_load_time:.4f}s")
-        logging.info(
-            f"  Dataset loader creation:     {dataset_load_time:.4f}s")
-
-        if all_timings:
-            # Aggregate timing statistics
-            total_episode_load = sum(t["episode_load_time"]
-                                     for t in all_timings)
-            total_data_prep = sum(sum(t["data_prep_times"])
-                                  for t in all_timings)
-            total_inference = sum(sum(t["inference_times"])
-                                  for t in all_timings)
-
-            # Count total inference steps
-            total_inference_steps = sum(
-                len(t["inference_times"]) for t in all_timings)
-
-            logging.info(
-                f"\nPer-Trajectory Timings ({len(all_timings)} trajectories):")
-            logging.info(
-                f"  Total episode loading:       {total_episode_load:.4f}s  (avg: {total_episode_load / len(all_timings):.4f}s)"
-            )
-            logging.info(
-                f"  Total data preparation:      {total_data_prep:.4f}s  (avg: {total_data_prep / total_inference_steps:.4f}s per step)"
-            )
-            logging.info(
-                f"  Total inference:             {total_inference:.4f}s  (avg: {total_inference / total_inference_steps:.4f}s per step)"
-            )
-
-            logging.info("\nInference Statistics:")
-            logging.info(
-                f"  Total inference steps:       {total_inference_steps}")
-            logging.info(
-                f"  Avg inference time per step: {total_inference / total_inference_steps:.4f}s"
-            )
-
-            # Collect all inference times for min/max/p90
-            all_inf_times = [
-                t for timing in all_timings for t in timing["inference_times"]]
-            logging.info(
-                f"  Min inference time:          {min(all_inf_times):.4f}s")
-            logging.info(
-                f"  Max inference time:          {max(all_inf_times):.4f}s")
-            logging.info(
-                f"  P90 inference time:          {np.percentile(all_inf_times, 90):.4f}s")
-
-    logging.info("=" * 80)
-    logging.info("Done")
-    return pred_actions, obs
+    return pred_actions
 
 
 if __name__ == "__main__":

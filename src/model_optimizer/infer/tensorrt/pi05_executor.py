@@ -1,6 +1,7 @@
 import os
 from functools import partial
 
+from termcolor import colored
 import torch
 
 from ..executor import Executor
@@ -12,14 +13,18 @@ from .trt_torch import Engine
 #    self.get_image_features(pixel_values)
 
 class Pi05TensorRTExecutor(Executor):
-    def __init__(self, policy):
+    def __init__(self, policy, config=None):
         super().__init__(policy)
         pi05_model = Pi05Model(policy)
         self.pi05_model = pi05_model.model
+        self.pi05_model.to(torch.float16)
+        self.config = config
+
     def load_model(self, config=None):
         if config is None:
             return
 
+        self.config = config
         self._release_pytorch_model()
         self._setup_trt_engine()
       #  self.pi05_model.paligemma_with_expert.embed_image = partial(
@@ -30,23 +35,40 @@ class Pi05TensorRTExecutor(Executor):
         return getattr(self.policy, name)
 
     def _setup_trt_engine(self):
-        vit_engine = Engine(os.path.join(self.engine_path, "vit.engine"))
-        llm_engine = Engine(os.path.join(self.engine_path, "llm.engine"))
-        self.pi05_model.paligemma_with_expert.paligemma.model.vision_tower = vit_engine
-        self.pi05_model.paligemma_with_expert.paligemma.model.language_model = llm_engine
+        if self.config.engine_path:
+            if self.config.vit_engine:
+                print(
+                    colored(f"replace vision_tower with {self.config.vit_engine}", "green"))
+                vit_engine = Engine(os.path.join(
+                    self.config.engine_path, self.config.vit_engine))
+                self.pi05_model.paligemma_with_expert.paligemma.model.vision_tower = vit_engine
+            if self.config.llm_engine:
+                print(
+                    colored(f"replace language_model with {self.config.llm_engine}", "green"))
+                llm_engine = Engine(os.path.join(
+                    self.config.engine_path, "llm.engine"))
+                self.pi05_model.paligemma_with_expert.paligemma.model.language_model = llm_engine
 
     def _release_pytorch_model(self):
-        if hasattr(self.pi05_model.paligemma_with_expert.paligemma.model, "vision_tower"):
-            del self.pi05_model.paligemma_with_expert.paligemma.model.vision_tower
+        if self.config.vit_engine:
+            print(colored(f"release vision_tower engine", "green"))
+            if hasattr(self.pi05_model.paligemma_with_expert.paligemma.model, "vision_tower"):
+                del self.pi05_model.paligemma_with_expert.paligemma.model.vision_tower
+
+        if self.config.llm_engine:
+            print(colored(f"release language_model engine", "green"))
+            if hasattr(self.pi05_model.paligemma_with_expert.paligemma.model, "language_model"):
+                del self.pi05_model.paligemma_with_expert.paligemma.model.language_model
 
         self.embedding_layer = self.pi05_model.paligemma_with_expert.paligemma.get_input_embeddings()
-        if hasattr(self.pi05_model.paligemma_with_expert.paligemma.model, "language_model"):
-            del self.pi05_model.paligemma_with_expert.paligemma.model.language_model
 
-        if hasattr(self.pi05_model.paligemma_with_expert.gemma_expert, "model"):
-            del self.pi05_model.paligemma_with_expert.gemma_expert.model
-        if hasattr(self.pi05_model.paligemma_with_expert.gemma_expert, "lm_head"):
-            del self.pi05_model.paligemma_with_expert.gemma_expert.lm_head
+        if self.config.expert_engine:
+            print(colored(f"release expert engine", "green"))
+            if hasattr(self.pi05_model.paligemma_with_expert.gemma_expert, "model"):
+                del self.pi05_model.paligemma_with_expert.gemma_expert.model
+
+            if hasattr(self.pi05_model.paligemma_with_expert.gemma_expert, "lm_head"):
+                del self.pi05_model.paligemma_with_expert.gemma_expert.lm_head
         torch.cuda.empty_cache()
 
 

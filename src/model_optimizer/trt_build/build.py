@@ -5,11 +5,13 @@ import time
 
 import tensorrt as trt
 
-
+from termcolor import colored
 # Set up logging
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+print_color = "green"
 
 
 def build_engine(
@@ -42,11 +44,21 @@ def build_engine(
     logger.info(f"Workspace: {workspace_mb} MB")
     logger.info("=" * 80)
 
+    print(colored("=" * 80, print_color))
+    print(colored("TensorRT Engine Builder", print_color))
+    print(colored("=" * 80), print_color)
+    print(colored(f"ONNX model: {onnx_path}", print_color))
+    print(colored(f"Engine output: {engine_path}", print_color))
+    print(colored(f"Precision: {precision.upper()}", print_color))
+    print(colored(f"Workspace: {workspace_mb} MB", print_color))
+    print(colored("=" * 80, print_color))
+
     # Create TensorRT logger
     TRT_LOGGER = trt.Logger(trt.Logger.VERBOSE)
 
     # Create builder and network
     logger.info("\n[Step 1/5] Creating TensorRT builder...")
+    print(colored("\n[Step 1/5] Creating TensorRT builder...", print_color))
     builder = trt.Builder(TRT_LOGGER)
     network = builder.create_network(
         1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
@@ -54,6 +66,7 @@ def build_engine(
 
     # Parse ONNX model
     logger.info("\n[Step 2/5] Parsing ONNX model...")
+    print(colored("\n[Step 2/5] Parsing ONNX model...", print_color))
     if not parser.parse_from_file(onnx_path):
         logger.error("Failed to parse ONNX file")
         for error in range(parser.num_errors):
@@ -62,23 +75,29 @@ def build_engine(
 
     # Parser successful. Network is loaded
     logger.info(f"Network inputs: {network.num_inputs}")
+    print(colored(f"Network inputs: {network.num_inputs}", print_color))
     for i in range(network.num_inputs):
         inp = network.get_input(i)
         logger.info(f"  Input {i}: {inp.name} {inp.shape}")
+        print(colored(f"  Input {i}: {inp.name} {inp.shape}", print_color))
 
     logger.info(f"Network outputs: {network.num_outputs}")
+    print(colored(f"Network outputs: {network.num_outputs}", print_color))
     for i in range(network.num_outputs):
         out = network.get_output(i)
         logger.info(f"  Output {i}: {out.name} {out.shape}")
+        print(colored(f"  Output {i}: {out.name} {out.shape}", print_color))
 
     # Create builder config
     logger.info("\n[Step 3/5] Configuring builder...")
+    print(colored("\n[Step 3/5] Configuring builder...", print_color))
     config = builder.create_builder_config()
 
     # Enable detailed profiling for engine inspection
     # This allows get_layer_information() to return layer types, precisions, tactics, etc.
     config.profiling_verbosity = trt.ProfilingVerbosity.DETAILED
     logger.info("Enabled DETAILED profiling verbosity for engine inspection")
+    print(colored("Enabled DETAILED profiling verbosity for engine inspection", print_color))
 
     # Set workspace
     config.set_memory_pool_limit(
@@ -102,6 +121,8 @@ def build_engine(
     # Set optimization profiles for dynamic shapes
     if min_shapes and opt_shapes and max_shapes:
         logger.info("\n[Step 4/5] Setting optimization profiles...")
+        print(
+            colored("\n[Step 4/5] Setting optimization profiles...", print_color))
         profile = builder.create_optimization_profile()
 
         for i in range(network.num_inputs):
@@ -125,6 +146,7 @@ def build_engine(
 
     # Build engine
     logger.info("\n[Step 5/5] Building TensorRT engine...")
+    print(colored("\n[Step 5/5] Building TensorRT engine...", print_color))
 
     start_time = time.time()
     serialized_engine = builder.build_serialized_network(network, config)
@@ -138,18 +160,27 @@ def build_engine(
 
     # Save engine
     logger.info(f"\nSaving engine to {engine_path}...")
+    print(colored(f"\nSaving engine to {engine_path}...", print_color))
     os.makedirs(os.path.dirname(engine_path), exist_ok=True)
     with open(engine_path, "wb") as f:
         f.write(serialized_engine)
 
     engine_size_mb = os.path.getsize(engine_path) / (1024**2)
     logger.info(f"Engine saved! Size: {engine_size_mb:.2f} MB")
+    print(colored(f"Engine saved! Size: {engine_size_mb:.2f} MB", print_color))
 
     logger.info("\n" + "=" * 80)
+    print(colored("\n" + "=" * 80, print_color))
     logger.info("ENGINE BUILD COMPLETE!")
+    print(colored("ENGINE BUILD COMPLETE!", print_color))
     logger.info("=" * 80)
+    print(colored("=" * 80, print_color))
     logger.info(f"Engine file: {engine_path}")
+    print(colored(f"Engine file: {engine_path}", print_color))
     logger.info(f"Size: {engine_size_mb:.2f} MB")
+    print(colored(f"Size: {engine_size_mb:.2f} MB", print_color))
     logger.info(f"Build time: {build_time:.1f}s")
+    print(colored(f"Build time: {build_time:.1f}s", print_color))
     logger.info(f"Precision: {precision.upper()}")
+    print(colored(f"Precision: {precision.upper()}", print_color))
     logger.info("=" * 80)
