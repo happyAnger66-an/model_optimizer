@@ -162,7 +162,7 @@ class Engine(object):
             output = BaseModelOutputWithPooling(
                 last_hidden_state=reference_tensors[len(self.in_meta)]
             )
-            print(f"output: {output}")
+#            print(f"output: {output}")
             return output
             #return {
             #    item[0]: reference_tensors[len(self.in_meta) + i]

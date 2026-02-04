@@ -134,7 +134,8 @@ def run_single_trajectory(
     #    }
 
     from openpi.policies.libero_policy import make_libero_example
-    for i in range(10):
+    time_results = []
+    for i in range(40):
       #      "observation/action": inputs_data["action"],
       #      "observation/image": inputs_data["image"]["base_0_rgb"],
       #      "observation/wrist_image": inputs_data["image"]["left_wrist_0_rgb"],
@@ -153,7 +154,18 @@ def run_single_trajectory(
         inference_time = time.time() - inference_start
         print(
             colored(f"Inference time: {inference_time:.4f} seconds", "green"))
+        if i > 10:
+            time_results.append(inference_time)
 
+    print(colored(f"Time results: {time_results}", "green"))
+    print(f"Average time: {sum(time_results) / len(time_results):.4f} seconds")
+    print(colored(f"Min time: {min(time_results):.4f} seconds", "green"))
+    print(colored(f"Max time: {max(time_results):.4f} seconds", "green"))
+    print(colored(f"Median time: {np.median(time_results):.4f} seconds", "green"))
+    print(colored(f"Std time: {np.std(time_results):.4f} seconds", "green"))
+    print(colored(f"90th percentile time: {np.percentile(time_results, 90):.4f} seconds", "green"))
+    print(colored(f"95th percentile time: {np.percentile(time_results, 95):.4f} seconds", "green"))
+    print(colored(f"99th percentile time: {np.percentile(time_results, 99):.4f} seconds", "green"))
 
 @dataclass
 class ArgsConfig:
@@ -192,10 +204,10 @@ class ArgsConfig:
     inference_mode: Literal["pytorch", "tensorrt"] = "pytorch"
     """Inference mode: 'pytorch' (default) or 'tensorrt'."""
 
-    trt_engine_path: str = "./pi05/expert.trt"
+    trt_engine_path: str = ""
     """Path to TensorRT engine file (.trt). Used only when inference_mode='tensorrt'."""
 
-    vit_engine: str = "vit.engine"
+    vit_engine: str = ""
     """Path to TensorRT vision engine file (.trt). Used only when inference_mode='tensorrt'."""
 
     llm_engine: str = "llm.engine"
@@ -264,12 +276,17 @@ def main(args: ArgsConfig):
             from model_optimizer.infer.tensorrt.pi05_executor import Pi05TensorRTExecutor
             print(colored(" TensorRT mode enabled", "yellow"))
             executor = Pi05TensorRTExecutor(policy)
-            config = {
-                "vit_engine": args.vit_engine,
-                "engine_path": args.trt_engine_path,
-            }
-            import addict
-            config = addict.Dict(config)
+            config = None
+            if args.vit_engine:
+                config = {
+                    "vit_engine": args.vit_engine,
+                    "engine_path": args.trt_engine_path,
+                }
+                import addict
+                config = addict.Dict(config)
+            else:
+                config = None
+            #config = None
 #            import pdb; pdb.set_trace()
             executor.load_model(config)
             logging.info(" TensorRT mode enabled")

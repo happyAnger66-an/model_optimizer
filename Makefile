@@ -9,5 +9,5 @@ run:
 	-v ${HOME}:/srcs \
 	--shm-size=4g \
 	--env PYTHONPATH=${PYTHONPATH}:PYTHONPATH=:/srcs/sources/opensrc/robot/openpi/src/:/srcs/sources/opensrc/robot/openpi/packages/openpi-client/src/ \
-	model_optimizer_x86:0122 \
+	model_optimizer_x86:0204 \
 	/bin/bash

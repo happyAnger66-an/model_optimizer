@@ -8,6 +8,7 @@ from termcolor import colored
 
 logger = logging.getLogger(__name__)
 
+from transformers.cache_utils import DynamicCache
 
 class Expert(torch.nn.Module, Model):
     def __init__(self, config, gemma_expert, **kwargs):
@@ -15,12 +16,27 @@ class Expert(torch.nn.Module, Model):
         self.config = config
         self.gemma_expert = gemma_expert
 
-    def forward(self, attention_mask, position_ids, inputs_embeds, past_key_values=None):
+    def _wrap_past_key_values(self, past_key_values):
+        k_v_cache = DynamicCache(config=self.config)
+#        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+        layer_index = 0
+        for k, v in past_key_values:
+            k_v_cache.update(k, v, layer_index)
+            layer_index += 1
+
+        return k_v_cache
+
+    def forward(self, attention_mask, position_ids, inputs_embeds, adarms_cond=None, past_key_values=None):
         logger.info(
             f'Pi05Expert input attention_mask: {attention_mask.shape} position_ids: {position_ids.shape} inputs_embeds: {inputs_embeds.shape}')
-        time_emb = torch.zeros(1, 1024, dtype=torch.float16, device="cuda")
+#        time_emb = torch.zeros(1, 1024, dtype=torch.float16, device="cuda")
+        k_v_cache = None
+        if past_key_values is not None:
+            k_v_cache = self._wrap_past_key_values(past_key_values)
+
         output = self.gemma_expert(attention_mask=attention_mask, position_ids=position_ids,
-                                   inputs_embeds=inputs_embeds, adarms_cond=time_emb)
+                                   inputs_embeds=inputs_embeds, adarms_cond=adarms_cond,
+                                   past_key_values=k_v_cache)
         logger.info(f'Pi05Expert output: {output.last_hidden_state.shape}')
         return output.last_hidden_state
 
@@ -49,6 +65,9 @@ class Expert(torch.nn.Module, Model):
 
         logger.info(f'gemma_expert_model {self.gemma_expert}')
         logger.info(f'config {self.config}')
+        print(colored(f'gemma_expert model config {self.config}', "dark_grey"))
+
+        adarms_cond = torch.zeros(1, 1024, dtype=torch.float16, device="cuda")
 
         attention_mask = torch.randn((1, 1, 10, 978),
                                      dtype=torch.float16,
@@ -65,11 +84,11 @@ class Expert(torch.nn.Module, Model):
             torch.onnx.export(
                 self,
                 # Include position_ids in ONNX export
-                (attention_mask, position_ids, inputs_embeds),
+                (attention_mask, position_ids, inputs_embeds, adarms_cond),
                 output_path,
                 input_names=["attention_mask", "position_ids",
-                             "inputs_embeds"],  # Add position_ids to input names
-                output_names=["hidden_states"],
+                             "inputs_embeds", "adarms_cond"],  # Add position_ids to input names
+                output_names=["last_hidden_state"],
                 opset_version=19,
                 dynamo=False,
                 do_constant_folding=True,
