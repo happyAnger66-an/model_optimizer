@@ -1,0 +1,11 @@
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+RUN sudo /home/admin/.local/bin/uv venv /opt/openpi
+env PYTHONPATH=/openpi/src:/openpi/packages/openpi-client/src/:/opt/openpi/lib/python3.12/site-packages/:$PYTHONPATH
+
+uv pip install transformers==4.53.2 etils flax==0.10.2 beartype==0.19.0 \
+tyro>=0.9.5 augmax>=0.3.4 pytest ml_collections==1.0.0 sentencepiece tqdm_loggable \
+jaxtyping==0.2.36 datasets==3.0 av>=15.0.0,<16.0.0 gcsfs chex \
+numpydantic>=1.6.6 opencv-python>=4.10.0.84
+
+RUN cp -r /openpi/src/openpi/models_pytorch/transformers_replace/* \
+    /opt/openpi/lib/python3.12/site-packages/transformers/

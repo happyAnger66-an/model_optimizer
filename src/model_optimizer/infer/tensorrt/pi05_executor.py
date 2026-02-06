@@ -13,11 +13,11 @@ from .trt_torch import Engine
 #    self.get_image_features(pixel_values)
 
 class Pi05TensorRTExecutor(Executor):
-    def __init__(self, policy, config=None):
+    def __init__(self, policy, precision=torch.float16, config=None):
         super().__init__(policy)
         pi05_model = Pi05Model(policy)
         self.pi05_model = pi05_model.model
-        self.pi05_model.to(torch.float16)
+        self.pi05_model.to(precision)
         self.config = config
 
     def load_model(self, config=None):

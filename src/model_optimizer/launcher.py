@@ -29,6 +29,7 @@ USAGE = (
     + "|   model_optimizer-cli build -h: build a onnx model to engine |\n"
     + "|   model_optimizer-cli eval -h: eval model |\n"
     + "|   model_optimizer-cli webui: launch webui                        |\n"
+    + "|   model_optimizer-cli download: download a model                      |\n"
     + "|   model_optimizer-cli version: show version info                      |\n"
     + "| Hint: You can use `moc` as a shortcut for `model_optimizer-cli`.      |\n"
     + "-" * 70
@@ -78,5 +79,8 @@ def launch():
     elif command == "datasets":
         from .datasets.cli import eval_datasets
         eval_datasets(sys.argv)
+    elif command == "download":
+        from .download.cli import download_cli
+        download_cli(sys.argv)
     else:
         print(USAGE)

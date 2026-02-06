@@ -134,6 +134,7 @@ def run_single_trajectory(
     #    }
 
     from openpi.policies.libero_policy import make_libero_example
+    import numpy as np
     time_results = []
     for i in range(40):
       #      "observation/action": inputs_data["action"],
@@ -157,15 +158,16 @@ def run_single_trajectory(
         if i > 10:
             time_results.append(inference_time)
 
-    print(colored(f"Time results: {time_results}", "green"))
-    print(f"Average time: {sum(time_results) / len(time_results):.4f} seconds")
-    print(colored(f"Min time: {min(time_results):.4f} seconds", "green"))
-    print(colored(f"Max time: {max(time_results):.4f} seconds", "green"))
-    print(colored(f"Median time: {np.median(time_results):.4f} seconds", "green"))
-    print(colored(f"Std time: {np.std(time_results):.4f} seconds", "green"))
-    print(colored(f"90th percentile time: {np.percentile(time_results, 90):.4f} seconds", "green"))
-    print(colored(f"95th percentile time: {np.percentile(time_results, 95):.4f} seconds", "green"))
-    print(colored(f"99th percentile time: {np.percentile(time_results, 99):.4f} seconds", "green"))
+    print(colored(f"e2e {np.mean(time_results)*1000:.2f} ± {np.std(time_results)*1000:.2f} ms (shared)", "green"))
+#    print(colored(f"Time results: {time_results}", "green"))
+#    print(f"Average time: {sum(time_results) / len(time_results):.4f} seconds")
+#    print(colored(f"Min time: {min(time_results):.4f} seconds", "green"))
+#    print(colored(f"Max time: {max(time_results):.4f} seconds", "green"))
+#    print(colored(f"Median time: {np.median(time_results):.4f} seconds", "green"))
+#    print(colored(f"Std time: {np.std(time_results):.4f} seconds", "green"))
+#    print(colored(f"90th percentile time: {np.percentile(time_results, 90):.4f} seconds", "green"))
+#    print(colored(f"95th percentile time: {np.percentile(time_results, 95):.4f} seconds", "green"))
+#    print(colored(f"99th percentile time: {np.percentile(time_results, 99):.4f} seconds", "green"))
 
 @dataclass
 class ArgsConfig:
@@ -181,6 +183,9 @@ class ArgsConfig:
 
     steps: int = 200
     """Maximum number of steps to evaluate (will be capped by trajectory length)."""
+
+    precision: str = "fp16"
+    """Precision to use."""
 
     traj_ids: list[int] = field(default_factory=lambda: [0])
     """List of trajectory IDs to evaluate."""
@@ -275,7 +280,14 @@ def main(args: ArgsConfig):
         if args.inference_mode == "tensorrt":
             from model_optimizer.infer.tensorrt.pi05_executor import Pi05TensorRTExecutor
             print(colored(" TensorRT mode enabled", "yellow"))
-            executor = Pi05TensorRTExecutor(policy)
+            if args.precision == "fp16":
+                precision = torch.float16
+            elif args.precision == "bf16":
+                precision = torch.bfloat16
+            else:
+                precision = torch.float32
+            print(colored(f"Use Precision: {precision}", "green"))
+            executor = Pi05TensorRTExecutor(policy, precision)
             config = None
             if args.vit_engine:
                 config = {
