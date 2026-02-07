@@ -17,7 +17,7 @@ class Expert(torch.nn.Module, Model):
         self.gemma_expert = gemma_expert
 
     def _wrap_past_key_values(self, past_key_values):
-        k_v_cache = DynamicCache(config=self.config)
+        k_v_cache = DynamicCache()
 #        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
         layer_index = 0
         for k, v in past_key_values:
