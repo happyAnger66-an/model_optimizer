@@ -68,11 +68,11 @@ class Expert(torch.nn.Module, Model):
         print(colored(f'gemma_expert model config {self.config}', "dark_grey"))
 
         # time embeds
-        adarms_cond = torch.zeros(1, 1024, dtype=torch.float16, device="cuda")
+        adarms_cond = torch.zeros(1, 1024, dtype=torch.bfloat16, device="cuda")
 
         # attention mask
         attention_mask = torch.randn((1, 1, 10, 978),
-                                     dtype=torch.float16,
+                                     dtype=torch.bfloat16,
                                      device="cuda")
 
         # position ids
@@ -82,15 +82,15 @@ class Expert(torch.nn.Module, Model):
         
         # action embeds
         inputs_embeds = torch.randn((1, 10, 1024),
-                                    dtype=torch.float16,
+                                    dtype=torch.bfloat16,
                                     device="cuda")
 
         # past key values
         past_key_values = []
         for _ in range(18):
             past_key_values.append(
-                (torch.randn((1, 978, 256), dtype=torch.float16, device="cuda"),
-                 torch.randn((1, 978, 256), dtype=torch.float16, device="cuda"))
+                (torch.randn((1, 978, 256), dtype=torch.bfloat16, device="cuda"),
+                 torch.randn((1, 978, 256), dtype=torch.bfloat16, device="cuda"))
             )
 
         output_path = f"{output_dir}/expert.onnx"
