@@ -44,7 +44,7 @@ class Expert(torch.nn.Module, Model):
     def construct_from_name_path(cls, model_name, model_path):
         from .model_pi05 import Pi05Model
         pi05_model = Pi05Model.construct_from_name_path(model_name, model_path)
-        return cls.construct_model(pi05_model)
+        return cls.construct_model(pi05_model, dtype=torch.bfloat16)
 
     @classmethod
     def construct_model(cls, pi05_model, dtype=torch.float16):
@@ -67,27 +67,41 @@ class Expert(torch.nn.Module, Model):
         logger.info(f'config {self.config}')
         print(colored(f'gemma_expert model config {self.config}', "dark_grey"))
 
+        # time embeds
         adarms_cond = torch.zeros(1, 1024, dtype=torch.float16, device="cuda")
 
+        # attention mask
         attention_mask = torch.randn((1, 1, 10, 978),
                                      dtype=torch.float16,
                                      device="cuda")
+
+        # position ids
         position_ids = torch.randint(1, self.config.vocab_size, (1, 10),
                                      dtype=torch.int64,
                                      device="cuda")
+        
+        # action embeds
         inputs_embeds = torch.randn((1, 10, 1024),
                                     dtype=torch.float16,
                                     device="cuda")
+
+        # past key values
+        past_key_values = []
+        for _ in range(18):
+            past_key_values.append(
+                (torch.randn((1, 978, 256), dtype=torch.float16, device="cuda"),
+                 torch.randn((1, 978, 256), dtype=torch.float16, device="cuda"))
+            )
 
         output_path = f"{output_dir}/expert.onnx"
         with torch.inference_mode():
             torch.onnx.export(
                 self,
                 # Include position_ids in ONNX export
-                (attention_mask, position_ids, inputs_embeds, adarms_cond),
+                (attention_mask, position_ids, inputs_embeds, adarms_cond, past_key_values),
                 output_path,
                 input_names=["attention_mask", "position_ids",
-                             "inputs_embeds", "adarms_cond"],  # Add position_ids to input names
+                             "inputs_embeds", "adarms_cond", "past_key_values"],  # Add position_ids to input names
                 output_names=["last_hidden_state"],
                 opset_version=19,
                 dynamo=False,

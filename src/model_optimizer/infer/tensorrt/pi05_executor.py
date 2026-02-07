@@ -13,11 +13,11 @@ from .trt_torch import Engine
 #    self.get_image_features(pixel_values)
 
 class Pi05TensorRTExecutor(Executor):
-    def __init__(self, policy, precision=torch.float16, config=None):
+    def __init__(self, policy, precision=torch.bfloat16, config=None):
         super().__init__(policy)
         pi05_model = Pi05Model(policy)
         self.pi05_model = pi05_model.model
-        self.pi05_model.to(precision)
+#        self.pi05_model.to(precision)
         self.config = config
 
     def load_model(self, config=None):
@@ -48,6 +48,12 @@ class Pi05TensorRTExecutor(Executor):
                 llm_engine = Engine(os.path.join(
                     self.config.engine_path, "llm.engine"))
                 self.pi05_model.paligemma_with_expert.paligemma.model.language_model = llm_engine
+            if self.config.expert_engine:
+                print(
+                    colored(f"replace expert with {self.config.expert_engine}", "green"))
+                expert_engine = Engine(os.path.join(
+                    self.config.engine_path, "expert.engine"))
+                self.pi05_model.paligemma_with_expert.gemma_expert.model = expert_engine
 
     def _release_pytorch_model(self):
         if self.config.vit_engine:
