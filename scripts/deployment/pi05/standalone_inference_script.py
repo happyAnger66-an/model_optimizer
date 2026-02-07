@@ -291,8 +291,10 @@ def main(args: ArgsConfig):
             config = None
             if args.vit_engine:
                 config = {
-                    "vit_engine": args.vit_engine,
+#                    "vit_engine": args.vit_engine,
                     "engine_path": args.trt_engine_path,
+                    "expert_engine": args.expert_engine,
+#                    "llm_engine": args.llm_engine,
                 }
                 import addict
                 config = addict.Dict(config)

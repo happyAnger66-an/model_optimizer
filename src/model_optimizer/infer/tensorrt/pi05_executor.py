@@ -53,7 +53,23 @@ class Pi05TensorRTExecutor(Executor):
                     colored(f"replace expert with {self.config.expert_engine}", "green"))
                 expert_engine = Engine(os.path.join(
                     self.config.engine_path, "expert.engine"))
-                self.pi05_model.paligemma_with_expert.gemma_expert.model = expert_engine
+
+                def expert_forward(inputs_ids, attention_mask,
+                                   position_ids,
+                                   past_key_values,
+                                   inputs_embeds,
+                                   use_cache,
+                                   output_attentions,
+                                   output_hidden_states,
+                                   cache_position,
+                                   adarms_cond):
+                    input_key_values = []
+                    for i in range(len(past_key_values)):
+                        input_key_values.append(
+                            past_key_values[i][0], past_key_values[i][1])
+                    return expert_engine(attention_mask, position_ids, inputs_embeds, adarms_cond, input_key_values)
+
+                self.pi05_model.paligemma_with_expert.gemma_expert.model.forward = expert_forward
 
     def _release_pytorch_model(self):
         if self.config.vit_engine:

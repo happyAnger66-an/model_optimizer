@@ -22,6 +22,7 @@ import torch
 
 from transformers.modeling_outputs import BaseModelOutputWithPooling
 
+
 def torch_type(trt_type):
     mapping = {
         trt.float32: torch.float32,
@@ -41,15 +42,17 @@ def torch_type(trt_type):
 
 
 class Engine(object):
-    def __init__(self, file, plugins=[]):
+    def __init__(self, file, return_warp=None, plugins=[]):
         super().__init__()
 
         self.logger = trt.Logger(trt.Logger.ERROR)
         trt.init_libnvinfer_plugins(self.logger, "")
 
-        self.plugins = [ctypes.CDLL(plugin, ctypes.RTLD_GLOBAL) for plugin in plugins]
+        self.plugins = [ctypes.CDLL(plugin, ctypes.RTLD_GLOBAL)
+                        for plugin in plugins]
         self.file = file
         self.load(file)
+        self.return_warp = return_warp
 
         def destroy(self):
             del self.execution_context
@@ -67,12 +70,14 @@ class Engine(object):
         print(f"Inputs: {len(self.in_meta)}")
         for ib, item in enumerate(self.in_meta):
             tensor_name, shape, dtype = item[:3]
-            print(f"   {ib}. {tensor_name}: {'x'.join(map(str, shape))} [{dtype}]")
+            print(
+                f"   {ib}. {tensor_name}: {'x'.join(map(str, shape))} [{dtype}]")
 
         print(f"Outputs: {len(self.out_meta)}")
         for ib, item in enumerate(self.out_meta):
             tensor_name, shape, dtype = item[:3]
-            print(f"   {ib}. {tensor_name}: {'x'.join(map(str, shape))} [{dtype}]")
+            print(
+                f"   {ib}. {tensor_name}: {'x'.join(map(str, shape))} [{dtype}]")
         print("=============================================")
 
     def load(self, file):
@@ -107,7 +112,8 @@ class Engine(object):
         for iarg, x in enumerate(args):
             name, shape, dtype = self.in_meta[iarg]
             runtime_shape = self.execution_context.get_tensor_shape(name)
-            assert isinstance(x, torch.Tensor), f"Unsupported tensor type: {type(x)}"
+            assert isinstance(
+                x, torch.Tensor), f"Unsupported tensor type: {type(x)}"
             assert runtime_shape == x.shape, f"Invalid input shape: {runtime_shape} != {x.shape}"
             assert (
                 dtype == x.dtype
@@ -123,7 +129,8 @@ class Engine(object):
 
             runtime_shape = self.execution_context.get_tensor_shape(name)
             x = kwargs[name]
-            assert isinstance(x, torch.Tensor), f"Unsupported tensor[{name}] type: {type(x)}"
+            assert isinstance(
+                x, torch.Tensor), f"Unsupported tensor[{name}] type: {type(x)}"
             assert (
                 runtime_shape == x.shape
             ), f"Invalid input[{name}] shape: {x.shape}, but the expected shape is: {runtime_shape}"
@@ -143,7 +150,8 @@ class Engine(object):
             output_tensor = torch.zeros(
                 *runtime_shape, dtype=item[2], device=reference_tensors[0].device
             )
-            self.execution_context.set_tensor_address(name, output_tensor.data_ptr())
+            self.execution_context.set_tensor_address(
+                name, output_tensor.data_ptr())
             reference_tensors.append(output_tensor)
 
 #        import pdb; pdb.set_trace()
@@ -159,12 +167,15 @@ class Engine(object):
                 reference_tensors[len(self.in_meta) + i] for i, item in enumerate(self.out_meta)
             ]
         else:
-            output = BaseModelOutputWithPooling(
-                last_hidden_state=reference_tensors[len(self.in_meta)]
-            )
-#            print(f"output: {output}")
+            #            output = BaseModelOutputWithPooling(
+            #                last_hidden_state=reference_tensors[len(self.in_meta)]
+            #            )
+            #            print(f"output: {output}")
+            #           return output
+            output =  {
+                item[0]: reference_tensors[len(self.in_meta) + i]
+                for i, item in enumerate(self.out_meta)
+            }
+            if self.return_warp:
+                output = self.return_warp(output)
             return output
-            #return {
-            #    item[0]: reference_tensors[len(self.in_meta) + i]
-            #    for i, item in enumerate(self.out_meta)
-            #}
