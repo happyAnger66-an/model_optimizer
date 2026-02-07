@@ -63,7 +63,7 @@ class Expert(torch.nn.Module, Model):
         logger.info("Start export onnx ...")
         print(colored(f"Start Expert export onnx...", "green"))
 
-        logger.info(f'gemma_expert_model {self.gemma_expert}')
+#        logger.info(f'gemma_expert_model {self.gemma_expert}')
         logger.info(f'config {self.config}')
         print(colored(f'gemma_expert model config {self.config}', "dark_grey"))
 
