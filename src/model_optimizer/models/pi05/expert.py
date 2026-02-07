@@ -89,8 +89,8 @@ class Expert(torch.nn.Module, Model):
         past_key_values = []
         for _ in range(18):
             past_key_values.append(
-                (torch.randn((1, 978, 256), dtype=torch.bfloat16, device="cuda"),
-                 torch.randn((1, 978, 256), dtype=torch.bfloat16, device="cuda"))
+                (torch.randn((1, 1, 968, 256), dtype=torch.bfloat16, device="cuda"),
+                 torch.randn((1, 1, 968, 256), dtype=torch.bfloat16, device="cuda"))
             )
 
         output_path = f"{output_dir}/expert.onnx"
