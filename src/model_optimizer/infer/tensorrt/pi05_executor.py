@@ -29,7 +29,7 @@ class Pi05TensorRTExecutor(Executor):
         self._setup_trt_engine()
       #  self.pi05_model.paligemma_with_expert.embed_image = partial(
       #      embed_image, self.pi05_model.paligemma_with_expert.paligemma.model)
-        self.pi05_model.paligemma_with_expert.embed_language_tokens = self.embedding_layer
+      #  self.pi05_model.paligemma_with_expert.embed_language_tokens = self.embedding_layer
 
     def __getattr__(self, name):
         return getattr(self.policy, name)
@@ -79,10 +79,11 @@ class Pi05TensorRTExecutor(Executor):
 
         if self.config.llm_engine:
             print(colored(f"release language_model engine", "green"))
+            self.embedding_layer = self.pi05_model.paligemma_with_expert.paligemma.get_input_embeddings()
+            
             if hasattr(self.pi05_model.paligemma_with_expert.paligemma.model, "language_model"):
                 del self.pi05_model.paligemma_with_expert.paligemma.model.language_model
 
-        self.embedding_layer = self.pi05_model.paligemma_with_expert.paligemma.get_input_embeddings()
 
         if self.config.expert_engine:
             print(colored(f"release expert engine", "green"))
