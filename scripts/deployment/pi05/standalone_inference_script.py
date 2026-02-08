@@ -96,6 +96,7 @@ def run_single_trajectory(
     steps=100,
     action_horizon=10,
     skip_timing_steps=1,
+    perf=False,
 ):
     """
     Run inference on a single trajectory.
@@ -153,13 +154,19 @@ def run_single_trajectory(
         inference_start = time.time()
     #    import pdb; pdb.set_trace()
         _action_chunk, _ = policy.infer(obs)
+        if perf:
+            model = policy._model
+            model.perf = True
         inference_time = time.time() - inference_start
         print(
             colored(f"Inference time: {inference_time:.4f} seconds", "green"))
-        if i > 10:
+        if i > 10 and perf:
             time_results.append(inference_time)
-
-    print(colored(f"e2e {np.mean(time_results)*1000:.2f} ± {np.std(time_results)*1000:.2f} ms (shared)", "green"))
+    if perf:
+        print(colored(f"e2e {np.mean(time_results)*1000:.2f} ± {np.std(time_results)*1000:.2f} ms (shared)", "green"))
+        print(colored(f"action {np.mean(model.time_results['action'])*1000:.2f} ± {np.std(model.time_results['action'])*1000:.2f} ms (shared)", "green"))
+        print(colored(f"vit {np.mean(model.time_results['vit'])*1000:.2f} ± {np.std(model.time_results['vit'])*1000:.2f} ms (shared)", "green"))
+        print(colored(f"llm {np.mean(model.time_results['llm'])*1000:.2f} ± {np.std(model.time_results['llm'])*1000:.2f} ms (shared)", "green"))
 #    print(colored(f"Time results: {time_results}", "green"))
 #    print(f"Average time: {sum(time_results) / len(time_results):.4f} seconds")
 #    print(colored(f"Min time: {min(time_results):.4f} seconds", "green"))
@@ -219,7 +226,7 @@ class ArgsConfig:
     llm_engine: str = ""
     """Path to TensorRT language model engine file (.trt). Used only when inference_mode='tensorrt'."""
 
-    expert_engine: str = "expert.engine"
+    expert_engine: str = ""
     """Path to TensorRT expert engine file (.trt). Used only when inference_mode='tensorrt'."""
 
     denoising_steps: int = 10
@@ -236,6 +243,9 @@ class ArgsConfig:
 
     seed: int = 42
     """Seed to use for reproducibility."""
+    
+    perf: bool = False
+    """Whether to get performance statistics."""
 
 
 def main(args: ArgsConfig):
@@ -251,6 +261,7 @@ def main(args: ArgsConfig):
     logging.info(f"Action Horizon: {args.action_horizon}")
     logging.info(f"Skip Timing Steps: {args.skip_timing_steps}")
     logging.info(f"Inference Mode: {args.inference_mode}")
+    logging.info(f"Get Performance Stats: {args.get_performance_stats}")
     if args.inference_mode == "tensorrt":
         logging.info(f"TensorRT Engine: {args.trt_engine_path}")
     logging.info(f"Seed: {args.seed}")
@@ -367,6 +378,7 @@ def main(args: ArgsConfig):
         steps=args.steps,
         action_horizon=args.action_horizon,
         skip_timing_steps=args.skip_timing_steps,
+        perf=args.perf,
     )
 
     return pred_actions
