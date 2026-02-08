@@ -53,7 +53,7 @@ class Pi05TensorRTExecutor(Executor):
                 print(
                     colored(f"replace expert with {self.config.expert_engine}", "green"))
 
-                def expert_return_warp(output):
+                def expert_return_wrap(output):
                     print(
                         colored(f"expert_return_warp output: {output}", "green"))
                     output = BaseModelOutputWithPooling(
@@ -62,7 +62,7 @@ class Pi05TensorRTExecutor(Executor):
                     return output
 
                 expert_engine = Engine(os.path.join(
-                    self.config.engine_path, "expert.engine"), return_warp=expert_return_warp)
+                    self.config.engine_path, "expert.engine"), return_wrap=expert_return_wrap)
 
                 def expert_forward(inputs_ids=None, attention_mask=None,
                                    position_ids=None,

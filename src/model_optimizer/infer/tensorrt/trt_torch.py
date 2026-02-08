@@ -24,6 +24,7 @@ from transformers.modeling_outputs import BaseModelOutputWithPooling
 
 from termcolor import colored
 
+
 def torch_type(trt_type):
     mapping = {
         trt.float32: torch.float32,
@@ -43,7 +44,7 @@ def torch_type(trt_type):
 
 
 class Engine(object):
-    def __init__(self, file, return_warp=None, plugins=[]):
+    def __init__(self, file, return_wrap=None, plugins=[]):
         super().__init__()
 
         self.logger = trt.Logger(trt.Logger.ERROR)
@@ -53,7 +54,7 @@ class Engine(object):
                         for plugin in plugins]
         self.file = file
         self.load(file)
-        self.return_warp = return_warp
+        self.return_wrap = return_wrap
 
         def destroy(self):
             del self.execution_context
@@ -117,7 +118,8 @@ class Engine(object):
                 x, torch.Tensor), f"Unsupported tensor type: {type(x)}"
             assert runtime_shape == x.shape, f"Invalid input shape: {runtime_shape} != {x.shape}"
             if dtype != x.dtype:
-                print(colored(f"Invalid tensor dtype {name}, excepted dtype is {dtype}, but got {x.dtype} Convert to {dtype}", "red"))
+                print(colored(
+                    f"Invalid tensor dtype {name}, excepted dtype is {dtype}, but got {x.dtype} Convert to {dtype}", "red"))
                 x = x.to(dtype)
 #            assert (
 #                dtype == x.dtype
@@ -176,10 +178,10 @@ class Engine(object):
             #            )
             #            print(f"output: {output}")
             #           return output
-            output =  {
+            output = {
                 item[0]: reference_tensors[len(self.in_meta) + i]
                 for i, item in enumerate(self.out_meta)
             }
-            if self.return_warp:
-                output = self.return_warp(output)
+            if self.return_wrap:
+                output = self.return_wrap(output)
             return output
