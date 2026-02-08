@@ -1,3 +1,4 @@
+from transformers.cache_utils import DynamicCache
 import os
 import time
 import torch
@@ -8,7 +9,6 @@ from termcolor import colored
 
 logger = logging.getLogger(__name__)
 
-from transformers.cache_utils import DynamicCache
 
 class Expert(torch.nn.Module, Model):
     def __init__(self, config, gemma_expert, **kwargs):
@@ -16,23 +16,22 @@ class Expert(torch.nn.Module, Model):
         self.config = config
         self.gemma_expert = gemma_expert
 
-    def _wrap_past_key_values(self, past_key_values):
+    def _wrap_past_key_values(self, input_keys, input_values):
         k_v_cache = DynamicCache()
 #        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-        layer_index = 0
-        for k, v in past_key_values:
-            k_v_cache.update(k, v, layer_index)
-            layer_index += 1
+        num_layers = input_keys.shape[0]
+        for i in range(num_layers):
+            k_v_cache.update(input_keys[i], input_values[i], i)
 
         return k_v_cache
 
-    def forward(self, attention_mask, position_ids, inputs_embeds, adarms_cond=None, past_key_values=None):
+    def forward(self, attention_mask, position_ids, inputs_embeds, adarms_cond=None, input_keys=None, input_values=None):
         logger.info(
             f'Pi05Expert input attention_mask: {attention_mask.shape} position_ids: {position_ids.shape} inputs_embeds: {inputs_embeds.shape}')
 #        time_emb = torch.zeros(1, 1024, dtype=torch.float16, device="cuda")
         k_v_cache = None
-        if past_key_values is not None:
-            k_v_cache = self._wrap_past_key_values(past_key_values)
+        if input_keys is not None and input_values is not None:
+            k_v_cache = self._wrap_past_key_values(input_keys, input_values)
 
         output = self.gemma_expert(attention_mask=attention_mask, position_ids=position_ids,
                                    inputs_embeds=inputs_embeds, adarms_cond=adarms_cond,
@@ -79,29 +78,35 @@ class Expert(torch.nn.Module, Model):
         position_ids = torch.randint(1, self.config.vocab_size, (1, 10),
                                      dtype=torch.int64,
                                      device="cuda")
-        
+
         # action embeds
         inputs_embeds = torch.randn((1, 10, 1024),
                                     dtype=torch.float16,
                                     device="cuda")
 
         # past key values
-        past_key_values = []
+        past_keys = []
+        past_values = []
         for _ in range(18):
-            past_key_values.append(
-                (torch.randn((1, 1, 968, 256), dtype=torch.float16, device="cuda"),
-                 torch.randn((1, 1, 968, 256), dtype=torch.float16, device="cuda"))
-            )
+            past_keys.append(torch.randn((1, 1, 968, 256),
+                             dtype=torch.float16, device="cuda"))
+            past_values.append(torch.randn(
+                (1, 1, 968, 256), dtype=torch.float16, device="cuda"))
+
+        past_keys_tensor = torch.cat(past_keys, dim=0)
+        past_values_tensor = torch.cat(past_values, dim=0)
 
         output_path = f"{output_dir}/expert.onnx"
         with torch.inference_mode():
             torch.onnx.export(
                 self,
                 # Include position_ids in ONNX export
-                (attention_mask, position_ids, inputs_embeds, adarms_cond, past_key_values),
+                (attention_mask, position_ids, inputs_embeds,
+                 adarms_cond, past_keys_tensor, past_values_tensor),
                 output_path,
                 input_names=["attention_mask", "position_ids",
-                             "inputs_embeds", "adarms_cond", "past_key_values"],  # Add position_ids to input names
+                             # Add position_ids to input names
+                             "inputs_embeds", "adarms_cond", "past_keys", "past_values"],
                 output_names=["last_hidden_state"],
                 opset_version=19,
                 dynamo=False,
