@@ -216,7 +216,7 @@ class ArgsConfig:
     vit_engine: str = ""
     """Path to TensorRT vision engine file (.trt). Used only when inference_mode='tensorrt'."""
 
-    llm_engine: str = "llm.engine"
+    llm_engine: str = ""
     """Path to TensorRT language model engine file (.trt). Used only when inference_mode='tensorrt'."""
 
     expert_engine: str = "expert.engine"
