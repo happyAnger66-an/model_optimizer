@@ -8,9 +8,10 @@ from ..executor import Executor
 from ...models.pi05.model_pi05 import Pi05Model
 from .trt_torch import Engine
 
-
+from transformers.modeling_outputs import BaseModelOutputWithPooling
 # def embed_image(self, pixel_values):
 #    self.get_image_features(pixel_values)
+
 
 class Pi05TensorRTExecutor(Executor):
     def __init__(self, policy, precision=torch.bfloat16, config=None):
@@ -54,8 +55,11 @@ class Pi05TensorRTExecutor(Executor):
 
                 def expert_return_warp(output):
                     print(
-                        colored(f"expert_return_warp output: {output.shape}", "green"))
-                    return output.last_hidden_state
+                        colored(f"expert_return_warp output: {output}", "green"))
+                    output = BaseModelOutputWithPooling(
+                        last_hidden_state=output['last_hidden_state'],
+                    )
+                    return output
 
                 expert_engine = Engine(os.path.join(
                     self.config.engine_path, "expert.engine"), return_warp=expert_return_warp)
