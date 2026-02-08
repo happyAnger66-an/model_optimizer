@@ -67,7 +67,7 @@ class Pi05TensorRTExecutor(Executor):
                     input_key_values = []
                     for i in range(len(past_key_values)):
                         input_key_values.append(
-                            past_key_values[i][0], past_key_values[i][1])
+                            (past_key_values[i][0], past_key_values[i][1]))
                     return expert_engine(attention_mask, position_ids, inputs_embeds, adarms_cond, input_key_values)
 
                 self.pi05_model.paligemma_with_expert.gemma_expert.model.forward = expert_forward
@@ -81,10 +81,9 @@ class Pi05TensorRTExecutor(Executor):
         if self.config.llm_engine:
             print(colored(f"release language_model engine", "green"))
             self.embedding_layer = self.pi05_model.paligemma_with_expert.paligemma.get_input_embeddings()
-            
+
             if hasattr(self.pi05_model.paligemma_with_expert.paligemma.model, "language_model"):
                 del self.pi05_model.paligemma_with_expert.paligemma.model.language_model
-
 
         if self.config.expert_engine:
             print(colored(f"release expert engine", "green"))

@@ -22,6 +22,7 @@ import torch
 
 from transformers.modeling_outputs import BaseModelOutputWithPooling
 
+from termcolor import colored
 
 def torch_type(trt_type):
     mapping = {
@@ -115,9 +116,12 @@ class Engine(object):
             assert isinstance(
                 x, torch.Tensor), f"Unsupported tensor type: {type(x)}"
             assert runtime_shape == x.shape, f"Invalid input shape: {runtime_shape} != {x.shape}"
-            assert (
-                dtype == x.dtype
-            ), f"Invalid tensor dtype {name}, excepted dtype is {dtype}, but got {x.dtype}"
+            if dtype != x.dtype:
+                print(colored(f"Invalid tensor dtype {name}, excepted dtype is {dtype}, but got {x.dtype} Convert to {dtype}", "red"))
+                x = x.to(dtype)
+#            assert (
+#                dtype == x.dtype
+#            ), f"Invalid tensor dtype {name}, excepted dtype is {dtype}, but got {x.dtype}"
             assert x.is_cuda, f"Invalid tensor device, excepted device is cuda, but got {x.device}"
             x = x.cuda().contiguous()
             self.execution_context.set_tensor_address(name, x.data_ptr())
