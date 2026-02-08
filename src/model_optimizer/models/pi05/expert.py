@@ -21,7 +21,7 @@ class Expert(torch.nn.Module, Model):
 #        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
         num_layers = input_keys.shape[0]
         for i in range(num_layers):
-            k_v_cache.update(input_keys[i], input_values[i], i)
+            k_v_cache.update(input_keys[i:i+1], input_values[i:i+1], i)
 
         return k_v_cache
 
