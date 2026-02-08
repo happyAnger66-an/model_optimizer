@@ -54,8 +54,8 @@ class Pi05TensorRTExecutor(Executor):
                     colored(f"replace expert with {self.config.expert_engine}", "green"))
 
                 def expert_return_wrap(output):
-                    print(
-                        colored(f"expert_return_warp output: {output}", "green"))
+#                    print(
+#                        colored(f"expert_return_warp output: {output}", "green"))
                     output = BaseModelOutputWithPooling(
                         last_hidden_state=output['last_hidden_state'],
                     )
