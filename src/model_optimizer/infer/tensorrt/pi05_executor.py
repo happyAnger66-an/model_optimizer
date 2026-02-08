@@ -25,8 +25,8 @@ class Pi05TensorRTExecutor(Executor):
             return
 
         self.config = config
-        self._release_pytorch_model()
         self._setup_trt_engine()
+        self._release_pytorch_model()
       #  self.pi05_model.paligemma_with_expert.embed_image = partial(
       #      embed_image, self.pi05_model.paligemma_with_expert.paligemma.model)
       #  self.pi05_model.paligemma_with_expert.embed_language_tokens = self.embedding_layer
@@ -87,8 +87,8 @@ class Pi05TensorRTExecutor(Executor):
 
         if self.config.expert_engine:
             print(colored(f"release expert engine", "green"))
-            if hasattr(self.pi05_model.paligemma_with_expert.gemma_expert, "model"):
-                del self.pi05_model.paligemma_with_expert.gemma_expert.model
+#            if hasattr(self.pi05_model.paligemma_with_expert.gemma_expert, "model"):
+#                del self.pi05_model.paligemma_with_expert.gemma_expert.model
 
             if hasattr(self.pi05_model.paligemma_with_expert.gemma_expert, "lm_head"):
                 del self.pi05_model.paligemma_with_expert.gemma_expert.lm_head
