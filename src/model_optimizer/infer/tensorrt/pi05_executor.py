@@ -62,7 +62,7 @@ class Pi05TensorRTExecutor(Executor):
                     return output
 
                 expert_engine = Engine(os.path.join(
-                    self.config.engine_path, "expert.engine"), return_wrap=expert_return_wrap)
+                    self.config.engine_path, "expert.engine"), return_wrap=expert_return_wrap, perf=True)
 
                 def expert_forward(inputs_ids=None, attention_mask=None,
                                    position_ids=None,

@@ -16,6 +16,8 @@
 import atexit
 import ctypes
 import os
+import time
+import numpy as np
 
 import tensorrt as trt
 import torch
@@ -44,7 +46,7 @@ def torch_type(trt_type):
 
 
 class Engine(object):
-    def __init__(self, file, return_wrap=None, plugins=[]):
+    def __init__(self, file, return_wrap=None, perf=False, plugins=[]):
         super().__init__()
 
         self.logger = trt.Logger(trt.Logger.ERROR)
@@ -55,6 +57,13 @@ class Engine(object):
         self.file = file
         self.load(file)
         self.return_wrap = return_wrap
+        self.perf = perf
+        
+        if self.perf:
+            self.time_results = {
+                'total': [],
+            }
+            self.count = 0
 
         def destroy(self):
             del self.execution_context
@@ -108,6 +117,8 @@ class Engine(object):
         self.execution_context.set_input_shape(name, shape)
 
     def forward(self, *args, **kwargs):
+        self.count += 1
+        start_time = time.perf_counter()
         return_list = kwargs.pop("return_list", False)
         reference_tensors = []
         stream = torch.cuda.current_stream()
@@ -166,6 +177,11 @@ class Engine(object):
         assert len(reference_tensors) == len(self.in_meta) + len(
             self.out_meta
         ), f"Invalid input tensors. The expected I/O tensors are {len(self.in_meta) + len(self.out_meta)}, but got {len(reference_tensors)}"
+
+        end_time = time.perf_counter()
+        if self.perf and self.count > 100:
+            self.time_results['total'].append(end_time - start_time)
+            print(colored(f"total time: {np.mean(self.time_results['total'])*1000:.2f} ± {np.std(self.time_results['total'])*1000:.2f} ms", "green"))
 
         if return_list:
             print(f"return_list: {return_list}")
