@@ -51,8 +51,14 @@ class Pi05TensorRTExecutor(Executor):
             if self.config.expert_engine:
                 print(
                     colored(f"replace expert with {self.config.expert_engine}", "green"))
+
+                def expert_return_warp(output):
+                    print(
+                        colored(f"expert_return_warp output: {output.shape}", "green"))
+                    return output.last_hidden_state
+
                 expert_engine = Engine(os.path.join(
-                    self.config.engine_path, "expert.engine"))
+                    self.config.engine_path, "expert.engine"), return_warp=expert_return_warp)
 
                 def expert_forward(inputs_ids=None, attention_mask=None,
                                    position_ids=None,
@@ -64,8 +70,10 @@ class Pi05TensorRTExecutor(Executor):
                                    cache_position=None,
                                    adarms_cond=None,
                                    **kwargs):
-                    input_keys = torch.cat([past_key_values[i][0] for i in range(len(past_key_values))], dim=0)
-                    input_values = torch.cat([past_key_values[i][1] for i in range(len(past_key_values))], dim=0)
+                    input_keys = torch.cat(
+                        [past_key_values[i][0] for i in range(len(past_key_values))], dim=0)
+                    input_values = torch.cat(
+                        [past_key_values[i][1] for i in range(len(past_key_values))], dim=0)
 #                    for i in range(len(past_key_values)):
 #                        input_key_values.append(
 #                            (past_key_values[i][0], past_key_values[i][1]))
