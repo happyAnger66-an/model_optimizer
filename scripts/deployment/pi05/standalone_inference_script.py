@@ -27,6 +27,7 @@ import pandas as pd
 import torch
 import tyro
 
+import addict
 from termcolor import colored
 
 warnings.simplefilter("ignore", category=FutureWarning)
@@ -289,17 +290,23 @@ def main(args: ArgsConfig):
             print(colored(f"Use Precision: {precision}", "green"))
             executor = Pi05TensorRTExecutor(policy, precision)
             config = None
-            if args.vit_engine:
+            
+            if args.trt_engine_path:
                 config = {
-#                    "vit_engine": args.vit_engine,
                     "engine_path": args.trt_engine_path,
-                    "expert_engine": args.expert_engine,
-#                    "llm_engine": args.llm_engine,
                 }
-                import addict
-                config = addict.Dict(config)
-            else:
-                config = None
+                
+            if args.expert_engine:
+                config["expert_engine"] = args.expert_engine
+                
+            if args.vit_engine:
+                config["vit_engine"] = args.vit_engine
+                
+            if args.llm_engine:
+                config["llm_engine"] = args.llm_engine
+           
+            if config is not None:
+                config = addict.Dict(config)    
             #config = None
 #            import pdb; pdb.set_trace()
             executor.load_model(config)
