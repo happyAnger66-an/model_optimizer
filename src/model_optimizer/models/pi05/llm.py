@@ -12,21 +12,28 @@ logger = logging.getLogger(__name__)
 
 
 class LLM(torch.nn.Module, Model):
-    def __init__(self, llm, **kwargs):
+    def __init__(self, config, llm, **kwargs):
         super().__init__(**kwargs)
         self.llm = llm
+        self.config = config
         self.llm.config._attn_implementation = "eager"
 
     def forward(self, inputs_embeds, attention_mask, position_ids):
         prefix_output = self.llm(inputs_embeds=inputs_embeds,
                                  attention_mask=attention_mask,
-                                 position_ids=position_ids)
-        k_v_caches = []
-        # for keys, values, _ in prefix_output.past_key_values:
-        for keys, values in prefix_output.past_key_values:
-            k_v_caches.append((keys, values))
+                                 position_ids=position_ids,
+                                 use_cache=True)
+        past_key_caches = prefix_output.past_key_values
+        past_keys = []
+        past_values = []
+        for i in range(self.config.num_hidden_layers):
+            past_keys.append(past_key_caches[i][0])
+            past_values.append(past_key_caches[i][1])
 
-        return k_v_caches, prefix_output.last_hidden_state
+        past_keys_tensor = torch.cat(past_keys, dim=0)
+        past_values_tensor = torch.cat(past_values, dim=0)
+
+        return past_keys_tensor, past_values_tensor, prefix_output.last_hidden_state
 
     def quantize(self, model_dir, quant_cfg, calib_data, calib_method):
         tokenizer = get_tokenizer(model_dir)
@@ -41,9 +48,10 @@ class LLM(torch.nn.Module, Model):
         return cls.construct_model(pi05_model)
 
     @classmethod
-    def construct_model(cls, pi05_model, dtype=torch.float16):
-        paligemma = pi05_model.paligemma_with_expert.paligemma.model
-        llm_model = cls(paligemma.get_decoder()).to(dtype)
+    def construct_model(cls, pi05_model, dtype=torch.bfloat16):
+        paligemma = pi05_model.paligemma_with_expert.paligemma
+        llm_model = cls(pi05_model.paligemma_with_expert.paligemma.config.text_config,
+                        paligemma.get_decoder()).to(dtype)
         return llm_model
 
     def export(self, export_dir):
@@ -75,7 +83,7 @@ class LLM(torch.nn.Module, Model):
                 f"{output_dir}/llm.onnx",
                 input_names=["inputs_embeds", "attention_mask",
                              "position_ids"],  # Add position_ids to input names
-                output_names=["past_key_values", "last_hidden_state"],
+                output_names=["past_keys", "past_values", "last_hidden_state"],
                 opset_version=19,
                 dynamo=False,
                 do_constant_folding=True,
