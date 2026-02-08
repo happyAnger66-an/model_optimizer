@@ -54,15 +54,16 @@ class Pi05TensorRTExecutor(Executor):
                 expert_engine = Engine(os.path.join(
                     self.config.engine_path, "expert.engine"))
 
-                def expert_forward(inputs_ids, attention_mask,
-                                   position_ids,
-                                   past_key_values,
-                                   inputs_embeds,
-                                   use_cache,
-                                   output_attentions,
-                                   output_hidden_states,
-                                   cache_position,
-                                   adarms_cond):
+                def expert_forward(inputs_ids=None, attention_mask=None,
+                                   position_ids=None,
+                                   past_key_values=None,
+                                   inputs_embeds=None,
+                                   use_cache=False,
+                                   output_attentions=False,
+                                   output_hidden_states=False,
+                                   cache_position=None,
+                                   adarms_cond=None,
+                                   **kwargs):
                     input_key_values = []
                     for i in range(len(past_key_values)):
                         input_key_values.append(
