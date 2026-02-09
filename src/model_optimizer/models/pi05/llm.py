@@ -6,6 +6,8 @@ from ..model import Model
 from ..token import get_tokenizer
 import logging
 
+from transformers.cache_utils import DynamicCache
+
 from termcolor import colored
 
 logger = logging.getLogger(__name__)
@@ -17,6 +19,14 @@ class LLM(torch.nn.Module, Model):
         self.llm = llm
         self.config = config
         self.llm.config._attn_implementation = "eager"
+
+    def _wrap_past_key_values(self, input_keys, input_values):
+        k_v_cache = DynamicCache()
+        num_layers = input_keys.shape[0]
+        for i in range(num_layers):
+            k_v_cache.update(input_keys[i:i+1], input_values[i:i+1], i)
+
+        return k_v_cache
 
     def forward(self, inputs_embeds, attention_mask, position_ids):
         prefix_output = self.llm(inputs_embeds=inputs_embeds,

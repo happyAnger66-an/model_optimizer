@@ -9,6 +9,8 @@ from ...models.pi05.model_pi05 import Pi05Model
 from .trt_torch import Engine
 
 from transformers.modeling_outputs import BaseModelOutputWithPooling
+from transformers.cache_utils import DynamicCache
+
 # def embed_image(self, pixel_values):
 #    self.get_image_features(pixel_values)
 
@@ -35,6 +37,14 @@ class Pi05TensorRTExecutor(Executor):
     def __getattr__(self, name):
         return getattr(self.policy, name)
 
+    def _wrap_past_key_values(self, input_keys, input_values):
+        k_v_cache = DynamicCache()
+        num_layers = input_keys.shape[0]
+        for i in range(num_layers):
+            k_v_cache.update(input_keys[i:i+1], input_values[i:i+1], i)
+
+        return k_v_cache
+
     def _setup_trt_engine(self):
         if self.config.engine_path:
             if self.config.vit_engine:
@@ -58,7 +68,31 @@ class Pi05TensorRTExecutor(Executor):
                     colored(f"replace language_model with {self.config.llm_engine}", "green"))
                 llm_engine = Engine(os.path.join(
                     self.config.engine_path, "llm.engine"))
-                self.pi05_model.paligemma_with_expert.paligemma.model.language_model = llm_engine
+
+                def llm_forward(input_ids=None,
+                                attention_mask=None,
+                                position_ids=None,
+                                past_key_values=None,
+                                inputs_embeds=None,
+                                labels=None,
+                                use_cache=False,
+                                output_attentions=False,
+                                output_hidden_states=False,
+                                cache_position=None,
+                                logits_to_keep=None,
+                                adarms_cond=None, **kwargs):
+                    outputs = llm_engine(
+                        inputs_embeds, attention_mask, position_ids)
+                    k_v_cache = self._wrap_past_key_values(
+                        outputs.past_key_values, outputs.past_key_values)
+
+                    output = BaseModelOutputWithPooling(
+                        last_hidden_state=output['last_hidden_state'],
+                        past_key_values=k_v_cache
+                    )
+                    return output
+
+                self.pi05_model.paligemma_with_expert.paligemma.model.language_model.forward = llm_forward
 
             if self.config.expert_engine:
                 print(
