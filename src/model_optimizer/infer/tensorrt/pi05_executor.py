@@ -27,7 +27,7 @@ class Pi05TensorRTExecutor(Executor):
 
         self.config = config
         self._setup_trt_engine()
-        self._release_pytorch_model()
+      #  self._release_pytorch_model()
       #  self.pi05_model.paligemma_with_expert.embed_image = partial(
       #      embed_image, self.pi05_model.paligemma_with_expert.paligemma.model)
       #  self.pi05_model.paligemma_with_expert.embed_language_tokens = self.embedding_layer
@@ -40,22 +40,32 @@ class Pi05TensorRTExecutor(Executor):
             if self.config.vit_engine:
                 print(
                     colored(f"replace vision_tower with {self.config.vit_engine}", "green"))
+
+                def expert_return_wrap(output):
+                    output = BaseModelOutputWithPooling(
+                        last_hidden_state=output['last_hidden_state'],
+                    )
+                    return output
+
                 vit_engine = Engine(os.path.join(
-                    self.config.engine_path, self.config.vit_engine))
+                    self.config.engine_path, self.config.vit_engine), \
+                        return_wrap=expert_return_wrap, perf=True)
                 self.pi05_model.paligemma_with_expert.paligemma.model.vision_tower = vit_engine
+
             if self.config.llm_engine:
                 print(
                     colored(f"replace language_model with {self.config.llm_engine}", "green"))
                 llm_engine = Engine(os.path.join(
                     self.config.engine_path, "llm.engine"))
                 self.pi05_model.paligemma_with_expert.paligemma.model.language_model = llm_engine
+
             if self.config.expert_engine:
                 print(
                     colored(f"replace expert with {self.config.expert_engine}", "green"))
 
                 def expert_return_wrap(output):
-#                    print(
-#                        colored(f"expert_return_warp output: {output}", "green"))
+                    #                    print(
+                    #                        colored(f"expert_return_warp output: {output}", "green"))
                     output = BaseModelOutputWithPooling(
                         last_hidden_state=output['last_hidden_state'],
                     )
