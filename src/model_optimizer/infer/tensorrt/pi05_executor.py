@@ -8,7 +8,7 @@ from ..executor import Executor
 from ...models.pi05.model_pi05 import Pi05Model
 from .trt_torch import Engine
 
-from transformers.modeling_outputs import BaseModelOutputWithPooling
+from transformers.modeling_outputs import BaseModelOutputWithPooling, BaseModelOutputWithPast
 from transformers.cache_utils import DynamicCache
 
 # def embed_image(self, pixel_values):
@@ -87,7 +87,7 @@ class Pi05TensorRTExecutor(Executor):
                         outputs['past_keys'],
                         outputs['past_values'])
 
-                    output = BaseModelOutputWithPooling(
+                    output = BaseModelOutputWithPast(
                         last_hidden_state=outputs['last_hidden_state'],
                         past_key_values=k_v_cache
                     )
