@@ -37,10 +37,11 @@ def build_cli(args):
     parser.add_argument('--model_path', type=str, required=True)
     parser.add_argument('--build_cfg', type=str, required=True)
     parser.add_argument('--export_dir', type=str, required=True)
+    parser.add_argument('--use_cudagraph', type=bool, default=True)
     args = parser.parse_args(args[1:])
     print(f'[cli] build args {args}')
 
     from .build import build_engine
     from ..config.config import load_settings
     build_cfg = load_settings(args.build_cfg)
-    build_engine(args.model_path, args.export_dir, **build_cfg.build_cfg)
+    build_engine(args.model_path, args.export_dir, args.use_cudagraph, **build_cfg.build_cfg)

@@ -17,6 +17,7 @@ print_color = "green"
 def build_engine(
     onnx_path: str,
     engine_path: str,
+    use_cudagraph: bool = True,
     precision: str = "bf16",
     workspace_mb: int = 8192,
     min_shapes: dict = None,
@@ -92,6 +93,11 @@ def build_engine(
     logger.info("\n[Step 3/5] Configuring builder...")
     print(colored("\n[Step 3/5] Configuring builder...", print_color))
     config = builder.create_builder_config()
+
+    if use_cudagraph:
+        config.set_flag(trt.BuilderFlag.CUDAGRAPH)
+        logger.info("Enabled CUDAGRAPH mode")
+        print(colored("Enabled CUDAGRAPH mode", print_color))
 
     # Enable detailed profiling for engine inspection
     # This allows get_layer_information() to return layer types, precisions, tactics, etc.
