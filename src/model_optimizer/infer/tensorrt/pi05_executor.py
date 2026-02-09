@@ -48,9 +48,13 @@ class Pi05TensorRTExecutor(Executor):
                     return output
 
                 vit_engine = Engine(os.path.join(
-                    self.config.engine_path, self.config.vit_engine), \
-                        return_wrap=expert_return_wrap, perf=True)
-                self.pi05_model.paligemma_with_expert.paligemma.model.vision_tower = vit_engine
+                    self.config.engine_path, self.config.vit_engine),
+                    perf=True)
+
+                def get_image_features(pixel_values):
+                    return vit_engine(pixel_values)
+
+                self.pi05_model.paligemma_with_expert.paligemma.model.get_image_features = get_image_features
 
             if self.config.llm_engine:
                 print(

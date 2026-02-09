@@ -15,17 +15,17 @@ class Vit(torch.nn.Module, Model):
         super().__init__(**kwargs)
         self.config = config
         self.vision_tower = vision_tower
-#        self.multi_modal_projector = multi_modal_projector
+        self.multi_modal_projector = multi_modal_projector
 
     def forward(self, pixel_values):
-        logger.info(f'Pi05Vit input: {pixel_values.shape}')
+        #        logger.info(f'Pi05Vit input: {pixel_values.shape}')
         image_outputs = self.vision_tower(pixel_values)
-#        selected_image_feature = image_outputs.last_hidden_state
-#        image_features = self.multi_modal_projector(selected_image_feature)
-#        image_features = image_features / \
-#            (self.config.text_config.hidden_size ** 0.5)
+        selected_image_feature = image_outputs.last_hidden_state
+        image_features = self.multi_modal_projector(selected_image_feature)
+        image_features = image_features / \
+            (self.config.text_config.hidden_size ** 0.5)
 #        logger.info(f'Pi05Vit output: {image_features.shape}')
-        return image_outputs.last_hidden_state
+        return image_features
 
     def export(self, export_dir):
         self.eval().cuda()
@@ -49,10 +49,10 @@ class Vit(torch.nn.Module, Model):
                 opset_version=19,
                 dynamo=False,
                 do_constant_folding=True,
-#                dynamic_axes={
-#                    "pixel_values": {0: "batch_size"},
-#                    "vit_embeds": {0: "batch_size"},
-#                },
+                #                dynamic_axes={
+                #                    "pixel_values": {0: "batch_size"},
+                #                    "vit_embeds": {0: "batch_size"},
+                #                },
             )
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
@@ -71,7 +71,7 @@ class Vit(torch.nn.Module, Model):
         vit_model = cls(pi05_model.paligemma_with_expert.paligemma.config,
                         pi05_model.paligemma_with_expert.paligemma.model.vision_tower,
                         None).to(dtype)
-                        #pi05_model.paligemma_with_expert.paligemma.model.multi_modal_projector).to(dtype)
+        # pi05_model.paligemma_with_expert.paligemma.model.multi_modal_projector).to(dtype)
         return vit_model
 
     @classmethod
