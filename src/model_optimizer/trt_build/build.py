@@ -95,9 +95,9 @@ def build_engine(
     config = builder.create_builder_config()
 
     if use_cudagraph:
-        config.set_flag(trt.BuilderFlag.CUDAGRAPH)
-        logger.info("Enabled CUDAGRAPH mode")
-        print(colored("Enabled CUDAGRAPH mode", print_color))
+        config.set_flag(trt.BuilderFlag.CUDA_GRAPH)
+        logger.info("Enabled CUDA_GRAPH mode")
+        print(colored("Enabled CUDA_GRAPH mode", print_color))
 
     # Enable detailed profiling for engine inspection
     # This allows get_layer_information() to return layer types, precisions, tactics, etc.

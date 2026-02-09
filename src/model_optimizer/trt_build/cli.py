@@ -37,7 +37,7 @@ def build_cli(args):
     parser.add_argument('--model_path', type=str, required=True)
     parser.add_argument('--build_cfg', type=str, required=True)
     parser.add_argument('--export_dir', type=str, required=True)
-    parser.add_argument('--use_cudagraph', type=bool, default=True)
+    parser.add_argument('--use_cudagraph', type=bool, default=False)
     args = parser.parse_args(args[1:])
     print(f'[cli] build args {args}')
 
