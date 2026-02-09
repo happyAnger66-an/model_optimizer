@@ -84,8 +84,8 @@ class Pi05TensorRTExecutor(Executor):
                     outputs = llm_engine(
                         inputs_embeds, attention_mask, position_ids)
                     k_v_cache = self._wrap_past_key_values(
-                        outputs['past_key_values'],
-                        outputs['past_key_values'])
+                        outputs['past_keys'],
+                        outputs['past_values'])
 
                     output = BaseModelOutputWithPooling(
                         last_hidden_state=outputs['last_hidden_state'],
