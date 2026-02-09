@@ -67,7 +67,7 @@ class Pi05TensorRTExecutor(Executor):
                 print(
                     colored(f"replace language_model with {self.config.llm_engine}", "green"))
                 llm_engine = Engine(os.path.join(
-                    self.config.engine_path, "llm.engine"))
+                    self.config.engine_path, "llm.engine"), perf=True)
 
                 def llm_forward(input_ids=None,
                                 attention_mask=None,
