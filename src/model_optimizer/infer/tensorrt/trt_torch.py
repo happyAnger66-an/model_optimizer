@@ -27,7 +27,7 @@ from transformers.modeling_outputs import BaseModelOutputWithPooling
 from termcolor import colored
 
 
-def torch_type(trt_type):
+def torch_type(name, trt_type):
     mapping = {
         trt.float32: torch.float32,
         trt.float16: torch.float16,
@@ -36,12 +36,13 @@ def torch_type(trt_type):
         trt.bool: torch.bool,
         trt.uint8: torch.uint8,
         trt.int64: torch.int64,
+        trt.bfloat16: torch.bfloat16,
     }
     if trt_type in mapping:
         return mapping[trt_type]
 
     raise TypeError(
-        f"Could not resolve TensorRT datatype to an equivalent numpy datatype. {trt_type}"
+        f"Could not resolve {name} TensorRT datatype to an equivalent numpy datatype. {trt_type}"
     )
 
 
@@ -58,7 +59,7 @@ class Engine(object):
         self.load(file)
         self.return_wrap = return_wrap
         self.perf = perf
-        
+
         if self.perf:
             self.time_results = {
                 'total': [],
@@ -104,7 +105,8 @@ class Engine(object):
         self.meta, self.in_meta, self.out_meta = [], [], []
         for tensor_name in self.handle:
             shape = self.handle.get_tensor_shape(tensor_name)
-            dtype = torch_type(self.handle.get_tensor_dtype(tensor_name))
+            dtype = torch_type(
+                tensor_name, self.handle.get_tensor_dtype(tensor_name))
             if self.handle.get_tensor_mode(tensor_name) == trt.TensorIOMode.INPUT:
                 self.in_meta.append([tensor_name, shape, dtype])
             else:
@@ -181,7 +183,8 @@ class Engine(object):
         end_time = time.perf_counter()
         if self.perf and self.count > 100:
             self.time_results['total'].append(end_time - start_time)
-            print(colored(f"total time: {np.mean(self.time_results['total'])*1000:.2f} ± {np.std(self.time_results['total'])*1000:.2f} ms", "green"))
+            print(colored(
+                f"total time: {np.mean(self.time_results['total'])*1000:.2f} ± {np.std(self.time_results['total'])*1000:.2f} ms", "green"))
 
         if return_list:
             print(f"return_list: {return_list}")
