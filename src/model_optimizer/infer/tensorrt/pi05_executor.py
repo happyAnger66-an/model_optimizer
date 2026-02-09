@@ -41,14 +41,11 @@ class Pi05TensorRTExecutor(Executor):
                 print(
                     colored(f"replace vision_tower with {self.config.vit_engine}", "green"))
 
-                def expert_return_wrap(output):
-                    output = BaseModelOutputWithPooling(
-                        last_hidden_state=output['last_hidden_state'],
-                    )
-                    return output
+                def vit_return_wrap(output):
+                    return output['last_hidden_state'],
 
                 vit_engine = Engine(os.path.join(
-                    self.config.engine_path, self.config.vit_engine),
+                    self.config.engine_path, self.config.vit_engine, return_wrap=vit_return_wrap),
                     perf=True)
 
                 def get_image_features(pixel_values):
