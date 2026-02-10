@@ -61,9 +61,7 @@ class Expert(torch.nn.Module, Model):
             cond = cond.to(torch.float32)
             return old_dense_forward(old_model, cond)
 
-        self.gemma_expert.rms_norm.dense.forward = rms_norm_dense_forward
-
-#        self.to(torch.float16)
+        self.gemma_expert.norm.dense.forward = rms_norm_dense_forward
 
         output_dir = export_dir
         os.makedirs(output_dir, exist_ok=True)
