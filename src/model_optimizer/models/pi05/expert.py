@@ -122,7 +122,7 @@ class Expert(torch.nn.Module, Model):
                              "inputs_embeds", "adarms_cond", "past_keys", "past_values"],
                 output_names=["last_hidden_state"],
                 opset_version=19,
-                dynamo=False,
+                dynamo=True,
                 do_constant_folding=True,
                 dynamic_axes={
                     "attention_mask": {0: "batch_size", 2: "action_seq_len", 3: "llm_seq_len"},
