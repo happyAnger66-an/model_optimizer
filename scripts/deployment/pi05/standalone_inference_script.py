@@ -36,7 +36,7 @@ warnings.simplefilter("ignore", category=FutureWarning)
 Combined inference script supporting both PyTorch and TensorRT modes.
 
 Example commands:
- 
+
 # PyTorch mode (default):
 python groot/scripts/deployment/standalone_inference_script.py \
   --model_path /path/to/checkpoint \
@@ -88,6 +88,48 @@ def parse_action(action: dict[str, Any]) -> dict[str, Any]:
     return {f"action.{key}": action[key][0] for key in action}
 
 
+def save_input_data(input_data_list: list[dict[str, Any]], save_input_path: str):
+    save_dict = {}
+    for i, data_dict in enumerate(input_data_list):
+        for key, value in data_dict.items():
+            # 创建唯一的键名：索引_键名
+            save_key = f"item_{i}_{key}"
+            save_dict[save_key] = value
+
+    save_dict['metadata'] = np.array({
+        'num_items': len(input_data_list),
+        'item_keys': list(input_data_list[0].keys()) if input_data_list else []
+    }, dtype=object)
+
+    np.savez(f'{save_input_path}/inputs.npz', **save_dict)
+
+def load_input_data(input_data_file: str):
+    """
+    从npz文件加载字典列表
+    """
+    loaded = np.load(input_data_file, allow_pickle=True)
+    
+    # 提取元数据
+    meta = loaded['metadata'].item()
+    num_items = meta['num_items']
+    
+    # 重建字典列表
+    result = []
+    for i in range(num_items):
+        item_dict = {}
+        # 查找属于当前item的所有键
+        for key in loaded.files:
+            if key.startswith(f"item_{i}_"):
+                original_key = key.replace(f"item_{i}_", "", 1)
+                item_dict[original_key] = loaded[key]
+        
+        if item_dict:  # 只添加非空字典
+            result.append(item_dict)
+    
+    loaded.close()
+    return result
+
+
 def run_single_trajectory(
     policy: BasePolicy,
     loader: DataLoader,
@@ -97,6 +139,7 @@ def run_single_trajectory(
     action_horizon=10,
     skip_timing_steps=1,
     perf=False,
+    args=None,
 ):
     """
     Run inference on a single trajectory.
@@ -138,19 +181,14 @@ def run_single_trajectory(
     from openpi.policies.libero_policy import make_libero_example
     import numpy as np
     time_results = []
+    input_data_list = []
+
     for i in range(40):
-      #      "observation/action": inputs_data["action"],
-      #      "observation/image": inputs_data["image"]["base_0_rgb"],
-      #      "observation/wrist_image": inputs_data["image"]["left_wrist_0_rgb"],
-      #      "prompt": inputs_data["tokenized_prompt"],
-      #  }
         obs = make_libero_example()
-    #    obs = {
-    #        "observation/state": np.random.rand(8),
-    #        "observation/image": np.random.randn(224, 224, 3).astype(np.float16),
-    #        "observation/wrist_image": np.random.randn(224, 224, 3).astype(np.float16),
-    #        "prompt": "do something",
-    #    }
+
+        if args.save_input_path:
+            input_data_list.append(obs)
+
         inference_start = time.time()
     #    import pdb; pdb.set_trace()
         _action_chunk, _ = policy.infer(obs)
@@ -163,10 +201,17 @@ def run_single_trajectory(
         if i > 10 and perf:
             time_results.append(inference_time)
     if perf:
-        print(colored(f"e2e {np.mean(time_results)*1000:.2f} ± {np.std(time_results)*1000:.2f} ms (shared)", "green"))
-        print(colored(f"action {np.mean(model.time_results['action'])*1000:.2f} ± {np.std(model.time_results['action'])*1000:.2f} ms (shared)", "green"))
-        print(colored(f"vit {np.mean(model.time_results['vit'])*1000:.2f} ± {np.std(model.time_results['vit'])*1000:.2f} ms (shared)", "green"))
-        print(colored(f"llm {np.mean(model.time_results['llm'])*1000:.2f} ± {np.std(model.time_results['llm'])*1000:.2f} ms (shared)", "green"))
+        print(colored(
+            f"e2e {np.mean(time_results)*1000:.2f} ± {np.std(time_results)*1000:.2f} ms (shared)", "green"))
+        print(colored(
+            f"action {np.mean(model.time_results['action'])*1000:.2f} ± {np.std(model.time_results['action'])*1000:.2f} ms (shared)", "green"))
+        print(colored(
+            f"vit {np.mean(model.time_results['vit'])*1000:.2f} ± {np.std(model.time_results['vit'])*1000:.2f} ms (shared)", "green"))
+        print(colored(
+            f"llm {np.mean(model.time_results['llm'])*1000:.2f} ± {np.std(model.time_results['llm'])*1000:.2f} ms (shared)", "green"))
+
+    if args.save_input_path:
+        save_input_data(input_data_list, args.save_input_path)
 #    print(colored(f"Time results: {time_results}", "green"))
 #    print(f"Average time: {sum(time_results) / len(time_results):.4f} seconds")
 #    print(colored(f"Min time: {min(time_results):.4f} seconds", "green"))
@@ -176,6 +221,7 @@ def run_single_trajectory(
 #    print(colored(f"90th percentile time: {np.percentile(time_results, 90):.4f} seconds", "green"))
 #    print(colored(f"95th percentile time: {np.percentile(time_results, 95):.4f} seconds", "green"))
 #    print(colored(f"99th percentile time: {np.percentile(time_results, 99):.4f} seconds", "green"))
+
 
 @dataclass
 class ArgsConfig:
@@ -235,6 +281,15 @@ class ArgsConfig:
     save_plot_path: str | None = None
     """Path to save the plot to."""
 
+    input_data_path: str | None = None
+    """Path the input data to."""
+
+    save_input_path: str | None = None
+    """Path to save the input to."""
+
+    save_output_path: str | None = None
+    """Path to save the output to."""
+
     skip_timing_steps: int = 1
     """Number of initial inference steps to skip when calculating timing statistics (default: 1 to exclude warmup)."""
 
@@ -243,7 +298,7 @@ class ArgsConfig:
 
     seed: int = 42
     """Seed to use for reproducibility."""
-    
+
     perf: bool = False
     """Whether to get performance statistics."""
 
@@ -301,24 +356,24 @@ def main(args: ArgsConfig):
             print(colored(f"Use Precision: {precision}", "green"))
             executor = Pi05TensorRTExecutor(policy, precision)
             config = None
-            
+
             if args.trt_engine_path:
                 config = {
                     "engine_path": args.trt_engine_path,
                 }
-                
+
             if args.expert_engine:
                 config["expert_engine"] = args.expert_engine
-                
+
             if args.vit_engine:
                 config["vit_engine"] = args.vit_engine
-                
+
             if args.llm_engine:
                 config["llm_engine"] = args.llm_engine
-           
+
             if config is not None:
-                config = addict.Dict(config)    
-            #config = None
+                config = addict.Dict(config)
+            # config = None
 #            import pdb; pdb.set_trace()
             executor.load_model(config)
             logging.info(" TensorRT mode enabled")
@@ -379,6 +434,7 @@ def main(args: ArgsConfig):
         action_horizon=args.action_horizon,
         skip_timing_steps=args.skip_timing_steps,
         perf=args.perf,
+        args=args,
     )
 
     return pred_actions
