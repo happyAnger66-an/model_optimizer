@@ -6,25 +6,49 @@ from openpi.models_pytorch.pi0_pytorch import PI0Pytorch
 from openpi.training import config as _config
 from openpi.policies import policy_config
 
-from ..model import Model, register_model
+from ..model import Model
 from .vit import Vit
 from .llm import LLM
 from .expert import Expert
+from termcolor import colored
 
 from model_optimizer.infer.tensorrt.trt_torch import Engine
 
+
 class Pi05Model(Model):
-    def __init__(self, model_name, model_path, pi05_model=None):
+    def __init__(self, model_name, model_path=None, pi05_model=None):
+        if model_path is None:
+            self.pi05_model = model_name._model
+            self.embedding_layer = None
+            return
+
         super().__init__(model_name, model_path)
         self.pi05_model = pi05_model
         self.embedding_layer = None
-    def load(self, config):
+        print(colored(f"Start Pi05Model load...", "green"))
+        self.load()
+        print(colored(f"Pi05Model load done.", "green"))
+
+    def __getattr__(self, name):
+        return getattr(self.pi05_model, name)
+
+    @property
+    def model(self):
+        return self.pi05_model
+
+    @property
+    def config(self):
+        return self.pi05_model.config
+
+    def load(self):
         if self.pi05_model is not None:
-            raise ValueError("pi05_model is already set")
-        self.pi05_model = self._get_pi0_model(self.model_name, self.model_path)
+            print(colored("pi05_model is already set", "red"))
+            return
+        self.pi05_model = self._get_pi0_model()
 
     def _get_pi0_model(self):
         config = _config.get_config(self.model_name)
+        print(colored(f'pi05 model config: {config}', "dark_grey"))
         policy = policy_config.create_trained_policy(config, self.model_path)
         pi05_model = policy._model
 
@@ -43,6 +67,7 @@ class Pi05Model(Model):
         if hasattr(self.pi05_model.paligemma_with_expert.gemma_expert, "lm_head"):
             del self.pi05_model.paligemma_with_expert.gemma_expert.lm_head
         torch.cuda.empty_cache()
+
     def setup_tensorrt(self, engine_path, device="cuda"):
         self._release_pytorch_model()
         vit_engine = Engine(os.path.join(engine_path, "vit.engine"))
@@ -57,8 +82,10 @@ class Pi05Model(Model):
 
     @classmethod
     def construct_from_name_path(cls, model_name, model_path):
-        return cls(model_name, model_path)
-    
+        real_name = model_name.split("/")[0]
+        print(f'pi05 model name: {real_name}')
+        return cls(real_name, model_path)
+
     @property
     def model(self):
         return self.pi05_model
@@ -81,9 +108,13 @@ class Pi05Model(Model):
             raise ValueError(f"Invalid sub model name: {sub_model_name}")
         sub_model.quantize(model_dir, quant_cfg, calib_data, calib_method)
 
-    def export_onnx(self, *args, **kwargs):
-        export_dir = args[0]
-        vit_model = Vit.export_onnx(self.pi05_model, export_dir)
-        llm_model = LLM.export_onnx(self.pi05_model, export_dir)
-        expert_model = Expert.export_onnx(self.pi05_model, export_dir)
+    def export(self, output_dir):
+        vit_model = Vit.construct_model(self.pi05_model)
+        vit_model.export(output_dir)
+
+        llm_model = LLM.construct_model(self.pi05_model)
+        llm_model.export(output_dir)
+
+        expert_model = Expert.construct_model(self.pi05_model)
+        expert_model.export(output_dir)
         return vit_model, llm_model, expert_model

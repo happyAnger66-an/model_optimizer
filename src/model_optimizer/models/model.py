@@ -10,28 +10,38 @@ class Model:
         self.model_name = model_name
         self.model_path = model_path
 
+    def simplifier_model(self, model_path, output_dir):
+        raise NotImplementedError
+
     def load(self, config):
         raise NotImplementedError
+
+    def val(self, val_data, batch_size, output_dir):
+        raise NotImplementedError
+
+    @classmethod
+    def construct_from_name_path(cls, model_name, model_path):
+        return cls(model_name, model_path)
 
     def export_onnx(self, *args, **kwargs):
         raise NotImplementedError
 
-    def quantize_start(self, quant_cfg, quant_mode, calib_data, export_dir):
+    def quantize_start(self, quant_cfg, calib_data, calib_method):
         pass
 
-    def quantize_end(self):
+    def quantize_end(self, export_dir):
         pass
 
-    def quantize(self, quant_cfg, calib_data, calib_method):
+    def quantize(self, quant_cfg, calib_data, calib_method, export_dir, input_shapes=None):
         self.quantize_start(quant_cfg, calib_data, calib_method)
 
         calibrate_loop = self.get_model_calibrate_loop(calib_data)
-        mto.quantize(self.model, quant_cfg,
+        mtq.quantize(self.model, quant_cfg,
                      forward_loop=calibrate_loop)
         print(f'quantize summary')
-        mto.print_quant_summary(self.model)
+        mtq.print_quant_summary(self.model)
 
-        self.quantize_end()
+        self.quantize_end(export_dir)
 
         # from model_optimizer.quantization.quantization_utils import quantize_model
         # quantize_model(self, quant_cfg, calib_data, calib_method)

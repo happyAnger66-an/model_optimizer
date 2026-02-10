@@ -34,6 +34,12 @@ def quantize_onnx(model_path, calibrate_data, export_dir, quant_mode, calibrate_
     write_running_log(export_dir, content)
 
 
+def get_quant_cfg(quant_cfg_file):
+    from model_optimizer.config.config import load_settings
+    settings = load_settings(quant_cfg_file)
+    return settings.QUANT_CFG
+
+
 def quantize_cli(args):
     parser = argparse.ArgumentParser(
         description='模型量化工具：支持多种模型格式的量化操作',
@@ -43,32 +49,56 @@ def quantize_cli(args):
                '               --calibrate_data data.npz --export_dir ./output'
     )
     parser.add_argument('--model_name', type=str, default="pi05_libero",
-                       help='模型名称，用于注册表中查找对应的模型类 (默认: pi05_libero)')
+                        help='模型名称，用于注册表中查找对应的模型类 (默认: pi05_libero)')
     parser.add_argument('--model_path', type=str, required=True,
-                       help='模型文件路径 (必需)')
+                        help='模型文件路径 (必需)')
 #    parser.add_argument('--config_name', type=str, default="pi05_libero")
     parser.add_argument('--model_type', type=str, default="hf",
-                       help='模型类型，例如: hf, llm 等 (默认: hf)')
+                        help='模型类型，例如: hf, llm 等 (默认: hf)')
     parser.add_argument('--quantize_cfg', type=str, required=True,
-                       help='量化配置文件路径，包含量化参数配置 (必需)')
+                        help='量化配置文件路径，包含量化参数配置 (必需)')
     parser.add_argument('--calibrate_data', type=str, required=True,
-                       help='校准数据文件路径，用于量化校准的输入数据 (必需)')
+                        help='校准数据文件路径，用于量化校准的输入数据 (必需)')
     parser.add_argument('--calibrate_method', type=str, default="max",
-                       help='校准方法，可选值: max, entropy, awq_clip, rtn_dq 等 (默认: max)')
+                        help='校准方法，可选值: max, entropy, awq_clip, rtn_dq 等 (默认: max)')
+    parser.add_argument('--verify', type=bool, default=True,
+                        help='是否验证量化后的模型，可选值: true, false (默认: true)')
+    parser.add_argument('--verify_data', type=str, default=None,
+                        help='验证数据文件路径，用于验证量化后的模型 (可选)')
     parser.add_argument('--export_dir', type=str, required=True,
-                       help='导出目录，量化后的模型将保存到此目录 (必需)')
+                        help='导出目录，量化后的模型将保存到此目录 (必需)')
+    parser.add_argument('--input_shapes', type=str, default=None,
+                        help='输入数据形状，用于量化校准的输入数据 (可选)')
     args = parser.parse_args(args[1:])
     print(f'[cli] quantize args {args}')
 
     model_name = args.model_name
     model_path = args.model_path
-    
+
     from ..models.registry import get_model_cls
     model_cls = get_model_cls(model_name)
     model = model_cls.construct_from_name_path(model_name, model_path)
-    model.quantize(args.quantize_cfg, args.calibrate_data,
-                   args.calibrate_method)
-    model.export(args.export_dir)
+
+    old_metric, new_metric = None, None
+    if args.verify:
+        print(f'verify model {args.verify_data} before quantize')
+        old_metric = model.val(
+            args.verify_data, batch_size=1, output_dir=args.export_dir)
+
+    quant_cfg = get_quant_cfg(args.quantize_cfg)
+    print(f' !!!!!! quant_cfg: {quant_cfg} !!!!!!!!!')
+    model.quantize(quant_cfg, args.calibrate_data,
+                   args.calibrate_method, args.export_dir, args.input_shapes)
+
+    if args.verify:
+        print(f'verify model {args.verify_data} after quantize')
+        new_metric = model.val(
+            args.verify_data, batch_size=1, output_dir=args.export_dir)
+
+    if old_metric and new_metric:
+        old_metric.compare(new_metric)
+
+#    model.export(args.export_dir)
 
 
 '''

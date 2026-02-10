@@ -16,12 +16,18 @@
 import atexit
 import ctypes
 import os
+import time
+import numpy as np
 
 import tensorrt as trt
 import torch
 
+from transformers.modeling_outputs import BaseModelOutputWithPooling
 
-def torch_type(trt_type):
+from termcolor import colored
+
+
+def torch_type(name, trt_type):
     mapping = {
         trt.float32: torch.float32,
         trt.float16: torch.float16,
@@ -30,25 +36,35 @@ def torch_type(trt_type):
         trt.bool: torch.bool,
         trt.uint8: torch.uint8,
         trt.int64: torch.int64,
+        trt.bfloat16: torch.bfloat16,
     }
     if trt_type in mapping:
         return mapping[trt_type]
 
     raise TypeError(
-        f"Could not resolve TensorRT datatype to an equivalent numpy datatype. {trt_type}"
+        f"Could not resolve {name} TensorRT datatype to an equivalent numpy datatype. {trt_type}"
     )
 
 
 class Engine(object):
-    def __init__(self, file, plugins=[]):
+    def __init__(self, file, return_wrap=None, perf=False, plugins=[]):
         super().__init__()
 
         self.logger = trt.Logger(trt.Logger.ERROR)
         trt.init_libnvinfer_plugins(self.logger, "")
 
-        self.plugins = [ctypes.CDLL(plugin, ctypes.RTLD_GLOBAL) for plugin in plugins]
+        self.plugins = [ctypes.CDLL(plugin, ctypes.RTLD_GLOBAL)
+                        for plugin in plugins]
         self.file = file
         self.load(file)
+        self.return_wrap = return_wrap
+        self.perf = perf
+
+        if self.perf:
+            self.time_results = {
+                'total': [],
+            }
+            self.count = 0
 
         def destroy(self):
             del self.execution_context
@@ -66,12 +82,14 @@ class Engine(object):
         print(f"Inputs: {len(self.in_meta)}")
         for ib, item in enumerate(self.in_meta):
             tensor_name, shape, dtype = item[:3]
-            print(f"   {ib}. {tensor_name}: {'x'.join(map(str, shape))} [{dtype}]")
+            print(
+                f"   {ib}. {tensor_name}: {'x'.join(map(str, shape))} [{dtype}]")
 
         print(f"Outputs: {len(self.out_meta)}")
         for ib, item in enumerate(self.out_meta):
             tensor_name, shape, dtype = item[:3]
-            print(f"   {ib}. {tensor_name}: {'x'.join(map(str, shape))} [{dtype}]")
+            print(
+                f"   {ib}. {tensor_name}: {'x'.join(map(str, shape))} [{dtype}]")
         print("=============================================")
 
     def load(self, file):
@@ -87,7 +105,8 @@ class Engine(object):
         self.meta, self.in_meta, self.out_meta = [], [], []
         for tensor_name in self.handle:
             shape = self.handle.get_tensor_shape(tensor_name)
-            dtype = torch_type(self.handle.get_tensor_dtype(tensor_name))
+            dtype = torch_type(
+                tensor_name, self.handle.get_tensor_dtype(tensor_name))
             if self.handle.get_tensor_mode(tensor_name) == trt.TensorIOMode.INPUT:
                 self.in_meta.append([tensor_name, shape, dtype])
             else:
@@ -100,17 +119,24 @@ class Engine(object):
         self.execution_context.set_input_shape(name, shape)
 
     def forward(self, *args, **kwargs):
+        self.count += 1
+        start_time = time.perf_counter()
         return_list = kwargs.pop("return_list", False)
         reference_tensors = []
         stream = torch.cuda.current_stream()
         for iarg, x in enumerate(args):
             name, shape, dtype = self.in_meta[iarg]
             runtime_shape = self.execution_context.get_tensor_shape(name)
-            assert isinstance(x, torch.Tensor), f"Unsupported tensor type: {type(x)}"
+            assert isinstance(
+                x, torch.Tensor), f"Unsupported tensor type: {type(x)}"
             assert runtime_shape == x.shape, f"Invalid input shape: {runtime_shape} != {x.shape}"
-            assert (
-                dtype == x.dtype
-            ), f"Invalid tensor dtype, excepted dtype is {dtype}, but got {x.dtype}"
+            if dtype != x.dtype:
+                print(colored(
+                    f"Invalid tensor dtype {name}, excepted dtype is {dtype}, but got {x.dtype} Convert to {dtype}", "red"))
+                x = x.to(dtype)
+#            assert (
+#                dtype == x.dtype
+#            ), f"Invalid tensor dtype {name}, excepted dtype is {dtype}, but got {x.dtype}"
             assert x.is_cuda, f"Invalid tensor device, excepted device is cuda, but got {x.device}"
             x = x.cuda().contiguous()
             self.execution_context.set_tensor_address(name, x.data_ptr())
@@ -122,13 +148,14 @@ class Engine(object):
 
             runtime_shape = self.execution_context.get_tensor_shape(name)
             x = kwargs[name]
-            assert isinstance(x, torch.Tensor), f"Unsupported tensor[{name}] type: {type(x)}"
+            assert isinstance(
+                x, torch.Tensor), f"Unsupported tensor[{name}] type: {type(x)}"
             assert (
                 runtime_shape == x.shape
             ), f"Invalid input[{name}] shape: {x.shape}, but the expected shape is: {runtime_shape}"
             assert (
                 dtype == x.dtype
-            ), f"Invalid tensor[{name}] dtype, expected dtype is {dtype}, but got {x.dtype}"
+            ), f"Invalid tensor {name} dtype, expected dtype is {dtype}, but got {x.dtype}"
             assert (
                 x.is_cuda
             ), f"Invalid tensor[{name}] device, expected device is cuda, but got {x.device}"
@@ -142,21 +169,38 @@ class Engine(object):
             output_tensor = torch.zeros(
                 *runtime_shape, dtype=item[2], device=reference_tensors[0].device
             )
-            self.execution_context.set_tensor_address(name, output_tensor.data_ptr())
+            self.execution_context.set_tensor_address(
+                name, output_tensor.data_ptr())
             reference_tensors.append(output_tensor)
 
+#        import pdb; pdb.set_trace()
         self.execution_context.execute_async_v3(stream.cuda_stream)
         stream.synchronize()
         assert len(reference_tensors) == len(self.in_meta) + len(
             self.out_meta
         ), f"Invalid input tensors. The expected I/O tensors are {len(self.in_meta) + len(self.out_meta)}, but got {len(reference_tensors)}"
 
+        end_time = time.perf_counter()
+        if self.perf and self.count > 100:
+            self.time_results['total'].append(end_time - start_time)
+            print(colored(
+                f"total time: {np.mean(self.time_results['total'])*1000:.2f} ± {np.std(self.time_results['total'])*1000:.2f} ms", "green"))
+
         if return_list:
+            print(f"return_list: {return_list}")
             return [
                 reference_tensors[len(self.in_meta) + i] for i, item in enumerate(self.out_meta)
             ]
         else:
-            return {
+            #            output = BaseModelOutputWithPooling(
+            #                last_hidden_state=reference_tensors[len(self.in_meta)]
+            #            )
+            #            print(f"output: {output}")
+            #           return output
+            output = {
                 item[0]: reference_tensors[len(self.in_meta) + i]
                 for i, item in enumerate(self.out_meta)
             }
+            if self.return_wrap:
+                output = self.return_wrap(output)
+            return output

@@ -1,5 +1,6 @@
 setuptools_scm
 gradio
+addict
 
 ultralytics
 opencv-python-headless
@@ -7,21 +8,26 @@ opencv-python-headless
 onnx>=1.12.0,<=1.19.1
 onnxslim>=0.1.71
 onnxruntime-gpu
+onnx2pytorch
 
 nvidia-modelopt[all]
 safetensors==0.7.0
-
+transformers==4.53.2
 #YOLO
 ultralytics
 
-etils
-importlib_resources
-flax==0.10.2
-tyro>=0.9.5
-augmax>=0.3.4
-beartype==0.19.0
-jaxtyping==0.2.36
-ml_collections==1.0.0
-numpydantic>=1.6.6
-av>=15.0.0,<16.0.0
-gcsfs
+#etils
+#importlib_resources
+#flax==0.10.2
+#tyro>=0.9.5
+#augmax>=0.3.4
+#beartype==0.19.0
+#jaxtyping==0.2.36
+#pytest
+#ml_collections==1.0.0
+#sentencepiece
+#tqdm_loggable
+#numpydantic>=1.6.6
+#lerobot
+#av>=15.0.0,<16.0.0
+#gcsfs
