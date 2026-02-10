@@ -35,7 +35,7 @@ class Pi05Model(Model):
     @property
     def model(self):
         return self.pi05_model
-    
+
     @property
     def config(self):
         return self.pi05_model.config
@@ -49,8 +49,6 @@ class Pi05Model(Model):
     def _get_pi0_model(self):
         config = _config.get_config(self.model_name)
         print(colored(f'pi05 model config: {config}', "dark_grey"))
-#        import pdb;pdb.set_trace()
-#        config.model.dtype='float16'
         policy = policy_config.create_trained_policy(config, self.model_path)
         pi05_model = policy._model
 
