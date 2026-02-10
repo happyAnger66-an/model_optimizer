@@ -1,5 +1,5 @@
 build_cfg = {
-    "precision": "fp16",
+    "precision": "bf16",
     "workspace_mb": 8192,
     "min_shapes": {
         "attention_mask": (1, 1, 10, 978),
