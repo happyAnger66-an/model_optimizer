@@ -16,4 +16,5 @@ def compare_cli(args: Optional[dict[str, Any]] = None) -> None:
 
     data1 = load_saved_data(args.data_path1)
     data2 = load_saved_data(args.data_path2)
-    compare_predictions(data1, data2)
+    for data_1, data_2 in zip(data1, data2):
+        compare_predictions(data_1, data_2)
