@@ -39,7 +39,7 @@ $ docker run -it --gpus -v$(pwd):/srcs all nvcr.io/nvidia/tensorrt:25.10-py3
 
 ## 3. Supported Models
 
-|**Architectur**|**Model**||
+|**Architecture**|**Model**||
 |-|-|-|
 |YOLO11|yolo||
 |π0.5|pi05_libero||
@@ -70,6 +70,8 @@ llm 100.47 ± 1.55 ms (shared)
 + `inference_mode`: `tensorrt` or `pytorch`, choose tensorrt or pytorch as inference backend.
 + `--perf`: perf stats
 
+#### 4.2 For more cli usages
+[ALL CLI usage docs](./docs/cli.md)
 
 ### 4.2 WebPage (Not all ready yet.)
 use it in the web browser: `http://ip:7860`
