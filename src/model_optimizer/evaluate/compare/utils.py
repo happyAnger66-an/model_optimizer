@@ -26,6 +26,9 @@ def compare_predictions(pred_tensorrt, pred_torch):
         tensorrt_array = pred_tensorrt[key]
         torch_array = pred_torch[key]
 
+        if key == "prompt":
+            continue
+
         # Convert to PyTorch tensors
         tensorrt_tensor = torch.from_numpy(tensorrt_array).to(torch.float32)
         torch_tensor = torch.from_numpy(torch_array).to(torch.float32)
