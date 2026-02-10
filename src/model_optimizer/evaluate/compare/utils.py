@@ -3,7 +3,8 @@ import torch
 from termcolor import colored
 
 
-def compare_predictions(pred_tensorrt, pred_torch, filter_keys=None):
+def compare_predictions(pred_tensorrt, pred_torch, key1="PyTorch",
+                        key2="TensorRT", filter_keys=None):
     """
     Compare the similarity between TensorRT and PyTorch predictions
 
@@ -18,11 +19,11 @@ def compare_predictions(pred_tensorrt, pred_torch, filter_keys=None):
 
     # Calculate max label width for alignment
     max_label_width = max(
-        len("Cosine Similarity (PyTorch/TensorRT):"),
-        len("L1 Mean/Max Distance (PyTorch/TensorRT):"),
-        len("Max Output Values (PyTorch/TensorRT):"),
-        len("Mean Output Values (PyTorch/TensorRT):"),
-        len("Min Output Values (PyTorch/TensorRT):"),
+        len(f"Cosine Similarity ({key1}/{key2}):"),
+        len(f"L1 Mean/Max Distance ({key1}/{key2}):"),
+        len(f"Max Output Values ({key1}/{key2}):"),
+        len(f"Mean Output Values ({key1}/{key2}):"),
+        len(f"Min Output Values ({key1}/{key2}):"),
     )
 
     for key in pred_tensorrt.keys():
@@ -58,16 +59,16 @@ def compare_predictions(pred_tensorrt, pred_torch, filter_keys=None):
 
         print(colored(f"\n{key}:", "yellow"))
         print(
-            f'{"Cosine Similarity (PyTorch/TensorRT):".ljust(max_label_width)} {cos_sim.item()}')
+            f'{f"Cosine Similarity ({key1}/{key2}):".ljust(max_label_width)} {cos_sim.item()}')
         print(
-            f'{"L1 Mean/Max Distance (PyTorch/TensorRT):".ljust(max_label_width)} {l1_dist.mean().item():.4f}/{l1_dist.max().item():.4f}'
+            f'{f"L1 Mean/Max Distance ({key1}/{key2}):".ljust(max_label_width)} {l1_dist.mean().item():.4f}/{l1_dist.max().item():.4f}'
         )
         print(
-            f'{"Max Output Values (PyTorch/TensorRT):".ljust(max_label_width)} {torch_tensor.max().item():.4f}/{tensorrt_tensor.max().item():.4f}'
+            f'{f"Max Output Values ({key1}/{key2}):".ljust(max_label_width)} {torch_tensor.max().item():.4f}/{tensorrt_tensor.max().item():.4f}'
         )
         print(
-            f'{"Mean Output Values (PyTorch/TensorRT):".ljust(max_label_width)} {torch_tensor.mean().item():.4f}/{tensorrt_tensor.mean().item():.4f}'
+            f'{f"Mean Output Values ({key1}/{key2}):".ljust(max_label_width)} {torch_tensor.mean().item():.4f}/{tensorrt_tensor.mean().item():.4f}'
         )
         print(
-            f'{"Min Output Values (PyTorch/TensorRT):".ljust(max_label_width)} {torch_tensor.min().item():.4f}/{tensorrt_tensor.min().item():.4f}'
+            f'{f"Min Output Values ({key1}/{key2}):".ljust(max_label_width)} {torch_tensor.min().item():.4f}/{tensorrt_tensor.min().item():.4f}'
         )
