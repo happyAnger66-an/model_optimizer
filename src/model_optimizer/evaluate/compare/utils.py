@@ -3,7 +3,7 @@ import torch
 from termcolor import colored
 
 
-def compare_predictions(pred_tensorrt, pred_torch):
+def compare_predictions(pred_tensorrt, pred_torch, filter_keys=None):
     """
     Compare the similarity between TensorRT and PyTorch predictions
 
@@ -29,7 +29,9 @@ def compare_predictions(pred_tensorrt, pred_torch):
         tensorrt_array = pred_tensorrt[key]
         torch_array = pred_torch[key]
 
-        if key == "prompt":
+        if filter_keys and key in filter_keys:
+            print(
+                colored(f"Skipping {key} because it is in the filter keys", "yellow"))
             continue
 
         # Convert to PyTorch tensors
