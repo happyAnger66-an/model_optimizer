@@ -43,16 +43,16 @@ class Expert(torch.nn.Module, Model):
     def construct_from_name_path(cls, model_name, model_path):
         from .model_pi05 import Pi05Model
         pi05_model = Pi05Model.construct_from_name_path(model_name, model_path)
-        return cls.construct_model(pi05_model, dtype=torch.float16)
+        return cls.construct_model(pi05_model, dtype=torch.bfloat16)
 
     @classmethod
-    def construct_model(cls, pi05_model, dtype=torch.float16):
+    def construct_model(cls, pi05_model, dtype=torch.bfloat16):
         gemma_expert_model = pi05_model.paligemma_with_expert.gemma_expert.model
         config = pi05_model.paligemma_with_expert.gemma_expert.config
-        expert_model = cls(config, gemma_expert_model).to(dtype)
+        expert_model = cls(config, gemma_expert_model)
         return expert_model
 
-    def export(self, export_dir):
+    def export(self, export_dir, export_dtype=torch.bfloat16):
         self.eval().cuda()
 #        self.to(torch.float16)
 
@@ -67,11 +67,11 @@ class Expert(torch.nn.Module, Model):
         print(colored(f'gemma_expert model config {self.config}', "dark_grey"))
 
         # time embeds
-        adarms_cond = torch.zeros(1, 1024, dtype=torch.float16, device="cuda")
+        adarms_cond = torch.zeros(1, 1024, dtype=export_dtype, device="cuda")
 
         # attention mask
         attention_mask = torch.randn((1, 1, 10, 978),
-                                     dtype=torch.float16,
+                                     dtype=export_dtype,
                                      device="cuda")
 
         # position ids
@@ -81,7 +81,7 @@ class Expert(torch.nn.Module, Model):
 
         # action embeds
         inputs_embeds = torch.randn((1, 10, 1024),
-                                    dtype=torch.float16,
+                                    dtype=export_dtype,
                                     device="cuda")
 
         # past key values
@@ -89,9 +89,9 @@ class Expert(torch.nn.Module, Model):
         past_values = []
         for _ in range(18):
             past_keys.append(torch.randn((1, 1, 968, 256),
-                             dtype=torch.float16, device="cuda"))
+                             dtype=export_dtype, device="cuda"))
             past_values.append(torch.randn(
-                (1, 1, 968, 256), dtype=torch.float16, device="cuda"))
+                (1, 1, 968, 256), dtype=export_dtype, device="cuda"))
 
         past_keys_tensor = torch.cat(past_keys, dim=0)
         past_values_tensor = torch.cat(past_values, dim=0)
@@ -120,7 +120,7 @@ class Expert(torch.nn.Module, Model):
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
         print(
-            colored(f"Expert export onnx done to {output_dir} cost:{end - start}s", "green"))
+            colored(f"Expert export onnx done to {output_dir} dtype:{export_dtype} cost:{end - start}s", "green"))
         return self
 
     @classmethod
