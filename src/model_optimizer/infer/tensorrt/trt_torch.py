@@ -132,7 +132,8 @@ class Engine(object):
             assert runtime_shape == x.shape, f"Invalid input shape: {runtime_shape} != {x.shape}"
             if dtype != x.dtype:
                 print(colored(
-                    f"Invalid tensor dtype {name}, excepted dtype is {dtype}, but got {x.dtype} Convert to {dtype}", "red"))
+                    f"CastType tensor dtype {name}, excepted dtype is {dtype}, \
+                        but got {x.dtype} Convert to {dtype}", "yellow"))
                 x = x.to(dtype)
 #            assert (
 #                dtype == x.dtype
