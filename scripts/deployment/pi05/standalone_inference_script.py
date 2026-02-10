@@ -156,8 +156,7 @@ def run_single_trajectory(
     action_horizon=10,
     skip_timing_steps=1,
     perf=False,
-    args=None,
-    loader: DataLoader = None,
+    args=None
 ):
     """
     Run inference on a single trajectory.
@@ -183,10 +182,10 @@ def run_single_trajectory(
     input_data_list = []
     output_data_list = []
 
-    for obs, act in loader:
-        print(f"loader data {obs.keys()} {act.keys()}")
+#    for obs, act in loader:
+#        print(f"loader data {obs.keys()} {act.keys()}")
 
-    i = 0
+#    i = 0
     for obs in get_input_data(args.input_data_path, 40):
         if args.save_input_path:
             input_data_list.append(obs)
@@ -359,13 +358,14 @@ def main(args: ArgsConfig):
 
     if local_model_path is not None:
         config = _config.get_config(args.config_name)
+        dataclasses.replace(config, max_token_len=1200)
 #        checkpoint_dir = download.maybe_download(
 #           "gs://openpi-assets/checkpoints/pi0_fast_droid")
         checkpoint_dir = local_model_path
         # Create a trained policy.
         policy = policy_config.create_trained_policy(config, checkpoint_dir)
 
-        loader = get_data_loader(config)
+#        loader = get_data_loader(config)
         # Apply inference mode: TensorRT or PyTorch
         if args.inference_mode == "tensorrt":
             from model_optimizer.infer.tensorrt.pi05_executor import Pi05TensorRTExecutor
@@ -458,7 +458,6 @@ def main(args: ArgsConfig):
         skip_timing_steps=args.skip_timing_steps,
         perf=args.perf,
         args=args,
-        loader=loader,
     )
 
     return pred_actions
