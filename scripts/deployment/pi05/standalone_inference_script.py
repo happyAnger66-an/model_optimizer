@@ -101,18 +101,21 @@ def save_input_data(input_data_list: list[dict[str, Any]], save_input_path: str)
         'item_keys': list(input_data_list[0].keys()) if input_data_list else []
     }, dtype=object)
 
+    if not os.path.exists(save_input_path):
+        os.makedirs(save_input_path)
     np.savez(f'{save_input_path}/inputs.npz', **save_dict)
+
 
 def load_input_data(input_data_file: str):
     """
     从npz文件加载字典列表
     """
     loaded = np.load(input_data_file, allow_pickle=True)
-    
+
     # 提取元数据
     meta = loaded['metadata'].item()
     num_items = meta['num_items']
-    
+
     # 重建字典列表
     result = []
     for i in range(num_items):
@@ -122,10 +125,10 @@ def load_input_data(input_data_file: str):
             if key.startswith(f"item_{i}_"):
                 original_key = key.replace(f"item_{i}_", "", 1)
                 item_dict[original_key] = loaded[key]
-        
+
         if item_dict:  # 只添加非空字典
             result.append(item_dict)
-    
+
     loaded.close()
     return result
 
@@ -211,6 +214,7 @@ def run_single_trajectory(
             f"llm {np.mean(model.time_results['llm'])*1000:.2f} ± {np.std(model.time_results['llm'])*1000:.2f} ms (shared)", "green"))
 
     if args.save_input_path:
+        print(colored(f"save input datas to {args.save_input_path}", "green"))
         save_input_data(input_data_list, args.save_input_path)
 #    print(colored(f"Time results: {time_results}", "green"))
 #    print(f"Average time: {sum(time_results) / len(time_results):.4f} seconds")
