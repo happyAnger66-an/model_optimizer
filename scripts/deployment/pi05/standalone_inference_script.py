@@ -132,6 +132,17 @@ def load_input_data(input_data_file: str):
     loaded.close()
     return result
 
+from openpi.policies.libero_policy import make_libero_example
+def get_input_data(input_data_file, max_nums = 40):
+    if input_data_file is None:
+        for i in range(max_nums):
+            obs = make_libero_example()
+            yield obs
+    else:
+        input_data_list = load_input_data(input_data_file)
+        for i in range(min(max_nums, len(input_data_list))):
+            yield input_data_list[i]
+
 
 def run_single_trajectory(
     policy: BasePolicy,
@@ -181,20 +192,22 @@ def run_single_trajectory(
     #        "tokenized_prompt_mask": obs.tokenized_prompt_mask.squeeze(0),
     #    }
 
-    from openpi.policies.libero_policy import make_libero_example
     import numpy as np
     time_results = []
     input_data_list = []
+    output_data_list = []
 
-    for i in range(40):
-        obs = make_libero_example()
-
+    for obs in get_input_data(args.input_data_path, 40):
         if args.save_input_path:
             input_data_list.append(obs)
 
         inference_start = time.time()
     #    import pdb; pdb.set_trace()
-        _action_chunk, _ = policy.infer(obs)
+        _action_chunk = policy.infer(obs)
+
+        if args.save_output_path:
+            output_data_list.append(_action_chunk)
+
         if perf:
             model = policy._model
             model.perf = True
@@ -216,6 +229,10 @@ def run_single_trajectory(
     if args.save_input_path:
         print(colored(f"save input datas to {args.save_input_path}", "green"))
         save_input_data(input_data_list, args.save_input_path)
+
+    if args.save_output_path:
+        print(colored(f"save output datas to {args.save_output_path}", "green"))
+        save_input_data(output_data_list, args.save_output_path)
 #    print(colored(f"Time results: {time_results}", "green"))
 #    print(f"Average time: {sum(time_results) / len(time_results):.4f} seconds")
 #    print(colored(f"Min time: {min(time_results):.4f} seconds", "green"))
