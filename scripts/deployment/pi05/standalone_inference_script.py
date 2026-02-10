@@ -157,6 +157,7 @@ def run_single_trajectory(
     skip_timing_steps=1,
     perf=False,
     args=None,
+    loader: DataLoader = None,
 ):
     """
     Run inference on a single trajectory.
@@ -181,6 +182,9 @@ def run_single_trajectory(
     time_results = []
     input_data_list = []
     output_data_list = []
+
+    for obs, act in loader:
+        print(f"loader data {obs.keys()} {act.keys()}")
 
     i = 0
     for obs in get_input_data(args.input_data_path, 40):
@@ -231,6 +235,15 @@ def run_single_trajectory(
 #    print(colored(f"95th percentile time: {np.percentile(time_results, 95):.4f} seconds", "green"))
 #    print(colored(f"99th percentile time: {np.percentile(time_results, 99):.4f} seconds", "green"))
 
+def get_data_loader(config):
+    # Reduce the batch size to reduce memory usage.
+    config = dataclasses.replace(config, batch_size=1)
+
+    # Load a single batch of data. This is the same data that will be used during training.
+    # NOTE: In order to make this example self-contained, we are skipping the normalization step
+    # since it requires the normalization statistics to be generated using `compute_norm_stats`.
+    loader = _data_loader.create_data_loader(config, num_batches=1, skip_norm_stats=True)
+    return loader
 
 @dataclass
 class ArgsConfig:
@@ -352,6 +365,7 @@ def main(args: ArgsConfig):
         # Create a trained policy.
         policy = policy_config.create_trained_policy(config, checkpoint_dir)
 
+        loader = get_data_loader(config)
         # Apply inference mode: TensorRT or PyTorch
         if args.inference_mode == "tensorrt":
             from model_optimizer.infer.tensorrt.pi05_executor import Pi05TensorRTExecutor
@@ -444,6 +458,7 @@ def main(args: ArgsConfig):
         skip_timing_steps=args.skip_timing_steps,
         perf=args.perf,
         args=args,
+        loader=loader,
     )
 
     return pred_actions
