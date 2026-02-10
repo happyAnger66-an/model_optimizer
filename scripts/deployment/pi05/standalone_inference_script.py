@@ -137,10 +137,12 @@ def get_input_data(input_data_file, max_nums = 40):
     if input_data_file is None:
         for i in range(max_nums):
             obs = make_libero_example()
+            print(f"make_libero_example {i}")
             yield obs
     else:
         input_data_list = load_input_data(input_data_file)
         for i in range(min(max_nums, len(input_data_list))):
+            print(f"load_input_data {i}")
             yield input_data_list[i]
 
 
