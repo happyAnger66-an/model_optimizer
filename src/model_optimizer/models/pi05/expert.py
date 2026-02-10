@@ -55,19 +55,19 @@ class Expert(torch.nn.Module, Model):
     def export(self, export_dir, export_dtype=torch.bfloat16):
         self.eval().cuda()
 
-        old_dense_forward = self.gemma_expert.norm.dense.forward
-        old_input_layernorm_dense_forward = self.gemma_expert.input_layernorm.dense.forward
+#        old_dense_forward = self.gemma_expert.norm.dense.forward
+#        old_input_layernorm_dense_forward = self.gemma_expert.input_layernorm.dense.forward
+#
+#        def norm_dense_forward(old_model, cond):
+#            cond = cond.to(torch.float32)
+#            return old_dense_forward(old_model, cond)
 
-        def rms_norm_dense_forward(old_model, cond):
-            cond = cond.to(torch.float32)
-            return old_dense_forward(old_model, cond)
-        
-        def input_layernorm_dense_forward(old_model, cond):
-            cond = cond.to(torch.float32)
-            return old_input_layernorm_dense_forward(old_model, cond)
+#        def input_layernorm_dense_forward(old_model, cond):
+#            cond = cond.to(torch.float32)
+#            return old_input_layernorm_dense_forward(old_model, cond)
 
-        self.gemma_expert.norm.dense.forward = rms_norm_dense_forward
-        self.gemma_expert.input_layernorm.dense.forward = input_layernorm_dense_forward
+#        self.gemma_expert.norm.dense.forward = norm_dense_forward
+#        self.gemma_expert.input_layernorm.dense.forward = input_layernorm_dense_forward
 
         output_dir = export_dir
         os.makedirs(output_dir, exist_ok=True)
