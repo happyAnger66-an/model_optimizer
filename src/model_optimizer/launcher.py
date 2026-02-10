@@ -82,5 +82,8 @@ def launch():
     elif command == "download":
         from .download.cli import download_cli
         download_cli(sys.argv)
+    elif command == "compare":
+        from .compare.cli import compare_cli
+        compare_cli(sys.argv)
     else:
         print(USAGE)

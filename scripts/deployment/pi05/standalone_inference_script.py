@@ -216,6 +216,7 @@ def run_single_trajectory(
         inference_time = time.time() - inference_start
         print(
             colored(f"Inference time: {inference_time:.4f} seconds", "green"))
+        i += 1
         if i > 10 and perf:
             time_results.append(inference_time)
     if perf:
