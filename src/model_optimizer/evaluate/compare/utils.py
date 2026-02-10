@@ -1,5 +1,8 @@
 import torch
 
+from termcolor import colored
+
+
 def compare_predictions(pred_tensorrt, pred_torch):
     """
     Compare the similarity between TensorRT and PyTorch predictions
@@ -8,7 +11,7 @@ def compare_predictions(pred_tensorrt, pred_torch):
         pred_tensorrt: TensorRT prediction results (numpy array)
         pred_torch: PyTorch prediction results (numpy array)
     """
-    print("\n=== Prediction Comparison ===")
+    print("\n\n=== Prediction Comparison ===")
 
     # Ensure both predictions contain the same keys
     assert pred_tensorrt.keys() == pred_torch.keys(), "Prediction keys do not match"
@@ -51,7 +54,7 @@ def compare_predictions(pred_tensorrt, pred_torch):
         # Calculate L1 distance
         l1_dist = torch.abs(flat_tensorrt - flat_torch)
 
-        print(f"\n{key}:")
+        print(colored(f"\n{key}:", "yellow"))
         print(
             f'{"Cosine Similarity (PyTorch/TensorRT):".ljust(max_label_width)} {cos_sim.item()}')
         print(
