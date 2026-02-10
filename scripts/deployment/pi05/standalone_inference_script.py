@@ -1,3 +1,4 @@
+from openpi.policies.libero_policy import make_libero_example
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -88,22 +89,22 @@ def parse_action(action: dict[str, Any]) -> dict[str, Any]:
     return {f"action.{key}": action[key][0] for key in action}
 
 
-def save_input_data(input_data_list: list[dict[str, Any]], save_input_path: str):
+def save_data(data_list: list[dict[str, Any]], save_file_path: str, save_file_name: str):
     save_dict = {}
-    for i, data_dict in enumerate(input_data_list):
+    for i, data_dict in enumerate(data_list):
         for key, value in data_dict.items():
             # 创建唯一的键名：索引_键名
             save_key = f"item_{i}_{key}"
             save_dict[save_key] = value
 
     save_dict['metadata'] = np.array({
-        'num_items': len(input_data_list),
-        'item_keys': list(input_data_list[0].keys()) if input_data_list else []
+        'num_items': len(data_list),
+        'item_keys': list(data_list[0].keys()) if data_list else []
     }, dtype=object)
 
-    if not os.path.exists(save_input_path):
-        os.makedirs(save_input_path)
-    np.savez(f'{save_input_path}/inputs.npz', **save_dict)
+    if not os.path.exists(save_file_path):
+        os.makedirs(save_file_path)
+    np.savez(f'{save_file_path}/{save_file_name}.npz', **save_dict)
 
 
 def load_input_data(input_data_file: str):
@@ -132,8 +133,8 @@ def load_input_data(input_data_file: str):
     loaded.close()
     return result
 
-from openpi.policies.libero_policy import make_libero_example
-def get_input_data(input_data_file, max_nums = 40):
+
+def get_input_data(input_data_file, max_nums=40):
     if input_data_file is None:
         for i in range(max_nums):
             obs = make_libero_example()
@@ -176,29 +177,12 @@ def run_single_trajectory(
     logging.info(f"=== Running Trajectory {traj_id} ===")
     logging.info("=" * 80)
 
-    i = 0
-    # for data in loader:
-    #    i += 1
-    #    if i > 10:
-    #        break
-
-    # Inference timing (GPU processing - CPU prepares next step in parallel)
-    #    obs, action = data
-#        inputs_data = obs.to_dict()
-    #    input_datas = {
-    #        "observation/image": obs.images["base_0_rgb"].squeeze(0),
-    #        "observation/wrist_image": obs.images["left_wrist_0_rgb"].squeeze(0),
-    #        "observation/state": obs.state.squeeze(0)[0:8],
-    #        "prompt": obs.tokenized_prompt.squeeze(0),
-    #        "tokenized_prompt": obs.tokenized_prompt.squeeze(0),
-    #        "tokenized_prompt_mask": obs.tokenized_prompt_mask.squeeze(0),
-    #    }
-
     import numpy as np
     time_results = []
     input_data_list = []
     output_data_list = []
 
+    i = 0
     for obs in get_input_data(args.input_data_path, 40):
         if args.save_input_path:
             input_data_list.append(obs)
@@ -231,11 +215,12 @@ def run_single_trajectory(
 
     if args.save_input_path:
         print(colored(f"save input datas to {args.save_input_path}", "green"))
-        save_input_data(input_data_list, args.save_input_path)
+        save_data(input_data_list, args.save_input_path, "inputs")
 
     if args.save_output_path:
-        print(colored(f"save output datas to {args.save_output_path}", "green"))
-        save_input_data(output_data_list, args.save_output_path)
+        print(
+            colored(f"save output datas to {args.save_output_path}", "green"))
+        save_data(output_data_list, args.save_output_path, "outputs")
 #    print(colored(f"Time results: {time_results}", "green"))
 #    print(f"Average time: {sum(time_results) / len(time_results):.4f} seconds")
 #    print(colored(f"Min time: {min(time_results):.4f} seconds", "green"))
