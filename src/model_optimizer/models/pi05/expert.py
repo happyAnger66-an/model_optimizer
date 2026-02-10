@@ -55,11 +55,13 @@ class Expert(torch.nn.Module, Model):
     def export(self, export_dir, export_dtype=torch.bfloat16):
         self.eval().cuda()
 
-        def rms_norm_forward(old_model, x, cond):
-            cond = cond.to(torch.float32)
-            return old_model.rms_norm.forward(x, cond)
+        old_dense_forward = self.gemma_expert.rms_norm.dense.forward
 
-        self.gemma_expert.model.rms_norm.forward = rms_norm_forward
+        def rms_norm_dense_forward(old_model, cond):
+            cond = cond.to(torch.float32)
+            return old_dense_forward(old_model, cond)
+
+        self.gemma_expert.rms_norm.dense.forward = rms_norm_dense_forward
 
 #        self.to(torch.float16)
 
