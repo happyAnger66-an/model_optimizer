@@ -71,7 +71,7 @@ llm 100.47 ± 1.55 ms (shared)
 + `--perf`: perf stats
 
 
-##### 4.1.2 WebPage (Not all ready yet.)
+### 4.2 WebPage (Not all ready yet.)
 use it in the web browser: `http://ip:7860`
 
 ![index.png](img/index.png)
