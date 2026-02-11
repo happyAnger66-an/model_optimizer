@@ -68,7 +68,7 @@ run_x86:
 	-v ${HOME}:/srcs \
 	-v ${HOME}/.cache:/srcs/.cache \
 	--shm-size=4g \
-	--env PYTHONPATH=${PYTHONPATH}:PYTHONPATH=:/srcs/sources/opensrc/robot/openpi/src/:/srcs/sources/opensrc/robot/openpi/packages/openpi-client/src/ \
+	--env PYTHONPATH=/usr/local/lib/python3.12/dist-packages/:/srcs/sources/opensrc/robot/openpi/src/:/srcs/sources/opensrc/robot/openpi/packages/openpi-client/src/ \
 	model_optimizer:x86 \
 	/bin/bash
 ```
