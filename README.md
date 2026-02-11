@@ -19,23 +19,59 @@ model optimizer is a tool to make model quantize, optimize, deploy easier. inclu
 The code was tested in the following environments
 
 - Ubuntu 24.04.03 LTS
-- NVIDIA GPU 4070/5090/Thor driver version 580.95.05 with CUDA 13.0
+- NVIDIA GPU `3090/4070/5090/Thor` driver version 580.95.05 with CUDA 13.0
 - Docker nvcr.io/nvidia/tensorrt:25.10-py3
 
 ### 2.1 Installation
 
-#### 2.1.1 use tensorrt docker image
+#### 2.1.1 `download code`
+
 ```bash
-$ docker run -it --gpus -v$(pwd):/srcs all nvcr.io/nvidia/tensorrt:25.10-py3
-
-# cd /srcs
-
-# pip install -r requirements.txt
-
-# python setup.py install
-
-# model-opt webui
+git clone git@github.com:happyAnger66-an/model_optimizer.git
+git checkout release-0.1
 ```
+
+#### 2.1.2 `build docker image`
+
+`x86`:
+
+```shell
+make build_x86
+```
+
+`jetson thor`:
+
+```shell
+make build_thor
+```
+
+#### 2.1.3 `run docker`
+
++ `CAUTION:` You should use `-v` to mount your `openpi` codes path into docker to use pi05 model.
+
++ `CAUTION:` To use host .cache huggingface or modelscope you should use `-v` to mount your `~/.cache` into docker.
+
+###### you can see `Makefile` in codes to do these.
+
+```Makefile
+run_x86:
+	docker run -it --network host \
+	--gpus all \
+	-v ${PWD}:/workspace \
+	-v ${HOME}:/srcs \
+	-v ${HOME}/.cache:/srcs/.cache \
+	--shm-size=4g \
+	--env PYTHONPATH=${PYTHONPATH}:PYTHONPATH=:/srcs/sources/opensrc/robot/openpi/src/:/srcs/sources/opensrc/robot/openpi/packages/openpi-client/src/ \
+	model_optimizer:x86 \
+	/bin/bash
+```
+
++ Then use make run_x86 to run docker.
+
+```shell
+make run_x86
+```
+
 
 ## 3. Supported Models
 
@@ -71,7 +107,12 @@ llm 100.47 ± 1.55 ms (shared)
 + `--perf`: perf stats
 
 #### 4.2 For more cli usages
+
 [ALL CLI usage docs](./docs/cli.md)
+
+##### 4.2.1 Models examples.
+[`YOLO` usage example docs](./docs/yolo.md)
+[`π0.5` usage example docs](./docs/pi05.md)
 
 ### 4.2 WebPage (Not all ready yet.)
 use it in the web browser: `http://ip:7860`

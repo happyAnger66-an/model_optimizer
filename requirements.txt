@@ -11,8 +11,9 @@ onnxruntime-gpu
 onnx2pytorch
 
 nvidia-modelopt[all]
-safetensors==0.7.0
-transformers==4.53.2
+safetensors
+transformers
+
 #YOLO
 ultralytics
 
