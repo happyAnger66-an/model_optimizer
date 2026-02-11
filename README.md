@@ -33,6 +33,13 @@ git checkout release-0.1
 
 #### 2.1.2 `build docker image`
 
++ you may need install `docker-buildx`
+
+```shell
+sudo apt update && apt install docker-buildx
+```
+
+
 `x86`:
 
 ```shell
