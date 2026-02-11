@@ -1,4 +1,9 @@
 setuptools_scm
+torch
+torchvision
+torchaudio
+torchcodec
+
 gradio
 addict
 

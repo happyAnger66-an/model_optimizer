@@ -14,4 +14,3 @@ uv venv /opt/openpi
 source /opt/openpi/bin/activate
 
 uv pip install -r requirements_pi05.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-uv pip uninstall torch torchvision torchcodec -y 
