@@ -13,4 +13,7 @@ COPY Dockerfile/requirements_pi05.txt /workspace/requirements_pi05.txt
 COPY Dockerfile/install_pi05.sh /workspace/install_pi05.sh
 RUN bash install_pi05.sh
 
-ENV PYTHONPATH=/opt/openpi/lib/python3.12/site-packages/:$PYTHONPATH
+COPY Dockerfile/uninstall_uv.sh /workspace/uninstall_uv.sh
+RUN bash uninstall_uv.sh
+
+ENV PYTHONPATH=/opt/openpi/lib/python3.12/site-packages/
