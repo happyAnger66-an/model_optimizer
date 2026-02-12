@@ -61,7 +61,7 @@ class LLM(torch.nn.Module, Model):
     def construct_model(cls, pi05_model, dtype=torch.bfloat16):
         paligemma = pi05_model.paligemma_with_expert.paligemma
         llm_model = cls(pi05_model.paligemma_with_expert.paligemma.config.text_config,
-                        paligemma.get_decoder()).to(dtype)
+                        paligemma.get_decoder())
         return llm_model
 
     def export(self, export_dir):
@@ -73,7 +73,7 @@ class LLM(torch.nn.Module, Model):
         logger.info("Start export onnx ...")
         print(colored(f"Start LLM export onnx...", "green"))
         inputs_embeds = torch.randn((1, 968, 2048),
-                                    dtype=torch.float16,
+                                    dtype=torch.bfloat16,
                                     device="cuda",
                                     )
         attention_mask = torch.randn((1, 1, 968, 968),
@@ -98,9 +98,9 @@ class LLM(torch.nn.Module, Model):
                 dynamo=False,
                 do_constant_folding=True,
                 dynamic_axes={
-                    "inputs_embeds": {0: "batch_size"},
-                    "attention_mask": {0: "batch_size"},
-                    "position_ids": {0: "batch_size"},
+                    "inputs_embeds": {0: "batch_size", 1: "seq_len"},
+                    "attention_mask": {0: "batch_size", 1: "num_heads", 2: "seq_len", 3: "seq_len"},
+                    "position_ids": {0: "batch_size", 1: "seq_len"},
                 },
             )
         end = time.time()

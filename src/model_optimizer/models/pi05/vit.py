@@ -45,7 +45,7 @@ class Vit(torch.nn.Module, Model):
                 f"{output_dir}/vit.onnx",
                 # Add position_ids to input names
                 input_names=["pixel_values"],
-                output_names=["last_hidden_state"],
+                output_names=["image_features"],
                 opset_version=19,
                 dynamo=True,
                 do_constant_folding=True,
