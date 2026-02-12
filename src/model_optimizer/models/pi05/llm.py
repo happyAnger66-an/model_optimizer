@@ -95,7 +95,7 @@ class LLM(torch.nn.Module, Model):
                              "position_ids"],  # Add position_ids to input names
                 output_names=["past_keys", "past_values", "last_hidden_state"],
                 opset_version=19,
-                dynamo=False,
+                dynamo=True,
                 do_constant_folding=True,
                 dynamic_axes={
                     "inputs_embeds": {0: "batch_size", 1: "seq_len"},
