@@ -138,6 +138,10 @@ NVIDIA Jetson AGX Thor Developer Kit - Jetpack 7.0 [L4T 38.2.1]
 
 ### 4.1 CLI (Product Ready)
 
++ All the following operations are performed within Docker.
+
+perform `make run_x86` or `make run_thor` enter the docker first.
+
 #### 4.1.1 `π0.5` inference
 ```shell
 python scripts/deployment/pi05/standalone_inference_script.py --model_path /openpi/pytorch_pi05_libero/ --inference_mode tensorrt  --perf 
