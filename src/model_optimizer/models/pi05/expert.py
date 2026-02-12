@@ -128,6 +128,7 @@ class Expert(torch.nn.Module, Model):
                     "attention_mask": {0: "batch_size", 2: "action_seq_len", 3: "llm_seq_len"},
                     "position_ids": {0: "batch_size", 1: "seq_len"},
                     "inputs_embeds": {0: "batch_size", 1: "seq_len"},
+                    "adarms_cond": {0: "batch_size", 1: "seq_len"},
                     "past_keys": {0: "batch_size", 1: "num_heads", 2: "seq_len"},
                     "past_values": {0: "batch_size", 1: "num_heads", 2: "seq_len"},
                 },
