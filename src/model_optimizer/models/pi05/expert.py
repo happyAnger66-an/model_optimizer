@@ -129,8 +129,8 @@ class Expert(torch.nn.Module, Model):
                     "position_ids": {0: "batch_size", 1: "seq_len"},
                     "inputs_embeds": {0: "batch_size", 1: "seq_len"},
                     "adarms_cond": {0: "batch_size"},
-                    "past_keys": {0: "batch_size", 1: "num_heads", 2: "seq_len"},
-                    "past_values": {0: "batch_size", 1: "num_heads", 2: "seq_len"},
+                    "past_keys": {2: "seq_len"},
+                    "past_values": {2: "seq_len"},
                 },
             )
         end = time.time()
