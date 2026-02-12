@@ -1,7 +1,7 @@
 FROM nvcr.io/nvidia/tensorrt:25.11-py3
 
-ENV HTTP_PROXY=http://localhost:7890
-ENV HTTPS_PROXY=http://localhost:7890
+ENV HTTP_PROXY=http://10.17.0.26:7890
+ENV HTTPS_PROXY=http://10.17.0.26:7890
 
 WORKDIR /workspace
 

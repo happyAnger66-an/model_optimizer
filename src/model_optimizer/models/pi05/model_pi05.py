@@ -46,9 +46,13 @@ class Pi05Model(Model):
     @property
     def model(self):
         return self.pi05_model
-
+    
     def val(self, dataset, batch_size, max_data=100, output_dir=None):
-#        import pdb;pdb.set_trace()
+        pass
+
+    def train(self, dataset, batch_size, max_data=100, output_dir=None):
+        pass
+        #        import pdb;pdb.set_trace()
         config = _config.get_config(dataset)
         config = dataclasses.replace(config, batch_size=1)
 #        data_config = config.data.create(config.assets_dirs, config.model)
@@ -58,10 +62,10 @@ class Pi05Model(Model):
 
         for idx, data in enumerate(data_loader):
             print(colored(f'val idx {idx}', "green"))
-#            import pdb;pdb.set_trace()
             obs, action = data
-            observation = jax.tree.map(lambda x: x.to(self.pytorch_device, \
-                dtype=torch.float32), obs)
+            observation = jax.tree.map(
+                lambda x: x.to(self.pytorch_device), obs)
+            action = action.to(self.pytorch_device, dtype=torch.float32)
             loss = self.policy._model(observation, action)
             print(colored(f'val idx {idx} loss: {loss}', "green"))
 
