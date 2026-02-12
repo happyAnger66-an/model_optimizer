@@ -31,7 +31,7 @@ class Vit(torch.nn.Module, Model):
         self.eval().cuda()
 
         pixel_values = torch.randn(
-            (1, 3, 224, 224), dtype=torch.float16, device="cuda")
+            (1, 3, 224, 224), dtype=torch.bfloat16, device="cuda")
 
         output_dir = export_dir
         os.makedirs(output_dir, exist_ok=True)
@@ -47,7 +47,7 @@ class Vit(torch.nn.Module, Model):
                 input_names=["pixel_values"],
                 output_names=["last_hidden_state"],
                 opset_version=19,
-                dynamo=False,
+                dynamo=True,
                 do_constant_folding=True,
                 #                dynamic_axes={
                 #                    "pixel_values": {0: "batch_size"},
