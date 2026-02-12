@@ -20,6 +20,7 @@ from openpi.training import config as _config
 from openpi.training import data_loader as _data_loader
 from openpi.training.data_loader import DataLoader
 from openpi.policies import policy_config
+from openpi.policies import policy as _policy
 
 import dataclasses
 from matplotlib import pyplot as plt
@@ -138,12 +139,12 @@ def get_input_data(input_data_file, max_nums=40):
     if input_data_file is None:
         for i in range(max_nums):
             obs = make_libero_example()
-            print(f"make_libero_example {i}")
+            # print(f"make_libero_example {i}")
             yield obs
     else:
         input_data_list = load_input_data(input_data_file)
         for i in range(min(max_nums, len(input_data_list))):
-            print(f"load_input_data {i}")
+            # print(f"load_input_data {i}")
             yield input_data_list[i]
 
 
@@ -182,23 +183,23 @@ def run_single_trajectory(
     input_data_list = []
     output_data_list = []
 
-#    for obs, act in loader:
-#        print(f"loader data {obs.keys()} {act.keys()}")
-
-#    i = 0
+    i = 0
     for obs in get_input_data(args.input_data_path, 40):
         if args.save_input_path:
             input_data_list.append(obs)
 
         inference_start = time.time()
-    #    import pdb; pdb.set_trace()
         _action_chunk = policy.infer(obs)
 
         if args.save_output_path:
             output_data_list.append(_action_chunk)
 
         if perf:
-            model = policy._model
+            model = None
+            if hasattr(policy, "_policy"):
+                model = policy._policy._model
+            else:
+                model = policy._model
             model.perf = True
         inference_time = time.time() - inference_start
         print(
@@ -210,11 +211,11 @@ def run_single_trajectory(
         print(colored(
             f"e2e {np.mean(time_results)*1000:.2f} ± {np.std(time_results)*1000:.2f} ms (shared)", "green"))
         print(colored(
-            f"action {np.mean(model.time_results['action'])*1000:.2f} ± {np.std(model.time_results['action'])*1000:.2f} ms (shared)", "green"))
+            f"action {np.mean(model.result_timing['denoise_step'])*1000:.2f} ± {np.std(model.result_timing['denoise_step'])*1000:.2f} ms (shared)", "green"))
         print(colored(
-            f"vit {np.mean(model.time_results['vit'])*1000:.2f} ± {np.std(model.time_results['vit'])*1000:.2f} ms (shared)", "green"))
+            f"embed_prefix {np.mean(model.result_timing['embed_prefix'])*1000:.2f} ± {np.std(model.result_timing['embed_prefix'])*1000:.2f} ms (shared)", "green"))
         print(colored(
-            f"llm {np.mean(model.time_results['llm'])*1000:.2f} ± {np.std(model.time_results['llm'])*1000:.2f} ms (shared)", "green"))
+            f"llm {np.mean(model.result_timing['llm'])*1000:.2f} ± {np.std(model.result_timing['llm'])*1000:.2f} ms (shared)", "green"))
 
     if args.save_input_path:
         print(colored(f"save input datas to {args.save_input_path}", "green"))
@@ -234,6 +235,7 @@ def run_single_trajectory(
 #    print(colored(f"95th percentile time: {np.percentile(time_results, 95):.4f} seconds", "green"))
 #    print(colored(f"99th percentile time: {np.percentile(time_results, 99):.4f} seconds", "green"))
 
+
 def get_data_loader(config):
     # Reduce the batch size to reduce memory usage.
     config = dataclasses.replace(config, batch_size=1)
@@ -241,8 +243,10 @@ def get_data_loader(config):
     # Load a single batch of data. This is the same data that will be used during training.
     # NOTE: In order to make this example self-contained, we are skipping the normalization step
     # since it requires the normalization statistics to be generated using `compute_norm_stats`.
-    loader = _data_loader.create_data_loader(config, num_batches=1, skip_norm_stats=True)
+    loader = _data_loader.create_data_loader(
+        config, num_batches=1, skip_norm_stats=True)
     return loader
+
 
 @dataclass
 class ArgsConfig:
@@ -323,6 +327,9 @@ class ArgsConfig:
     perf: bool = False
     """Whether to get performance statistics."""
 
+    record: bool = False
+    """Whether to record the inference input and output results."""
+
 
 def main(args: ArgsConfig):
     # Set up logging
@@ -358,12 +365,14 @@ def main(args: ArgsConfig):
 
     if local_model_path is not None:
         config = _config.get_config(args.config_name)
-        dataclasses.replace(config, max_token_len=1200)
 #        checkpoint_dir = download.maybe_download(
 #           "gs://openpi-assets/checkpoints/pi0_fast_droid")
         checkpoint_dir = local_model_path
         # Create a trained policy.
         policy = policy_config.create_trained_policy(config, checkpoint_dir)
+
+        if args.record:
+            policy = _policy.PolicyRecorder(policy, "policy_records")
 
 #        loader = get_data_loader(config)
         # Apply inference mode: TensorRT or PyTorch
@@ -419,24 +428,6 @@ def main(args: ArgsConfig):
     logging.info("=== Step 2: Creating Dataset Loader ===")
     logging.info("=" * 80)
     dataset_load_start = time.time()
-
-    # config = dataclasses.replace(config, batch_size=1)
-    # data_loader = _data_loader.create_data_loader(
-    #    config,
-    #    # Skip since we may not have the data available.
-    #    skip_norm_stats=True,
-    #    num_batches=2,
-    #    shuffle=True,
-    #    framework='pytorch')
-    # dataset_load_time = time.time() - dataset_load_start
-    # logging.info(
-    #    f"Dataset loader creation time: {dataset_load_time:.4f} seconds")
-
-    # dataset = data_loader._data_loader.torch_loader.dataset
-    # dataset_len = len(dataset)
-    # print(colored(f"Dataset length: {dataset_len}", "green"))
-    # logging.info(f"Dataset length: {dataset_len}")
-    # logging.info(f"Running evaluation on trajectories: {args.traj_ids}")
 
     # Evaluation loop
     logging.info("\n" + "=" * 80)

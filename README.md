@@ -93,6 +93,12 @@ make run_x86
 
 ## 4. Usage
 
+|**Architecture**|**Detial usage**||
+|-|-|-|
+|π0.5|[manual](./docs/pi05.md)||
+|YOLO11|[manual](./docs/yolo.md)||
+
+
 ### 4.1 CLI (Product Ready)
 
 #### 4.1.1 `π0.5` inference
