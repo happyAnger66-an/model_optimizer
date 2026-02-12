@@ -16,8 +16,9 @@ class Model:
     def load(self, config):
         raise NotImplementedError
 
-    def val(self, val_data, batch_size, output_dir):
-        raise NotImplementedError
+    def val(self, dataset, batch_size, max_data = 100, output_dir=None):
+        raise NotImplementedError(
+            f'{self.model_name} val method is not implemented')
 
     @classmethod
     def construct_from_name_path(cls, model_name, model_path):

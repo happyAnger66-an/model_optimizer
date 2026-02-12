@@ -32,6 +32,7 @@ def eval_cli(args):
     parser.add_argument('--model_name', type=str, required=True)
     parser.add_argument('--model_path', type=str, required=True)
     parser.add_argument('--dataset', type=str, required=True)
+    parser.add_argument('--max_data', type=int, default=100)
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--hook_layers', type=bool, default=False)
@@ -46,5 +47,5 @@ def eval_cli(args):
     model = model_cls.construct_from_name_path(model_name, model_path)
 
 
-    model.val(args.dataset, args.batch_size, args.output_dir)
+    model.val(args.dataset, args.batch_size, args.max_data, args.output_dir)
 #    eval_yolo(args.model_path, args.dataset_dir, args.batch_size, args.output_dir)

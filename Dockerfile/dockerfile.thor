@@ -1,0 +1,22 @@
+FROM nvcr.io/nvidia/tensorrt:25.11-py3
+
+ENV HTTP_PROXY=http://localhost:7890
+ENV HTTPS_PROXY=http://localhost:7890
+
+WORKDIR /workspace
+
+RUN pip install torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cu130
+
+COPY requirements.thor.txt /workspace/requirements.txt
+RUN pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN apt-get update && apt-get install ffmpeg libsm6 libxext6  -y
+
+COPY Dockerfile/requirements_pi05.txt /workspace/requirements_pi05.txt
+COPY Dockerfile/install_pi05.sh /workspace/install_pi05.sh
+RUN bash install_pi05.sh
+
+COPY Dockerfile/uninstall_uv.sh /workspace/uninstall_uv.sh
+RUN bash uninstall_uv.sh
+
+ENV PYTHONPATH=/opt/openpi/lib/python3.12/site-packages/
