@@ -99,8 +99,10 @@ class LLM(torch.nn.Module, Model):
                 do_constant_folding=True,
                 dynamic_axes={
                     "inputs_embeds": {0: "batch_size", 1: "seq_len"},
-                    "attention_mask": {0: "batch_size", 1: "num_heads", 2: "seq_len", 3: "seq_len"},
+                    "attention_mask": {0: "batch_size", 2: "seq_len", 3: "seq_len"},
                     "position_ids": {0: "batch_size", 1: "seq_len"},
+                    "past_keys": {2: "seq_len"},
+                    "past_values": {2: "seq_len"},
                 },
             )
         end = time.time()
@@ -146,9 +148,9 @@ class LLM(torch.nn.Module, Model):
                 dynamo=False,
                 do_constant_folding=True,
                 dynamic_axes={
-                    "inputs_embeds": {0: "batch_size"},
-                    "attention_mask": {0: "batch_size"},
-                    "position_ids": {0: "batch_size"},
+                    "inputs_embeds": {0: "batch_size", 1: "seq_len"},
+                    "attention_mask": {0: "batch_size", 2: "seq_len", 3: "seq_len"},
+                    "position_ids": {0: "batch_size", 1: "seq_len"},
                 },
             )
         end = time.time()
