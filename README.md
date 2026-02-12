@@ -82,6 +82,8 @@ make run_x86
 
 ## 3. Supported Models
 
+#### 3.1 supported model arch.
+
 |**Architecture**|**Model**||
 |-|-|-|
 |YOLO11|yolo||
@@ -90,6 +92,41 @@ make run_x86
 |π0.5|pi05_libero/llm||
 |π0.5|pi05_libero/expert||
 
+#### 3.2 Tested and passed in the following environments
+
++ 3090
+
+```shell
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.09             Driver Version: 580.126.09     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 3090        Off |   00000000:01:00.0  On |                  N/A |
+| 30%   41C    P8             30W /  350W |    1722MiB /  24576MiB |     18%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+```
+
++ Jetson Thor
+
+```shell
+NVIDIA Jetson AGX Thor Developer Kit - Jetpack 7.0 [L4T 38.2.1]
+
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.00                 Driver Version: 580.00         CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA Thor                    Off |   00000000:01:00.0 Off |                  N/A |
+| N/A   N/A  N/A             N/A  /  N/A  | Not Supported          |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+```
 
 ## 4. Usage
 
