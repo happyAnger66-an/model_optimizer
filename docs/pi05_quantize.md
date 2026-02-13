@@ -25,5 +25,5 @@ QUANT_CFG["quant_cfg"]["norm"] = {"enable": False}
 ### 1.2 calibrate
 
 ```shell
-
+model-opt quantize --model_name pi05_libero/llm --model_path /srcs/openpi/pytorch_pi05_libero/ --quantize_cfg config/quant/llm_quant_cfg.py --calibrate_data /tmp/caliba/pi05/pi05_llm_calib_data.pt --export_dir /tmp/quantize/pi05
 ```

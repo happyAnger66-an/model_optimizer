@@ -22,6 +22,9 @@ class LLM(torch.nn.Module, Model):
         self.config = config
         self.llm.config._attn_implementation = "eager"
 
+    def __getattr__(self, name):
+        return getattr(self.llm, name)
+    
     def _wrap_past_key_values(self, input_keys, input_values):
         k_v_cache = DynamicCache()
         num_layers = input_keys.shape[0]
