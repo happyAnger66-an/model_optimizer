@@ -9,6 +9,8 @@ import logging
 from transformers.cache_utils import DynamicCache
 
 from termcolor import colored
+    
+from model_optimizer.quantization.quantization_utils import quantize_model
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +47,17 @@ class LLM(torch.nn.Module, Model):
 
         return past_keys_tensor, past_values_tensor, prefix_output.last_hidden_state
 
-    def quantize(self, model_dir, quant_cfg, calib_data, calib_method):
-        tokenizer = get_tokenizer(model_dir)
+    def get_calibrate_dataset(self, calib_data):
+        datas = []
+        with open(calib_data, 'r') as f:
+            datas = torch.load(f)
 
-        from model_optimizer.quantization.llm_quantization import quantize_llm
-        quantize_llm(self, tokenizer, quant_cfg, calib_data, calib_method)
+        return datas
+
+    def quantize(self, model_dir, quant_cfg, calib_data, calib_method):
+#        tokenizer = get_tokenizer(model_dir)
+        calib_dataloader = self.get_calibrate_dataset(calib_data)
+        quantize_model(self, quant_cfg, calib_dataloader)
 
     @classmethod
     def construct_from_name_path(cls, model_name, model_path):
