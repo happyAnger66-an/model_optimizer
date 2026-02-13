@@ -87,8 +87,7 @@ def quantize_cli(args):
 
     quant_cfg = get_quant_cfg(args.quantize_cfg)
     print(f' !!!!!! quant_cfg: {quant_cfg} !!!!!!!!!')
-    model.quantize(quant_cfg, args.calibrate_data,
-                   args.calibrate_method, args.export_dir, args.input_shapes)
+    model.quantize(quant_cfg, args.calibrate_data, args.export_dir)
 
     if args.verify:
         print(f'verify model {args.verify_data} after quantize')

@@ -33,8 +33,8 @@ class Model:
     def quantize_end(self, export_dir):
         pass
 
-    def quantize(self, quant_cfg, calib_data, calib_method, export_dir, input_shapes=None):
-        self.quantize_start(quant_cfg, calib_data, calib_method)
+    def quantize(self, quant_cfg, calib_data, export_dir):
+        self.quantize_start(quant_cfg, calib_data, None)
 
         calibrate_loop = self.get_model_calibrate_loop(calib_data)
         mtq.quantize(self.model, quant_cfg,

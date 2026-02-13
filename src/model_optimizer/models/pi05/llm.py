@@ -54,7 +54,7 @@ class LLM(torch.nn.Module, Model):
 
         return datas
 
-    def quantize(self, model_dir, quant_cfg, calib_data, calib_method):
+    def quantize(self, quant_cfg, calib_data, export_dir):
 #        tokenizer = get_tokenizer(model_dir)
         calib_dataloader = self.get_calibrate_dataset(calib_data)
         quantize_model(self, quant_cfg, calib_dataloader)
