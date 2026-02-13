@@ -111,6 +111,7 @@ class LLM(torch.nn.Module, Model):
                     "past_keys": {2: "seq_len"},
                     "past_values": {2: "seq_len"},
                 },
+                strict=True,
             )
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
