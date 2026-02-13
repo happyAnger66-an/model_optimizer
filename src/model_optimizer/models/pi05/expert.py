@@ -125,9 +125,9 @@ class Expert(torch.nn.Module, Model):
                 dynamo=True,
                 do_constant_folding=True,
                 dynamic_axes={
-                    "attention_mask": {0: "batch_size", 2: "action_seq_len", 3: "llm_seq_len"},
-                    "position_ids": {0: "batch_size", 1: "seq_len"},
-                    "inputs_embeds": {0: "batch_size", 2: "seq_len"},
+                    "attention_mask": {0: "batch_size"},
+                    "position_ids": {0: "batch_size"},
+                    "inputs_embeds": {0: "batch_size"},
                     "adarms_cond": {0: "batch_size"},
                     "past_keys": {2: "llm_seq_len"},
                     "past_values": {2: "llm_seq_len"},
