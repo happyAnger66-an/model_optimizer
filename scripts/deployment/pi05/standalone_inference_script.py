@@ -183,8 +183,10 @@ def run_single_trajectory(
     input_data_list = []
     output_data_list = []
 
-    from model_optimizer.calibrate.collector.pi05 import Pi05LLMCalibCollector
-    calib_collector = Pi05LLMCalibCollector(policy._model)
+    if args.calib_save_path:
+        from model_optimizer.calibrate.collector.pi05 import Pi05LLMCalibCollector
+        calib_collector = Pi05LLMCalibCollector(policy._model, args.calib_save_path)
+
     i = 0
     for obs in get_input_data(args.input_data_path, 40):
         if args.save_input_path:
@@ -209,7 +211,10 @@ def run_single_trajectory(
         i += 2
         if i > 10 and perf:
             time_results.append(inference_time)
-    calib_collector.stop_collect()
+
+    if args.calib_save_path:
+        calib_collector.stop_collect()
+
     if perf:
         print(colored(
             f"e2e {np.mean(time_results)*1000:.2f} ± {np.std(time_results)*1000:.2f} ms (shared)", "green"))
@@ -321,6 +326,9 @@ class ArgsConfig:
 
     save_output_path: str | None = None
     """Path to save the output to."""
+    
+    calib_save_path: str | None = None
+    """Path to save the calibration data to."""
 
     skip_timing_steps: int = 1
     """Number of initial inference steps to skip when calculating timing statistics (default: 1 to exclude warmup)."""

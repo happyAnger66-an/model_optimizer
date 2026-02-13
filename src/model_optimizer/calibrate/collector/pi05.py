@@ -10,13 +10,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Pi05LLMCalibCollector:
-    def __init__(self, pi05_model):
+    def __init__(self, pi05_model, save_dir):
         self.pi05_model = pi05_model
         self.calib_dict = {}
         self._datas = []
         self.hooks = []
         self.keys = set(['inputs_embeds', 'attention_mask', 'position_ids'])
         self.old_forward = None
+        self.save_dir = save_dir
         self.register_hooks()
 
     def register_hooks(self):
@@ -37,4 +38,5 @@ class Pi05LLMCalibCollector:
 
     def stop_collect(self):
         print(colored(f'collectd {len(self._datas)} datas', 'green'))
+        torch.save(self._datas, f'{self.save_dir}/pi05_llm_calib_data.pt')
         self.pi05_model.paligemma_with_expert.paligemma.model.language_model.forward = self.old_forward

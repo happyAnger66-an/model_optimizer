@@ -22,7 +22,7 @@ QUANT_CFG["quant_cfg"]["norm"] = {"enable": False}
 
 `input_layernorm`, `post_attention_layernorm`, `norm`
 
-### 1.2 quantize
+### 1.2 calibrate
 
 ```shell
 
