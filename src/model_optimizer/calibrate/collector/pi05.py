@@ -1,3 +1,5 @@
+import os
+
 import torch
 import numpy as np
 from termcolor import colored
@@ -27,8 +29,6 @@ class Pi05LLMCalibCollector:
             one_input = {}
             for key, value in kwargs.items():
                 if key in self.keys:
-                    print(
-                        colored(f'key: {key} value: {value.dtype} {value.shape}', 'yellow'))
                     one_data = value.clone().cpu()
                     one_input[key] = one_data
             self._datas.append(one_input)
@@ -38,5 +38,7 @@ class Pi05LLMCalibCollector:
 
     def stop_collect(self):
         print(colored(f'collectd {len(self._datas)} datas', 'green'))
+        if not os.path.exists(self.save_dir):
+            os.makedirs(self.save_dir)
         torch.save(self._datas, f'{self.save_dir}/pi05_llm_calib_data.pt')
         self.pi05_model.paligemma_with_expert.paligemma.model.language_model.forward = self.old_forward
