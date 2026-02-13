@@ -183,6 +183,8 @@ def run_single_trajectory(
     input_data_list = []
     output_data_list = []
 
+    from model_optimizer.calibrate.collector.pi05 import Pi05LLMCalibCollector
+    calib_collector = Pi05LLMCalibCollector(policy._model)
     i = 0
     for obs in get_input_data(args.input_data_path, 40):
         if args.save_input_path:
@@ -207,6 +209,7 @@ def run_single_trajectory(
         i += 1
         if i > 10 and perf:
             time_results.append(inference_time)
+    calib_collector.stop_collect()
     if perf:
         print(colored(
             f"e2e {np.mean(time_results)*1000:.2f} ± {np.std(time_results)*1000:.2f} ms (shared)", "green"))
