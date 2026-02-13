@@ -47,11 +47,8 @@ class LLM(torch.nn.Module, Model):
 
         return past_keys_tensor, past_values_tensor, prefix_output.last_hidden_state
 
-    def get_calibrate_dataset(self, calib_data):
-        datas = []
-        with open(calib_data, 'r') as f:
-            datas = torch.load(f)
-
+    def get_calibrate_dataset(self, calib_data_file):
+        datas = torch.load(calib_data_file)
         return datas
 
     def quantize(self, quant_cfg, calib_data, export_dir):
