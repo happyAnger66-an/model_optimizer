@@ -1,30 +1,40 @@
+import torch
 import numpy as np
 from termcolor import colored
 
-from model_optimizer.torch_hooks.hooks import hook_module_inputs
+from model_optimizer.utils.torch_hooks.hooks import hook_module_inputs
 
-from transformers.models.gemma.modeling_gemma import GemmaForCausalLM
+from transformers.models.gemma.modeling_gemma import GemmaModel
 
+import logging
+logger = logging.getLogger(__name__)
 
 class Pi05LLMCalibCollector:
     def __init__(self, pi05_model):
+        self.pi05_model = pi05_model
         self.calib_dict = {}
         self._datas = []
-        self.pi05_model = pi05_model
-        self.hooks = [self.register_hooks(GemmaForCausalLM,
-            self.pi05_model.paligemma_with_expert.paligemma.model.language_model)]
+        self.hooks = []
+        self.keys = set(['inputs_embeds', 'attention_mask', 'position_ids'])
+        self.old_forward = None
+        self.register_hooks()
 
-    def register_hooks(self, target_cls, target_model):
-        def hook_input(m, args, kwargs):
-            print(
-                colored(f'hook module input: {type(m)} args:{len(args)} ', "green"))
-            for arg in args:
-                one_input = arg.clone().cpu().numpy()
-                print(colored(f'one_input shape: {one_input.shape}', "green"))
+    def register_hooks(self):
+        self.old_forward = self.pi05_model.paligemma_with_expert.paligemma.model.language_model.forward
 
-        self.hooks = hook_module_inputs(target_model,
-                                        hook_input, target_cls)
+        def hook_forward_input(*args, **kwargs):
+            one_input = {}
+            for key, value in kwargs.items():
+                if key in self.keys:
+                    print(
+                        colored(f'key: {key} value: {value.dtype} {value.shape}', 'yellow'))
+                    one_data = value.clone().cpu()
+                    one_input[key] = one_data
+            self._datas.append(one_input)
+            return self.old_forward(*args, **kwargs)
+        print(colored(f'hook llm forward', "green"))
+        self.pi05_model.paligemma_with_expert.paligemma.model.language_model.forward = hook_forward_input
 
     def stop_collect(self):
-        for hook in self.hooks:
-            hook.remove()
+        print(colored(f'collectd {len(self._datas)} datas', 'green'))
+        self.pi05_model.paligemma_with_expert.paligemma.model.language_model.forward = self.old_forward

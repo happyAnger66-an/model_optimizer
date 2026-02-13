@@ -206,7 +206,7 @@ def run_single_trajectory(
         inference_time = time.time() - inference_start
         print(
             colored(f"Inference time: {inference_time:.4f} seconds", "green"))
-        i += 1
+        i += 2
         if i > 10 and perf:
             time_results.append(inference_time)
     calib_collector.stop_collect()
@@ -214,11 +214,15 @@ def run_single_trajectory(
         print(colored(
             f"e2e {np.mean(time_results)*1000:.2f} ± {np.std(time_results)*1000:.2f} ms (shared)", "green"))
         print(colored(
-            f"action {np.mean(model.result_timing['denoise_step'])*1000:.2f} ± {np.std(model.result_timing['denoise_step'])*1000:.2f} ms (shared)", "green"))
+            f"suffix {np.mean(model.time_results['suffix'])*1000:.2f} ± {np.std(model.time_results['suffix'])*1000:.2f} ms (shared)", "green"))
         print(colored(
-            f"embed_prefix {np.mean(model.result_timing['embed_prefix'])*1000:.2f} ± {np.std(model.result_timing['embed_prefix'])*1000:.2f} ms (shared)", "green"))
+            f"action {np.mean(model.time_results['action'])*1000:.2f} ± {np.std(model.time_results['action'])*1000:.2f} ms (shared)", "green"))
         print(colored(
-            f"llm {np.mean(model.result_timing['llm'])*1000:.2f} ± {np.std(model.result_timing['llm'])*1000:.2f} ms (shared)", "green"))
+            f"embed_prefix {np.mean(model.time_results['vit'])*1000:.2f} ± {np.std(model.time_results['vit'])*1000:.2f} ms (shared)", "green"))
+        print(colored(
+            f"lang_emb {np.mean(model.time_results['lang_emb'])*1000:.2f} ± {np.std(model.time_results['lang_emb'])*1000:.2f} ms (shared)", "green"))
+        print(colored(
+            f"llm {np.mean(model.time_results['llm'])*1000:.2f} ± {np.std(model.time_results['llm'])*1000:.2f} ms (shared)", "green"))
 
     if args.save_input_path:
         print(colored(f"save input datas to {args.save_input_path}", "green"))
