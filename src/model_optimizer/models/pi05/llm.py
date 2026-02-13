@@ -56,6 +56,7 @@ class LLM(torch.nn.Module, Model):
 #        tokenizer = get_tokenizer(model_dir)
         calib_dataloader = self.get_calibrate_dataset(calib_data)
         quantize_model(self, quant_cfg, calib_dataloader)
+        self.export(export_dir)
 
     @classmethod
     def construct_from_name_path(cls, model_name, model_path):
