@@ -43,8 +43,8 @@ class LLM(torch.nn.Module, Model):
             past_keys.append(past_key_caches[i][0])
             past_values.append(past_key_caches[i][1])
 
-        past_keys_tensor = torch.cat(past_keys, dim=0)
-        past_values_tensor = torch.cat(past_values, dim=0)
+        past_keys_tensor = torch.cat(past_keys, dim=0).to(torch.bfloat16)
+        past_values_tensor = torch.cat(past_values, dim=0).to(torch.bfloat16)
 
         return past_keys_tensor, past_values_tensor, prefix_output.last_hidden_state
 
