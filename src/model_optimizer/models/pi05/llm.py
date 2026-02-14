@@ -56,7 +56,7 @@ class LLM(torch.nn.Module, Model):
 #        tokenizer = get_tokenizer(model_dir)
         calib_dataloader = self.get_calibrate_dataset(calib_data)
         quantize_model(self, quant_cfg, calib_dataloader)
-        self.export(export_dir)
+        self.export(export_dir, dynamo=False)
 
     @classmethod
     def construct_from_name_path(cls, model_name, model_path):
@@ -71,7 +71,7 @@ class LLM(torch.nn.Module, Model):
                         paligemma.get_decoder())
         return llm_model
 
-    def export(self, export_dir):
+    def export(self, export_dir, dynamo=True):
         self.eval().cuda()
 
         output_dir = export_dir
@@ -102,7 +102,7 @@ class LLM(torch.nn.Module, Model):
                              "position_ids"],  # Add position_ids to input names
                 output_names=["past_keys", "past_values", "last_hidden_state"],
                 opset_version=19,
-                dynamo=True,
+                dynamo=dynamo,
                 do_constant_folding=True,
                 dynamic_axes={
                     "inputs_embeds": {0: "batch_size", 1: "seq_len"},
@@ -110,8 +110,7 @@ class LLM(torch.nn.Module, Model):
                     "position_ids": {0: "batch_size", 1: "seq_len"},
                     "past_keys": {2: "seq_len"},
                     "past_values": {2: "seq_len"},
-                },
-                strict=True,
+                }
             )
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
