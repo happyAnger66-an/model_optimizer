@@ -16,9 +16,9 @@ class Expert(torch.nn.Module, Model):
     def __init__(self, config, gemma_expert, **kwargs):
         super().__init__(**kwargs)
         self.config = config
-        self.gemma_expert = gemma_expert
+        self.gemma_expert = gemma_expert # this is gemma_expert.model
         self.device = self.gemma_expert.device
-        self.gemma_expert.model.config._attn_implementation = "eager"
+        self.gemma_expert.config._attn_implementation = "eager"
 
     def _wrap_past_key_values(self, input_keys, input_values):
         k_v_cache = DynamicCache()
