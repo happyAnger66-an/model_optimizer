@@ -87,8 +87,8 @@ class Pi05ExpertCalibCollector(Pi05CalibCollector):
             if key in self.input_keys:
                 if key == 'past_key_values':
                     past_keys_tensor, past_values_tensor = self._do_past_key_values(value)
-                    one_input['past_keys'] = past_keys_tensor
-                    one_input['past_values'] = past_values_tensor
+                    one_input['input_keys'] = past_keys_tensor
+                    one_input['input_values'] = past_values_tensor
                 else:
                     one_data = value.clone().cpu()
                     one_input[key] = one_data
