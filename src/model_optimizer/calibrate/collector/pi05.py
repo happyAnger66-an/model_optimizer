@@ -1,4 +1,5 @@
 import os
+from abc import ABC, abstractmethod
 from functools import partial
 
 import torch
@@ -13,7 +14,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class Pi05CalibCollector:
+class Pi05CalibCollector(ABC):
     def __init__(self, pytorch_model, save_dir, input_keys):
         self.model = pytorch_model
         self.save_dir = save_dir
@@ -32,11 +33,15 @@ class Pi05CalibCollector:
         self._datas.append(one_input)
         return self.old_forward(*args, **kwargs)
 
+    @abstractmethod
     def register_hooks(self):
-        raise NotImplementedError(f"{self.__class__.__name__} must implement register_hooks")
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement register_hooks")
 
+    @abstractmethod
     def unregister_hooks(self):
-        raise NotImplementedError(f"{self.__class__.__name__} must implement unregister_hooks")
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement unregister_hooks")
 
     def stop_collect(self):
         print(colored(f'collectd {len(self._datas)} datas', 'green'))

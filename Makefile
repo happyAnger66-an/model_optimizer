@@ -18,7 +18,7 @@ run_x86:
 	/bin/bash
 
 run_thor:
-	docker run -it --network host \
+	docker run -itd --name model_optimizer_thor --network host \
 	--runtime nvidia \
 	-v ${PWD}:/workspace \
 	-v ${HOME}:/srcs \
@@ -26,3 +26,6 @@ run_thor:
 	--shm-size=4g \
 	--env PYTHONPATH=/opt/openpi/lib/python3.12/site-packages/:/srcs/openpi/src/:/srcs/openpi/packages/openpi-client/src/ \
 	model_optimizer:thor \
+
+into_thor:
+	docker exec -it model_optimizer_thor /bin/bash

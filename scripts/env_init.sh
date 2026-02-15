@@ -6,5 +6,8 @@ if [ $# -lt 1 ]; then
 fi
 
 codepath=$1
+mkdir -p ~/.cache/openpi/big_vision
 
-export PYTHONPATH=$PYTHONPATH:$codepath/src/:$codepath/packages/openpi-client/src/
+cp /srcs/.cache/openpi/big_vision/* ~/.cache/openpi/big_vision/
+cp $codepath/src/openpi/models_pytorch/transformers_replace/* \
+    /opt/openpi/lib/python3.12/site-packages/transformers/
