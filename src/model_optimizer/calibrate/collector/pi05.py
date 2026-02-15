@@ -56,9 +56,9 @@ class Pi05LLMCalibCollector(Pi05CalibCollector):
         super().__init__(pi05_model, save_dir, input_keys)
 
     def register_hooks(self):
-        self.old_forward = self.pi05_model.paligemma_with_expert.paligemma.model.language_model.forward
+        self.old_forward = self.model.paligemma_with_expert.paligemma.model.language_model.forward
         print(colored(f'hook llm forward', "green"))
-        self.pi05_model.paligemma_with_expert.paligemma.model.language_model.forward = self.hook_forward_input
+        self.model.paligemma_with_expert.paligemma.model.language_model.forward = self.hook_forward_input
 
     def unregister_hooks(self):
-        self.pi05_model.paligemma_with_expert.paligemma.model.language_model.forward = self.old_forward
+        self.model.paligemma_with_expert.paligemma.model.language_model.forward = self.old_forward
