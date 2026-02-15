@@ -77,8 +77,8 @@ class Pi05ExpertCalibCollector(Pi05CalibCollector):
             past_keys.append(past_key_values[i][0].clone().cpu())
             past_values.append(past_key_values[i][1].clone().cpu())
 
-        past_keys_tensor = torch.cat(past_keys, dim=0).to(torch.bfloat16)
-        past_values_tensor = torch.cat(past_values, dim=0).to(torch.bfloat16)
+        past_keys_tensor = torch.cat(past_keys, dim=0)
+        past_values_tensor = torch.cat(past_values, dim=0)
         return past_keys_tensor, past_values_tensor
 
     def hook_forward_input(self, *args, **kwargs):
