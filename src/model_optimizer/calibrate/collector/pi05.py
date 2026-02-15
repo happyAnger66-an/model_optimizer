@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class Pi05CalibCollector(ABC):
+    name = "pi05"
     def __init__(self, pytorch_model, save_dir, input_keys):
         self.model = pytorch_model
         self.save_dir = save_dir
@@ -47,11 +48,12 @@ class Pi05CalibCollector(ABC):
         print(colored(f'collectd {len(self._datas)} datas', 'green'))
         if not os.path.exists(self.save_dir):
             os.makedirs(self.save_dir)
-        torch.save(self._datas, f'{self.save_dir}/pi05_llm_calib_data.pt')
+        torch.save(self._datas, f'{self.save_dir}/{self.name}_calib_datas.pt')
         self.unregister_hooks()
 
 
 class Pi05LLMCalibCollector(Pi05CalibCollector):
+    name = "pi05_llm"
     def __init__(self, pi05_model, save_dir, input_keys=['inputs_embeds', 'attention_mask', 'position_ids']):
         super().__init__(pi05_model, save_dir, input_keys)
 
@@ -62,3 +64,41 @@ class Pi05LLMCalibCollector(Pi05CalibCollector):
 
     def unregister_hooks(self):
         self.model.paligemma_with_expert.paligemma.model.language_model.forward = self.old_forward
+
+class Pi05ExpertCalibCollector(Pi05CalibCollector):
+    name = "pi05_expert"
+    def __init__(self, pi05_model, save_dir, input_keys=['attention_mask', 
+    'position_ids', 'inputs_embeds', 'adarms_cond', 'past_key_values']):
+        super().__init__(pi05_model, save_dir, input_keys)
+
+    def _do_past_key_values(self, past_key_values):
+        past_keys, past_values = [], []
+        for i in range(len(past_key_values)):
+            past_keys.append(past_key_values[i][0].clone().cpu())
+            past_values.append(past_key_values[i][1].clone().cpu())
+
+        past_keys_tensor = torch.cat(past_keys, dim=0).to(torch.bfloat16)
+        past_values_tensor = torch.cat(past_values, dim=0).to(torch.bfloat16)
+        return past_keys_tensor, past_values_tensor
+
+    def hook_forward_input(self, *args, **kwargs):
+        one_input = {}
+        for key, value in kwargs.items():
+            if key in self.input_keys:
+                if key == 'past_key_values':
+                    past_keys_tensor, past_values_tensor = self._do_past_key_values(value)
+                    one_input['past_keys'] = past_keys_tensor
+                    one_input['past_values'] = past_values_tensor
+                else:
+                    one_data = value.clone().cpu()
+                    one_input[key] = one_data
+        self._datas.append(one_input)
+        return self.old_forward(*args, **kwargs)
+
+    def register_hooks(self):
+        self.old_forward = self.model.paligemma_with_expert.gemma_expert.model.forward
+        print(colored(f'hook expert forward', "green"))
+        self.model.paligemma_with_expert.gemma_expert.model.forward = self.hook_forward_input
+
+    def unregister_hooks(self):
+        self.model.paligemma_with_expert.gemma_expert.model.forward = self.old_forward

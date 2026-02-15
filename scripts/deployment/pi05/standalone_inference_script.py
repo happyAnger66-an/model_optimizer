@@ -184,8 +184,9 @@ def run_single_trajectory(
     output_data_list = []
 
     if args.calib_save_path:
-        from model_optimizer.calibrate.collector.pi05 import Pi05LLMCalibCollector
-        calib_collector = Pi05LLMCalibCollector(policy._model, args.calib_save_path)
+        from model_optimizer.calibrate.collector.pi05 import Pi05LLMCalibCollector, Pi05ExpertCalibCollector
+        llm_calib_collector = Pi05LLMCalibCollector(policy._model, args.calib_save_path)
+        expert_calib_collector = Pi05ExpertCalibCollector(policy._model, args.calib_save_path)
 
     i = 0
     for obs in get_input_data(args.input_data_path, 40):
@@ -213,7 +214,8 @@ def run_single_trajectory(
             time_results.append(inference_time)
 
     if args.calib_save_path:
-        calib_collector.stop_collect()
+        llm_calib_collector.stop_collect()
+        expert_calib_collector.stop_collect()
 
     if perf:
         print(colored(

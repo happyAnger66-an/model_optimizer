@@ -28,7 +28,6 @@ class Expert(torch.nn.Module, Model):
     def forward(self, attention_mask, position_ids, inputs_embeds, adarms_cond=None, input_keys=None, input_values=None):
         logger.info(
             f'Pi05Expert input attention_mask: {attention_mask.shape} position_ids: {position_ids.shape} inputs_embeds: {inputs_embeds.shape}')
-#        time_emb = torch.zeros(1, 1024, dtype=torch.float16, device="cuda")
         k_v_cache = None
         if input_keys is not None and input_values is not None:
             k_v_cache = self._wrap_past_key_values(input_keys, input_values)
@@ -52,7 +51,7 @@ class Expert(torch.nn.Module, Model):
         expert_model = cls(config, gemma_expert_model)
         return expert_model
 
-    def export(self, export_dir, export_dtype=torch.bfloat16):
+    def export(self, export_dir, export_dtype=torch.bfloat16, dynamo=True):
         self.eval().cuda()
 
 #        old_dense_forward = self.gemma_expert.norm.dense.forward
@@ -122,7 +121,7 @@ class Expert(torch.nn.Module, Model):
                              "inputs_embeds", "adarms_cond", "past_keys", "past_values"],
                 output_names=["last_hidden_state"],
                 opset_version=19,
-                dynamo=True,
+                dynamo=dynamo,
                 do_constant_folding=True,
                 dynamic_axes={
                     "attention_mask": {0: "batch_size"},
