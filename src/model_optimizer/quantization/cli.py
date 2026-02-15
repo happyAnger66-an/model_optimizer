@@ -7,6 +7,7 @@ from ..progress.write import write_quantize_progress, write_running_log
 from ..webui.extras.constants import RUNNING_LOG
 from .llm_ptq import llm_quantize
 
+from termcolor import colored
 
 def quantize_onnx(model_path, calibrate_data, export_dir, quant_mode, calibrate_method):
     model_name = os.path.basename(model_path)
@@ -70,7 +71,7 @@ def quantize_cli(args):
     parser.add_argument('--input_shapes', type=str, default=None,
                         help='输入数据形状，用于量化校准的输入数据 (可选)')
     args = parser.parse_args(args[1:])
-    print(f'[cli] quantize args {args}')
+    print(colored(f'[cli] quantize args {args}', 'green'))
 
     model_name = args.model_name
     model_path = args.model_path
@@ -86,7 +87,7 @@ def quantize_cli(args):
             args.verify_data, batch_size=1, output_dir=args.export_dir)
 
     quant_cfg = get_quant_cfg(args.quantize_cfg)
-    print(f' !!!!!! quant_cfg: {quant_cfg} !!!!!!!!!')
+    print(colored(f' !!!!!! quant_cfg: {quant_cfg} !!!!!!!!!'), 'dark_grey')
     model.quantize(quant_cfg, args.calibrate_data, args.export_dir)
 
     if args.verify:
