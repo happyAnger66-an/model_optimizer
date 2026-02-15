@@ -7,6 +7,8 @@ import logging
 from ..model import Model
 from termcolor import colored
 
+from model_optimizer.quantization.quantization_utils import quantize_model
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,6 +52,11 @@ class Expert(torch.nn.Module, Model):
         config = pi05_model.paligemma_with_expert.gemma_expert.config
         expert_model = cls(config, gemma_expert_model)
         return expert_model
+    
+    def quantize(self, quant_cfg, calib_data, export_dir):
+        calib_dataloader = self.get_calibrate_dataset(calib_data)
+        quantize_model(self, quant_cfg, calib_dataloader)
+        self.export(export_dir, dynamo=False)
 
     def export(self, export_dir, export_dtype=torch.bfloat16, dynamo=True):
         self.eval().cuda()

@@ -1,3 +1,4 @@
+import torch
 from functools import partial
 import torch.nn as nn
 
@@ -12,6 +13,10 @@ class Model:
 
     def simplifier_model(self, model_path, output_dir):
         raise NotImplementedError
+
+    def get_calibrate_dataset(self, calib_data_file):
+        datas = torch.load(calib_data_file)
+        return datas
 
     def load(self, config):
         raise NotImplementedError
