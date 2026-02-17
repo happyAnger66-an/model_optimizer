@@ -119,6 +119,9 @@ def build_engine(
     elif precision == "fp8":
         config.set_flag(trt.BuilderFlag.FP8)
         logger.info("Enabled FP8 mode")
+    elif precision == "int4":
+        config.set_flag(trt.BuilderFlag.INT4)
+        logger.info("Enabled int4 mode")
     elif precision == "fp32":
         logger.info("Using FP32 (default precision)")
     else:
