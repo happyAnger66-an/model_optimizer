@@ -92,6 +92,12 @@ make run_x86
 |π0.5|pi05_libero/llm||
 |π0.5|pi05_libero/expert||
 
+|**Architecture**|**Detial usage**||
+|-|-|-|
+|π0.5|[manual](./docs/pi05.md)||
+|π0.5 quantize|[manual](./docs/pi05_quantize.md)||
+|YOLO11|[manual](./docs/yolo.md)||
+
 #### 3.2 Tested and passed in the following environments
 
 + 3090
@@ -133,6 +139,7 @@ NVIDIA Jetson AGX Thor Developer Kit - Jetpack 7.0 [L4T 38.2.1]
 |**Architecture**|**Detial usage**||
 |-|-|-|
 |π0.5|[manual](./docs/pi05.md)||
+|π0.5 quantize|[manual](./docs/pi05_quantize.md)||
 |YOLO11|[manual](./docs/yolo.md)||
 
 
