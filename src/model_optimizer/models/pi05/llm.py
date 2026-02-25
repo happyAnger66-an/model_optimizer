@@ -56,9 +56,10 @@ class LLM(torch.nn.Module, Model):
         calib_dataloader = self.get_calibrate_dataset(calib_data)
         quantize_model(self, quant_cfg, calib_dataloader)
 
+        self.export(export_dir, dynamo=False)
+        onnx_path = f"{export_dir}/llm.onnx"
         if is_fp4_quantized(self):
             t1 = time.time()
-            onnx_path = self.export(export_dir, dynamo=False)
             onnx.shape_inference.infer_shapes_path(onnx_path)
             onnx_model = onnx.load(onnx_path)
             graph = None
