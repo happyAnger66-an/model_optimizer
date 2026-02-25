@@ -1,6 +1,7 @@
 import os
 import time
 import torch
+import onnx
 
 from ..model import Model
 from ..token import get_tokenizer
@@ -9,8 +10,10 @@ import logging
 from transformers.cache_utils import DynamicCache
 
 from termcolor import colored
-    
+
 from model_optimizer.quantization.quantization_utils import quantize_model
+from modelopt.onnx.quantization.qdq_utils import fp4qdq_to_2dq
+from model_optimizer.utils.utils import is_fp4_quantized
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +52,45 @@ class LLM(torch.nn.Module, Model):
         return past_keys_tensor, past_values_tensor, prefix_output.last_hidden_state
 
     def quantize(self, quant_cfg, calib_data, export_dir):
-#        tokenizer = get_tokenizer(model_dir)
+        #        tokenizer = get_tokenizer(model_dir)
         calib_dataloader = self.get_calibrate_dataset(calib_data)
         quantize_model(self, quant_cfg, calib_dataloader)
-        self.export(export_dir, dynamo=False)
+
+        if is_fp4_quantized(self):
+            t1 = time.time()
+            onnx_path = self.export(export_dir, dynamo=False)
+            onnx.shape_inference.infer_shapes_path(onnx_path)
+            onnx_model = onnx.load(onnx_path)
+            graph = None
+
+            print(
+                colored(
+                    "NVFP4 quantization detected in the model, \
+                        compressing some weights to NVFP4", "green")
+            )
+            onnx_model = fp4qdq_to_2dq(onnx_model)
+            print(
+                colored(
+                    "Removing all the files in the output directory except for .json files",
+                    "green"
+                )
+            )
+            for file in os.listdir(export_dir):
+                if file.endswith(".json"):
+                    continue
+                os.remove(os.path.join(export_dir, file))
+            onnx.save_model(onnx_model,
+                            onnx_path,
+                            save_as_external_data=True,
+                            all_tensors_to_one_file=True,
+                            location="onnx_model.data",
+                            convert_attribute=True)
+            t2 = time.time()
+            print(
+                colored(
+                    f"NVFP4 quantization post processing cost:{t2 - t1}s", "green"
+                )
+            )
 
     @classmethod
     def construct_from_name_path(cls, model_name, model_path):

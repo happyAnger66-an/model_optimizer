@@ -1,5 +1,16 @@
 import json
+import torch.nn as nn
 from addict import Dict
+
+def is_fp4_quantized(model: nn.Module) -> bool:
+    """Check if the model is quantized in NVFP4 mode."""
+    for _, module in model.named_modules():
+        if (hasattr(module, "input_quantizer")
+                and module.input_quantizer.block_sizes
+                and module.input_quantizer.block_sizes.get("scale_bits",
+                                                           None) == (4, 3)):
+            return True
+    return False
 
 def _flat_num_bits(num_bits_str):
     return tuple([int(bit) for bit in num_bits_str.split(',')])
