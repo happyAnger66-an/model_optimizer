@@ -1,0 +1,1 @@
+https://api.wd-red.com/sub?target=clash&emoji=true&udp=true&scv=true&new_name=true&filename=WestData&url=https%3A%2F%2Fwd-red.com%2Fsubscribe%2Fvrgayy-5umsf4b9-vc1b0rft
