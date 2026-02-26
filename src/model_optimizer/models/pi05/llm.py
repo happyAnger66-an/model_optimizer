@@ -51,7 +51,7 @@ class LLM(torch.nn.Module, Model):
 
         return past_keys_tensor, past_values_tensor, prefix_output.last_hidden_state
 
-    def _nvfp4_post_processing(self, onnx_path, export_dir):
+    def _nvfp4_post_processing(self, export_dir):
         with torch.inference_mode():
             self.save_pretrained(export_dir)
 
@@ -98,6 +98,7 @@ class LLM(torch.nn.Module, Model):
         set_dynamic_quant(self, "fp16")
 
         self.export(export_dir, dynamo=False)
+        self._nvfp4_post_processing(export_dir)
 
     @classmethod
     def construct_from_name_path(cls, model_name, model_path):
