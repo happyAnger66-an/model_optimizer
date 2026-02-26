@@ -139,6 +139,7 @@ class LLM(torch.nn.Module, Model):
                 # Include position_ids in ONNX export
                 (inputs_embeds, attention_mask, position_ids),
                 f"{output_dir}/llm.onnx",
+                export_params=True,
                 input_names=["inputs_embeds", "attention_mask",
                              "position_ids"],  # Add position_ids to input names
                 output_names=["past_keys", "past_values", "last_hidden_state"],
