@@ -53,7 +53,7 @@ class LLM(torch.nn.Module, Model):
 
     def _nvfp4_post_processing(self, export_dir):
         with torch.inference_mode():
-            self.save_pretrained(export_dir)
+            self.model.save_pretrained(export_dir)
 
         onnx_path = f"{export_dir}/llm.onnx"
         if is_fp4_quantized(self):
