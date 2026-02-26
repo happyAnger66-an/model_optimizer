@@ -21,10 +21,10 @@ logger = logging.getLogger(__name__)
 class LLM(torch.nn.Module, Model):
     def __init__(self, config, llm, **kwargs):
         super().__init__(**kwargs)
-        self.llm = llm
+        self.model = llm
         self.device = llm.device
         self.config = config
-        self.llm.config._attn_implementation = "eager"
+        self.model.config._attn_implementation = "eager"
 
     def _wrap_past_key_values(self, input_keys, input_values):
         k_v_cache = DynamicCache()
@@ -35,7 +35,7 @@ class LLM(torch.nn.Module, Model):
         return k_v_cache
 
     def forward(self, inputs_embeds, attention_mask, position_ids):
-        prefix_output = self.llm(inputs_embeds=inputs_embeds,
+        prefix_output = self.model(inputs_embeds=inputs_embeds,
                                  attention_mask=attention_mask,
                                  position_ids=position_ids,
                                  use_cache=True)
