@@ -13,7 +13,7 @@ from termcolor import colored
 
 from model_optimizer.quantization.quantization_utils import quantize_model
 from modelopt.onnx.quantization.qdq_utils import fp4qdq_to_2dq
-from model_optimizer.utils.utils import is_fp4_quantized
+from model_optimizer.utils.utils import is_fp4_quantized, set_dynamic_quant
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +51,10 @@ class LLM(torch.nn.Module, Model):
 
         return past_keys_tensor, past_values_tensor, prefix_output.last_hidden_state
 
-    def quantize(self, quant_cfg, calib_data, export_dir):
-        #        tokenizer = get_tokenizer(model_dir)
-        calib_dataloader = self.get_calibrate_dataset(calib_data)
-        quantize_model(self, quant_cfg, calib_dataloader)
+    def _nvfp4_post_processing(self, onnx_path, export_dir):
+        with torch.inference_mode():
+            self.save_pretrained(export_dir)
 
-        self.export(export_dir, dynamo=False)
         onnx_path = f"{export_dir}/llm.onnx"
         if is_fp4_quantized(self):
             t1 = time.time()
@@ -92,6 +90,14 @@ class LLM(torch.nn.Module, Model):
                     f"NVFP4 quantization post processing cost:{t2 - t1}s", "green"
                 )
             )
+
+    def quantize(self, quant_cfg, calib_data, export_dir):
+        #        tokenizer = get_tokenizer(model_dir)
+        calib_dataloader = self.get_calibrate_dataset(calib_data)
+        quantize_model(self, quant_cfg, calib_dataloader)
+        set_dynamic_quant(self, "fp16")
+
+        self.export(export_dir, dynamo=False)
 
     @classmethod
     def construct_from_name_path(cls, model_name, model_path):
