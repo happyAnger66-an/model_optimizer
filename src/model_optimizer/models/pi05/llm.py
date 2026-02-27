@@ -19,6 +19,7 @@ from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
 
 logger = logging.getLogger(__name__)
 
+
 class LLM(torch.nn.Module, Model):
     def __init__(self, config, llm, **kwargs):
         super().__init__(**kwargs)
@@ -116,9 +117,9 @@ class LLM(torch.nn.Module, Model):
                 else:
                     data = data.to(model.device)
                     outputs = model(data)
-                output_datas.append({"past_keys": outputs[0].detach().cpu().numpy(),
-                                     "past_values": outputs[1].detach().cpu().numpy(),
-                                     "last_hidden_state": outputs[2].detach().cpu().numpy()})
+                output_datas.append({"past_keys": outputs[0].to(torch.float32).detach().cpu().numpy(),
+                                     "past_values": outputs[1].to(torch.float32).detach().cpu().numpy(),
+                                     "last_hidden_state": outputs[2].to(torch.float32).detach().cpu().numpy()})
 
         if self.is_quantized:
             print(colored("Quantized model val", "green"))
