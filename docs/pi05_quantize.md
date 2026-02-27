@@ -3,7 +3,7 @@
 This page describes how to use model-opt to quantize `pi05 model`.
 
 
-## 1. gemma LLM model quantize
+## 1. LLM model quantize
 
 ### 1.1 quant_cfg
 
@@ -63,8 +63,47 @@ LLM export onnx done to /tmp/quantize/pi05/ cost:55.919289112091064s
 python scripts/deployment/pi05/standalone_inference_script.py --model-path /srcs/openpi/pytorch_pi05_libero/ --inference-mode tensorrt --trt_engine_path /tmp/build/pi05/ --llm_engine llm_int8q.engine --perf
 ```
 
+## 2. NVFP4 quantize
 
-## 2. action expert quantize
+### 2.1 quant_cfg
+
+[llm nvfp4 quant cfg](config/quant/llm_nvfp4_quant_cfg.py)
+
+### 2.2 collector calibrate datas
+
+```shell
+python scripts/deployment/pi05/standalone_inference_script.py --model-path /srcs/openpi/pytorch_pi05_libero/ --inference-mode pytorch --calib-save-path /tmp/calib/pi05/
+```
+
+### 2.3 quantize
+
+```shell
+model-opt quantize --model_name pi05_libero/llm --model_path /srcs/openpi/pytorch_pi05_libero/ --quantize_cfg config/quant/llm_nvfp4_quant_cfg.py --calib
+rate_data /tmp/calib/pi05/pi05_llm_calib_datas.pt --export_dir /tmp/quantize/nvfp4
+```
+
+### 2.4 compare accuracy
+
+```shell
+model-opt quantize --model_name pi05_libero/llm --model_path /srcs/openpi/pytorch_pi05_libero/ --quantize_cfg config/quant/llm_nvfp4_quant_cfg.py --calibrate_data /tmp/calib/pi05/pi05_llm_calib_datas.pt --verify True --verify_data /tmp/calib/pi05/pi05_llm_calib_datas.pt  --export_dir /tmp/test/
+```
+
++ --verify True: 指定是否验证量化模型的准确性，默认值为 False。
++ --verify_data: 指定用于验证准确性的校准数据文件路径。
+
+### 2.5 compile nvfp4 model
+
+```shell
+model-opt build --model_path /tmp/quantize/nvfp4/llm.onnx --build_cfg config/build_configs/llm_build_cfg.py --export_dir /tmp/build/pi05/llm_nvfp4.engine
+```
+
+### 2.6 inference with nvfp4 model 
+
+```shell
+python scripts/deployment/pi05/standalone_inference_script.py --model-path /srcs/openpi/pytorch_pi05_libero/ --inference-mode tensorrt --trt-engine-path /tmp/build/pi05/ --llm-engine llm_nvfp4.engine --perf
+```
+
+## 3. action expert quantize
 
 
 #### You may get bellow erros:
