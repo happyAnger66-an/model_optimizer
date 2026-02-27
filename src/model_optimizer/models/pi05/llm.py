@@ -5,6 +5,7 @@ import onnx
 
 from ..model import Model
 from ..token import get_tokenizer
+from tqdm import tqdm
 import logging
 
 from transformers.cache_utils import DynamicCache
@@ -91,6 +92,31 @@ class LLM(torch.nn.Module, Model):
                 )
             )
 
+    def val(self, val_data, batch_size, output_dir):
+        val_datas = self.get_calibrate_dataset(val_data)
+
+        def val_loop(model: torch.nn.Module) -> None:
+            """
+            Val loop that val the model.
+            
+            Args:
+                model: Model to val
+            """
+            # Create progress bar for val
+            print(f"Val model on {len(val_datas)} samples...")
+            pbar = tqdm(val_datas, desc="Val", unit="num_samples")
+
+            for data in pbar:
+                if isinstance(data, dict):
+                    data = {k: v.to(model.device) for k, v in data.items()}
+                    outputs = model(**data)
+                else:
+                    data = data.to(model.device)
+                    outputs = model(data)
+                print(f"Val output: {outputs}")
+
+        val_loop(self)
+
     def quantize(self, quant_cfg, calib_data, export_dir):
         #        tokenizer = get_tokenizer(model_dir)
         calib_dataloader = self.get_calibrate_dataset(calib_data)
@@ -98,7 +124,7 @@ class LLM(torch.nn.Module, Model):
         set_dynamic_quant(self, "fp16")
 
         self.export(export_dir, dynamo=False)
-        self._nvfp4_post_processing(export_dir)
+#        self._nvfp4_post_processing(export_dir)
 
     @classmethod
     def construct_from_name_path(cls, model_name, model_path):
