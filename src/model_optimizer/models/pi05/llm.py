@@ -138,7 +138,7 @@ class LLM(torch.nn.Module, Model):
         set_dynamic_quant(self, "fp16")
 
         self.export(export_dir, dynamo=False)
-#        self._nvfp4_post_processing(export_dir)
+        self._nvfp4_post_processing(export_dir)
 
     @classmethod
     def construct_from_name_path(cls, model_name, model_path):
