@@ -15,9 +15,9 @@ from termcolor import colored
 from model_optimizer.quantization.quantization_utils import quantize_model
 from modelopt.onnx.quantization.qdq_utils import fp4qdq_to_2dq
 from model_optimizer.utils.utils import is_fp4_quantized, set_dynamic_quant
+from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
 
 logger = logging.getLogger(__name__)
-
 
 class LLM(torch.nn.Module, Model):
     def __init__(self, config, llm, **kwargs):
@@ -26,6 +26,9 @@ class LLM(torch.nn.Module, Model):
         self.device = llm.device
         self.config = config
         self.model.config._attn_implementation = "eager"
+        self.val_datas_before = []
+        self.val_datas_after = []
+        self.is_quantized = False
 
     def _wrap_past_key_values(self, input_keys, input_values):
         k_v_cache = DynamicCache()
@@ -37,9 +40,9 @@ class LLM(torch.nn.Module, Model):
 
     def forward(self, inputs_embeds, attention_mask, position_ids):
         prefix_output = self.model(inputs_embeds=inputs_embeds,
-                                 attention_mask=attention_mask,
-                                 position_ids=position_ids,
-                                 use_cache=True)
+                                   attention_mask=attention_mask,
+                                   position_ids=position_ids,
+                                   use_cache=True)
         past_key_caches = prefix_output.past_key_values
         past_keys = []
         past_values = []
@@ -95,10 +98,10 @@ class LLM(torch.nn.Module, Model):
     def val(self, val_data, batch_size, output_dir):
         val_datas = self.get_calibrate_dataset(val_data)
 
-        def val_loop(model: torch.nn.Module) -> None:
+        def val_loop(model: torch.nn.Module, output_datas) -> None:
             """
             Val loop that val the model.
-            
+
             Args:
                 model: Model to val
             """
@@ -113,14 +116,24 @@ class LLM(torch.nn.Module, Model):
                 else:
                     data = data.to(model.device)
                     outputs = model(data)
-                print(f"Val output: {outputs}")
+                output_datas.append({"past_keys": outputs[0].detach().cpu().numpy(),
+                                     "past_values": outputs[1].detach().cpu().numpy(),
+                                     "last_hidden_state": outputs[2].detach().cpu().numpy()})
 
-        val_loop(self)
+        if self.is_quantized:
+            print(colored("Quantized model val", "green"))
+            val_loop(self, self.val_datas_after)
+            return Pi05Metric(self.val_datas_after)
+        else:
+            print(colored("Original model val", "green"))
+            val_loop(self, self.val_datas_before)
+            return Pi05Metric(self.val_datas_before)
 
     def quantize(self, quant_cfg, calib_data, export_dir):
-        #        tokenizer = get_tokenizer(model_dir)
+        # tokenizer = get_tokenizer(model_dir)
         calib_dataloader = self.get_calibrate_dataset(calib_data)
         quantize_model(self, quant_cfg, calib_dataloader)
+        self.is_quantized = True
         set_dynamic_quant(self, "fp16")
 
         self.export(export_dir, dynamo=False)
