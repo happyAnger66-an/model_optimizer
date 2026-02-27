@@ -9,3 +9,6 @@ class Pi05Metric(Metric):
         other_result = other.get_result()
         self_result = self.get_result()
         compare_predictions(self_result, other_result, key1="Origin", key2="Quantized")
+
+    def print(self):
+        pass
