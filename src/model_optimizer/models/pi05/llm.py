@@ -27,9 +27,6 @@ class LLM(torch.nn.Module, Model):
         self.device = llm.device
         self.config = config
         self.model.config._attn_implementation = "eager"
-        self.val_datas_before = []
-        self.val_datas_after = []
-        self.is_quantized = False
 
     def _wrap_past_key_values(self, input_keys, input_values):
         k_v_cache = DynamicCache()

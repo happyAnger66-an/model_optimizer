@@ -16,6 +16,9 @@ class Model:
     def __init__(self, model_name, model_path):
         self.model_name = model_name
         self.model_path = model_path
+        self.val_datas_before = []
+        self.val_datas_after = []
+        self.is_quantized = False
 
     def simplifier_model(self, model_path, output_dir):
         raise NotImplementedError
