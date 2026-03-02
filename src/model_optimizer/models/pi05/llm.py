@@ -14,7 +14,7 @@ from termcolor import colored
 
 from model_optimizer.quantization.quantization_utils import quantize_model
 from modelopt.onnx.quantization.qdq_utils import fp4qdq_to_2dq
-from model_optimizer.utils.utils import is_fp4_quantized, set_dynamic_quant
+from model_optimizer.utils.utils import is_fp4_quantized, set_dynamic_quant, is_nvfp4_quantized
 from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
 
 logger = logging.getLogger(__name__)
@@ -138,7 +138,9 @@ class LLM(torch.nn.Module, Model):
         set_dynamic_quant(self, "fp16")
 
         self.export(export_dir, dynamo=False)
-        self._nvfp4_post_processing(export_dir)
+        if is_nvfp4_quantized(quant_cfg):
+            print(colored("nvfp4 quantization detected, post processing...", "green"))
+            self._nvfp4_post_processing(export_dir)
 
     @classmethod
     def construct_from_name_path(cls, model_name, model_path):

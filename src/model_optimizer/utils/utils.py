@@ -4,6 +4,12 @@ from addict import Dict
 
 from modelopt.torch.quantization.utils import is_quantized_linear
 
+def is_nvfp4_quantized(quant_cfg) -> bool:
+    if "*input_quantizer" in quant_cfg["quant_cfg"]:
+        input_quantize_cfg = quant_cfg["quant_cfg"]["*input_quantizer"]
+        if input_quantize_cfg["num_bits"][0] == 2:
+            return True
+    return False
 
 def is_nvfp4_linear(module: nn.Module) -> bool:
     """Check if the module is a quantized linear layer with NVFP4 quantization. The test is designed for identification purpose only, not designed to be comprehensive.
