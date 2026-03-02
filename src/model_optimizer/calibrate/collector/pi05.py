@@ -110,12 +110,9 @@ class Pi05VitCalibCollector(Pi05CalibCollector):
 
     def hook_forward_input(self, *args, **kwargs):
         one_input = {}
-        print(f'arg: {args} kwargs: {kwargs}')
-        for key, value in kwargs.items():
-            if key in self.input_keys:
-                one_data = value.clone().cpu()
-                one_input[key] = one_data
-        self._datas.append(one_input)
+#        print(f'arg: {args} kwargs: {kwargs}')
+        one_data = args[0].clone().cpu()
+        self._datas.append(one_data)
         return self.old_forward(*args, **kwargs)
 
     def register_hooks(self):
