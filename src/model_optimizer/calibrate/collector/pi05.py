@@ -108,6 +108,16 @@ class Pi05VitCalibCollector(Pi05CalibCollector):
     def __init__(self, pi05_model, save_dir, input_keys=['pixel_values']):
         super().__init__(pi05_model, save_dir, input_keys)
 
+    def hook_forward_input(self, *args, **kwargs):
+        one_input = {}
+        print(f'arg: {args} kwargs: {kwargs}')
+        for key, value in kwargs.items():
+            if key in self.input_keys:
+                one_data = value.clone().cpu()
+                one_input[key] = one_data
+        self._datas.append(one_input)
+        return self.old_forward(*args, **kwargs)
+
     def register_hooks(self):
         self.old_forward = self.model.paligemma_with_expert.paligemma.model.vision_tower.forward
         print(colored(f'hook vit forward', "green"))
