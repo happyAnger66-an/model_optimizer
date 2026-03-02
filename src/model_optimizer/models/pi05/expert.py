@@ -8,9 +8,9 @@ from ..model import Model
 from termcolor import colored
 
 from model_optimizer.quantization.quantization_utils import quantize_model
+from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
 logger = logging.getLogger(__name__)
-
 
 class Expert(torch.nn.Module, Model):
     def __init__(self, config, gemma_expert, **kwargs):
@@ -55,11 +55,6 @@ class Expert(torch.nn.Module, Model):
         expert_model = cls(config, gemma_expert_model)
         return expert_model
     
-    def quantize(self, quant_cfg, calib_data, export_dir):
-        calib_dataloader = self.get_calibrate_dataset(calib_data)
-        quantize_model(self, quant_cfg, calib_dataloader)
-        self.export(export_dir, dynamo=False)
-
     def export(self, export_dir, export_dtype=torch.bfloat16, dynamo=True):
         self.eval().cuda()
 
@@ -146,6 +141,18 @@ class Expert(torch.nn.Module, Model):
         print(
             colored(f"Expert export onnx done to {output_dir} dtype:{export_dtype} cost:{end - start}s", "green"))
         return self
+
+    def quantize(self, quant_cfg, calib_data, export_dir):
+        # tokenizer = get_tokenizer(model_dir)
+        calib_dataloader = self.get_calibrate_dataset(calib_data)
+        quantize_model(self, quant_cfg, calib_dataloader)
+        self.is_quantized = True
+        set_dynamic_quant(self, "fp16")
+
+        self.export(export_dir, dynamo=False)
+        if is_nvfp4_quantized(quant_cfg):
+            print(colored("nvfp4 quantization detected, post processing...", "green"))
+            self._nvfp4_post_processing(export_dir)
 
     @classmethod
     def export_onnx(cls, pi05_model, export_dir):
