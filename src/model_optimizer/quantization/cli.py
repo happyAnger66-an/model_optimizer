@@ -9,6 +9,7 @@ from .llm_ptq import llm_quantize
 
 from termcolor import colored
 
+
 def quantize_onnx(model_path, calibrate_data, export_dir, quant_mode, calibrate_method):
     model_name = os.path.basename(model_path)
     export_name = model_name.replace('.', '_')
@@ -87,7 +88,7 @@ def quantize_cli(args):
             args.verify_data, batch_size=1, output_dir=args.export_dir)
 
     quant_cfg = get_quant_cfg(args.quantize_cfg)
-    print(colored(f' !!!!!! quant_cfg: {quant_cfg} !!!!!!!!!'), 'dark_grey')
+    print(colored(f' !!!!!! quant_cfg: {quant_cfg} !!!!!!!!!', 'dark_grey'))
     model.quantize(quant_cfg, args.calibrate_data, args.export_dir)
 
     if args.verify:

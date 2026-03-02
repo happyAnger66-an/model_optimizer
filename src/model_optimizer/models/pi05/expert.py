@@ -21,6 +21,10 @@ class Expert(torch.nn.Module, Model):
         self.device = self.gemma_expert.device
         self.gemma_expert.config._attn_implementation = "eager"
 
+    @property
+    def model(self):
+        return self.gemma_expert
+    
     def _wrap_past_key_values(self, input_keys, input_values):
         k_v_cache = DynamicCache()
 #        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
