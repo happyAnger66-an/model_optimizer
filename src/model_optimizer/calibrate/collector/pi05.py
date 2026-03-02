@@ -102,3 +102,16 @@ class Pi05ExpertCalibCollector(Pi05CalibCollector):
 
     def unregister_hooks(self):
         self.model.paligemma_with_expert.gemma_expert.model.forward = self.old_forward
+
+class Pi05VitCalibCollector(Pi05CalibCollector):
+    name = "pi05_vit"
+    def __init__(self, pi05_model, save_dir, input_keys=['pixel_values']):
+        super().__init__(pi05_model, save_dir, input_keys)
+
+    def register_hooks(self):
+        self.old_forward = self.model.paligemma_with_expert.paligemma.model.vision_tower.forward
+        print(colored(f'hook vit forward', "green"))
+        self.model.paligemma_with_expert.paligemma.model.vision_tower.forward = self.hook_forward_input
+
+    def unregister_hooks(self):
+        self.model.paligemma_with_expert.paligemma.model.vision_tower.forward = self.old_forward
