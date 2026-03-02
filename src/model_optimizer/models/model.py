@@ -5,6 +5,12 @@ import torch.nn as nn
 import modelopt.torch.opt as mto
 import modelopt.torch.quantization as mtq
 
+from modelopt.onnx.quantization.qdq_utils import fp4qdq_to_2dq
+from model_optimizer.utils.utils import is_fp4_quantized
+import time
+import os
+from termcolor import colored
+import onnx
 
 class Model:
     def __init__(self, model_name, model_path):
@@ -37,6 +43,46 @@ class Model:
 
     def quantize_end(self, export_dir):
         pass
+
+    def _nvfp4_post_processing(self, onnx_path, export_dir):
+        with torch.inference_mode():
+            self.model.save_pretrained(export_dir)
+
+#        onnx_path = f"{export_dir}/llm.onnx"
+        if is_fp4_quantized(self):
+            t1 = time.time()
+            onnx.shape_inference.infer_shapes_path(onnx_path)
+            onnx_model = onnx.load(onnx_path)
+            graph = None
+
+            print(
+                colored(
+                    "NVFP4 quantization detected in the model, \
+                        compressing some weights to NVFP4", "green")
+            )
+            onnx_model = fp4qdq_to_2dq(onnx_model)
+            print(
+                colored(
+                    "Removing all the files in the output directory except for .json files",
+                    "green"
+                )
+            )
+            for file in os.listdir(export_dir):
+                if file.endswith(".json"):
+                    continue
+                os.remove(os.path.join(export_dir, file))
+            onnx.save_model(onnx_model,
+                            onnx_path,
+                            save_as_external_data=True,
+                            all_tensors_to_one_file=True,
+                            location="onnx_model.data",
+                            convert_attribute=True)
+            t2 = time.time()
+            print(
+                colored(
+                    f"NVFP4 quantization post processing cost:{t2 - t1}s", "green"
+                )
+            )
 
     def quantize(self, quant_cfg, calib_data, export_dir):
         self.quantize_start(quant_cfg, calib_data, None)

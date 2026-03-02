@@ -56,11 +56,11 @@ class LLM(torch.nn.Module, Model):
 
         return past_keys_tensor, past_values_tensor, prefix_output.last_hidden_state
 
-    def _nvfp4_post_processing(self, export_dir):
+    def _nvfp4_post_processing(self, onnx_path, export_dir):
         with torch.inference_mode():
             self.model.save_pretrained(export_dir)
 
-        onnx_path = f"{export_dir}/llm.onnx"
+#        onnx_path = f"{export_dir}/llm.onnx"
         if is_fp4_quantized(self):
             t1 = time.time()
             onnx.shape_inference.infer_shapes_path(onnx_path)

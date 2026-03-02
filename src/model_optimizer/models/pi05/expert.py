@@ -12,11 +12,12 @@ from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
 logger = logging.getLogger(__name__)
 
+
 class Expert(torch.nn.Module, Model):
     def __init__(self, config, gemma_expert, **kwargs):
         super().__init__(**kwargs)
         self.config = config
-        self.gemma_expert = gemma_expert # this is gemma_expert.model
+        self.gemma_expert = gemma_expert  # this is gemma_expert.model
         self.device = self.gemma_expert.device
         self.gemma_expert.config._attn_implementation = "eager"
 
@@ -54,7 +55,7 @@ class Expert(torch.nn.Module, Model):
         config = pi05_model.paligemma_with_expert.gemma_expert.config
         expert_model = cls(config, gemma_expert_model)
         return expert_model
-    
+
     def export(self, export_dir, export_dtype=torch.bfloat16, dynamo=True):
         self.eval().cuda()
 
@@ -112,7 +113,7 @@ class Expert(torch.nn.Module, Model):
         past_keys_tensor = torch.cat(past_keys, dim=0)
         past_values_tensor = torch.cat(past_values, dim=0)
 
-        output_path = f"{output_dir}/expert.onnx"
+        output_path = f"{output_dir}/action.onnx"
         with torch.inference_mode():
             torch.onnx.export(
                 self,
@@ -150,9 +151,10 @@ class Expert(torch.nn.Module, Model):
         set_dynamic_quant(self, "fp16")
 
         self.export(export_dir, dynamo=False)
+        onnx_path = f"{export_dir}/action.onnx"
         if is_nvfp4_quantized(quant_cfg):
             print(colored("nvfp4 quantization detected, post processing...", "green"))
-            self._nvfp4_post_processing(export_dir)
+            self._nvfp4_post_processing(onnx_path, export_dir)
 
     @classmethod
     def export_onnx(cls, pi05_model, export_dir):
