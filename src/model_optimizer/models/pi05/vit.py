@@ -7,6 +7,9 @@ from termcolor import colored
 
 import logging
 
+from model_optimizer.quantization.quantization_utils import quantize_model
+from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,7 +30,7 @@ class Vit(torch.nn.Module, Model):
 #        logger.info(f'Pi05Vit output: {image_features.shape}')
         return image_features
 
-    def export(self, export_dir):
+    def export(self, export_dir, dynamo=True):
         self.eval().cuda()
 
         pixel_values = torch.randn(
@@ -47,7 +50,7 @@ class Vit(torch.nn.Module, Model):
                 input_names=["pixel_values"],
                 output_names=["image_features"],
                 opset_version=19,
-                dynamo=True,
+                dynamo=dynamo,
                 do_constant_folding=True,
                 #                dynamic_axes={
                 #                    "pixel_values": {0: "batch_size"},
@@ -105,3 +108,15 @@ class Vit(torch.nn.Module, Model):
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
         return vit_model
+
+    def quantize(self, quant_cfg, calib_data, export_dir):
+        # tokenizer = get_tokenizer(model_dir)
+        calib_dataloader = self.get_calibrate_dataset(calib_data)
+        quantize_model(self, quant_cfg, calib_dataloader)
+        self.is_quantized = True
+        set_dynamic_quant(self, "fp16")
+
+        self.export(export_dir, dynamo=False)
+        if is_nvfp4_quantized(quant_cfg):
+            print(colored("nvfp4 quantization detected, post processing...", "green"))
+            self._nvfp4_post_processing(export_dir)
