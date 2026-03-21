@@ -1,0 +1,28 @@
+# Model Optimizer - π0.5 模型依赖
+# 需在 requirements-base.txt 之后安装
+# 使用前需配置 openpi 源码路径至 PYTHONPATH
+
+# JAX 生态 (π0.5 训练/推理)
+jax[cuda12]
+flax>=0.10.0
+chex
+jaxtyping>=0.2.0
+ml-collections>=1.0.0
+
+# 数据处理
+datasets>=3.0
+etils
+av>=15.0.0,<16.0.0
+gcsfs
+
+# 工具
+tyro>=0.9.5
+augmax>=0.3.4
+beartype>=0.19.0
+numpydantic>=1.6.6
+tqdm-loggable
+sentencepiece
+importlib-resources
+
+# LeRobot (π0.5 数据集)
+lerobot==0.3.3

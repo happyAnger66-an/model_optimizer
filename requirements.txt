@@ -1,23 +1,5 @@
-setuptools_scm
-torch
-torchvision
-torchaudio
-torchcodec
+# Model Optimizer - 主依赖入口
+# 使用: pip install -r requirements.txt
+# 或: pip install -e ".[all]"  (推荐，见 setup.py)
 
-gradio
-addict
-
-ultralytics
-opencv-python-headless
-
-onnx>=1.12.0,<=1.19.1
-onnxslim>=0.1.71
-onnxruntime-gpu
-onnx2pytorch
-
-nvidia-modelopt[all]
-safetensors
-transformers
-
-#YOLO
-ultralytics
+-r requirements/requirements-base.txt

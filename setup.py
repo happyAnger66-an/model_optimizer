@@ -6,31 +6,53 @@ from setuptools_scm import get_version
 version = get_version(root=".", fallback_version="0.0.0")
 
 # Required and optional dependencies ###############################################################
+# 核心依赖（CLI、registry 等基础功能）
 required_deps = [
-    # Common
-#    "numpy",
-#    "tqdm",
-#    "torch>=2.6",
-#    "torchprofile>=0.0.4",
+    "numpy>=1.24",
+    "tqdm>=4.65",
+    "addict>=2.4",
+    "termcolor>=2.0",
+    "colorama>=0.4",
 ]
 
 optional_deps = {
-    "onnx": [
+    # 完整功能: 量化、导出、ONNX、YOLO、WebUI
+    "all": [
+        "torch>=2.0",
+        "torchvision",
+        "torchaudio",
+        "nvidia-modelopt[all]",
+        "transformers>=4.35",
+        "safetensors",
+        "onnx>=1.12.0,<2.0",
+        "onnxruntime-gpu",
+        "onnx2pytorch",
+        "onnxslim>=0.1.71",
+        "ultralytics>=8.0",
+        "gradio>=4.0",
+        "datasets>=2.14",
+        "psutil",
+        "pyyaml",
+        "pandas",
+        "opencv-python-headless",
     ],
-    "hf": [
+    "pi05": [
+        "jax[cuda12]",
+        "flax>=0.10.0",
+        "chex",
+        "ml-collections>=1.0.0",
+        "tyro>=0.9.5",
+        "sentencepiece",
+        "datasets>=3.0",
+        "av>=15.0.0,<16.0.0",
+        "gcsfs",
     ],
-    # linter tools
-    "dev-lint": [
-    ],
-    # testing
     "dev-test": [
+        "pytest>=7.0",
     ],
-    # docs
-    "dev-docs": [
-    ],
-    # build/packaging tools
-    "dev-build": [
-    ],
+    "dev-lint": [],
+    "dev-docs": [],
+    "dev-build": [],
 }
 
 # create "compound" optional dependencies

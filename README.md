@@ -52,6 +52,21 @@ make build_x86
 make build_thor
 ```
 
+#### 2.1.2.1 本地安装 (非 Docker)
+
+```bash
+# 完整功能 (量化 / 导出 / WebUI)
+bash scripts/install.sh all
+
+# 含 π0.5 模型
+bash scripts/install.sh pi05
+
+# 使用国内镜像
+PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple bash scripts/install.sh all
+```
+
+依赖说明见 [requirements/README.md](requirements/README.md)。
+
 #### 2.1.3 `run docker`
 
 + `CAUTION:` You should use `-v` to mount your `openpi` codes path into docker to use pi05 model.

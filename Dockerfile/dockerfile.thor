@@ -9,8 +9,9 @@ RUN pip install torch torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/cu130
 
 COPY requirements.thor.txt /workspace/requirements.txt
+COPY requirements/ /workspace/requirements/
 RUN pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-RUN apt-get update && apt-get install ffmpeg libsm6 libxext6  -y
+RUN apt-get update && apt-get install ffmpeg libsm6 libxext6 -y
 
 COPY Dockerfile/requirements_pi05.txt /workspace/requirements_pi05.txt
 COPY Dockerfile/install_pi05.sh /workspace/install_pi05.sh

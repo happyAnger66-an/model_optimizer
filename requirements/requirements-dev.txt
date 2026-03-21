@@ -1,0 +1,11 @@
+# Model Optimizer - 开发与测试依赖
+# pip install -r requirements/requirements-dev.txt
+
+-r requirements-base.txt
+
+# 测试
+pytest>=7.0
+
+# 代码质量 (可选)
+# ruff>=0.1.0
+# mypy>=1.0.0

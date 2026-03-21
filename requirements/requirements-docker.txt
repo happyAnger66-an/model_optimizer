@@ -1,0 +1,25 @@
+# Model Optimizer - Docker 环境
+# 基镜像 nvcr.io/nvidia/tensorrt 已含 PyTorch/CUDA/TensorRT
+# 用于: COPY requirements/requirements-docker.txt 后 pip install
+
+nvidia-modelopt[all]
+transformers>=4.35
+safetensors
+onnx>=1.12.0,<2.0
+onnxruntime-gpu
+onnx2pytorch
+onnxslim>=0.1.71
+ultralytics>=8.0
+gradio>=4.0
+addict
+termcolor
+colorama
+tqdm
+numpy
+datasets>=2.14
+psutil
+pyyaml
+pandas
+opencv-python-headless
+setuptools>=65
+setuptools-scm>=8.0
