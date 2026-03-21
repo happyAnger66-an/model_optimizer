@@ -40,6 +40,9 @@ pyyaml
 pandas
 opencv-python-headless
 
+# 对比折线图
+matplotlib>=3.5
+
 # 构建
 setuptools>=65
 setuptools-scm>=8.0

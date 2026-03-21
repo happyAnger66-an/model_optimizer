@@ -9,7 +9,6 @@ from torch import nn
 
 from modelopt.torch.utils.dataset_utils import get_dataset_dataloader, \
     create_forward_loop, get_max_batch_size
-import modelopt.torch.opt as mto
 import modelopt.torch.quantization as mtq
 from modelopt.torch.quantization.config import need_calibration
 from modelopt.torch.export import (

@@ -2,7 +2,6 @@ import torch
 from functools import partial
 import torch.nn as nn
 
-import modelopt.torch.opt as mto
 import modelopt.torch.quantization as mtq
 
 from modelopt.onnx.quantization.qdq_utils import fp4qdq_to_2dq

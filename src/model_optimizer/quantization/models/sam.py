@@ -6,7 +6,6 @@ from torch import nn
 from ultralytics import SAM
 from ultralytics.models.sam.predict import SAM2Predictor
 
-import modelopt.torch.opt as mto
 import modelopt.torch.quantization as mtq
 
 from model_optimizer.calibrate.yolo_datas import ImageDatasets

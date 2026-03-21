@@ -98,18 +98,3 @@ def quantize_cli(args):
 
     if old_metric and new_metric:
         old_metric.compare(new_metric)
-
-#    model.export(args.export_dir)
-
-
-'''
-    if args.model_type == "llm":
-        args.dataset = args.calibrate_data
-        llm_quantize(args)
-    elif args.model_path.find('pi05_libero/vit'):
-        from .pi05_ptq import quantize_pi05_vit
-        quantize_pi05_vit(args)
-    else:
-        quantize_onnx(args.model_path,
-                  args.calibrate_data, args.export_dir, args.qformat, args.calibrate_method)
-                  '''

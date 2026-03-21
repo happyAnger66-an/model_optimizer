@@ -44,8 +44,18 @@ python scripts/deployment/pi05/standalone_inference_script.py --model_path /open
 model-opt compare --data_path1 /tmp/pi05/output_data/inputs.npz --data_path2 /tmp/output/action_engine/outputs.npz
 ```
 
-+ `--data_path1`: infer results data path 1 `
-+ `--data_path2`: infer results data path 2 `
++ `--data_path1`: 第一组推理结果 npz 路径
++ `--data_path2`: 第二组推理结果 npz 路径
+
+##### compare 并生成折线图
+
+```shell
+model-opt compare --data_path1 /tmp/pi05/output_data/inputs.npz --data_path2 /tmp/output/action_engine/outputs.npz \
+    --plot_output /tmp/compare_plot.png
+```
+
++ `--plot_output`: 对比折线图保存路径（横轴为数据 id，纵轴为各 key 的均值，每个 key 一张子图、两条线）
++ `--key1` / `--key2`: 两条线的图例名（默认 data1 / data2）
 
 `output:`
 ```shell
