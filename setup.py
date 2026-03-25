@@ -1,9 +1,5 @@
 import setuptools
 from setuptools import find_packages
-from setuptools_scm import get_version
-
-# TODO: Set fallback_version to X.Y.Z release version when creating the release branch
-version = get_version(root=".", fallback_version="0.0.0")
 
 # Required and optional dependencies ###############################################################
 # 核心依赖（CLI、registry 等基础功能）
@@ -72,7 +68,7 @@ def get_console_scripts() -> list[str]:
 def main():
     setuptools.setup(
         name="model_optimizer",
-        version=version,
+        # version 由 pyproject.toml dynamic + setuptools-scm 写入
         description="Model Optimizer: a unified model optimization and deployment toolkit.",
         long_description="Checkout http://gitlab.anyverse.work/dev/model-optimizer.git for more information.",
         long_description_content_type="text/markdown",
@@ -87,8 +83,8 @@ def main():
             "Topic :: Scientific/Engineering :: Artificial Intelligence",
         ],
         python_requires=">=3.10,<3.13",
-        install_requires=required_deps,
-        extras_require=optional_deps,
+#        install_requires=required_deps,
+#        extras_require=optional_deps,
         entry_points={"console_scripts": get_console_scripts()},
         packages=find_packages("src"),
         package_dir={"": "src"},

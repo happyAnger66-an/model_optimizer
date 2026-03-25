@@ -132,3 +132,12 @@ python scripts/deployment/pi05/standalone_inference_script.py --model-path /srcs
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 RuntimeError: mat1 and mat2 must have the same dtype, but got BFloat16 and Float
 ```
+
+This is because dense op use float32 weight, and cond is bf16.
+`Solution`: 
+
+vim /opt/openpi/lib/python3.12/site-packages/transformers/models/gemma/modeling_gemma.py +88
+```
+        cond = cond.to(dtype=torch.float32)
+        modulation = self.dense(cond)
+```

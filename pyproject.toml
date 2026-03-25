@@ -2,7 +2,23 @@
 requires = ["setuptools>=65", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
 
-# 包配置以 setup.py 为准，此处仅作工具配置
+# PEP 621：新版 setuptools 要求 [project] 含 version 或将其列入 dynamic（与 setup.py 中元数据并存时需全部标为 dynamic）
+[project]
+name = "model_optimizer"
+dynamic = [
+    "version",
+    "description",
+    "readme",
+    "license",
+    "authors",
+    "classifiers",
+    "scripts",
+]
+requires-python = ">=3.10,<3.13"
+
+[tool.setuptools_scm]
+fallback_version = "0.0.0"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
