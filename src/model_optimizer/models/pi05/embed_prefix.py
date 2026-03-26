@@ -30,22 +30,28 @@ class Pi05EmbedPrefix(nn.Module, Model):
 
     def __init__(
         self,
-        paligemma_with_expert: nn.Module,
+        vision_tower: nn.Module,
+        multi_modal_projector: nn.Module,
+        embed_tokens: nn.Module,
         *,
+        hidden_size: int,
         num_image_views: int,
         max_token_len: int,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
-        self.paligemma_with_expert = paligemma_with_expert
+        self.vision_tower = vision_tower
+        self.multi_modal_projector = multi_modal_projector
+        self.embed_tokens = embed_tokens
+        self.hidden_size = hidden_size
         self.num_image_views = num_image_views
         self.max_token_len = max_token_len
-        self.device = next(self.paligemma_with_expert.parameters()).device
+        self.device = next(self.vision_tower.parameters()).device
 
     @property
     def model(self):
         """与 Vit / LLM 一致，供量化后 NVFP4 等路径使用。"""
-        return self.paligemma_with_expert.paligemma
+        return self.vision_tower
 
     def val(self, val_data, batch_size, output_dir):
         raise NotImplementedError(
@@ -71,14 +77,17 @@ class Pi05EmbedPrefix(nn.Module, Model):
         att_masks: list[int] = []
 
         for img, img_mask in zip(images, img_masks, strict=True):
-            img_emb = self.paligemma_with_expert.embed_image(img)
+            image_outputs = self.vision_tower(img)
+            selected_image_feature = image_outputs.last_hidden_state
+            img_emb = self.multi_modal_projector(selected_image_feature)
+            img_emb = img_emb / math.sqrt(float(self.hidden_size))
             bsize, num_img_embs = img_emb.shape[:2]
 
             embs.append(img_emb)
             pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
             att_masks += [0] * num_img_embs
 
-        lang_emb = self.paligemma_with_expert.embed_language_tokens(lang_tokens)
+        lang_emb = self.embed_tokens(lang_tokens)
         lang_emb_dim = lang_emb.shape[-1]
         lang_emb = lang_emb * math.sqrt(float(lang_emb_dim))
 
@@ -145,13 +154,14 @@ class Pi05EmbedPrefix(nn.Module, Model):
 
             batch_dim = Dim("batch", min=1, max=4096)
             token_dim = Dim("token_len", min=1, max=max_token_len)
-            ds: dict = {}
+            ds_list: list[dict] = []
             for i in range(self.num_image_views):
-                ds[f"image_{i}"] = {0: batch_dim}
-                ds[f"image_mask_{i}"] = {0: batch_dim}
-            ds["lang_tokens"] = {0: batch_dim, 1: token_dim}
-            ds["lang_masks"] = {0: batch_dim, 1: token_dim}
-            export_kw["dynamic_shapes"] = ds
+                ds_list.append({0: batch_dim})  # image_i
+                ds_list.append({0: batch_dim})  # image_mask_i
+            ds_list.append({0: batch_dim, 1: token_dim})  # lang_tokens
+            ds_list.append({0: batch_dim, 1: token_dim})  # lang_masks
+            # forward(*inputs) 在 torch.export 侧只有一个顶层参数名 "inputs"（可变参数元组）
+            export_kw["dynamic_shapes"] = {"inputs": tuple(ds_list)}
         else:
             export_kw["dynamic_axes"] = {}
             for i in range(self.num_image_views):
@@ -167,18 +177,44 @@ class Pi05EmbedPrefix(nn.Module, Model):
         print(colored("Start Pi05 embed_prefix (Pi05EmbedPrefix) export onnx...", "green"))
 
         with torch.inference_mode():
-            torch.onnx.export(
-                self,
-                tuple(dummy),
-                output_path,
-                export_params=True,
-                input_names=input_names,
-                output_names=["prefix_embs", "prefix_pad_masks", "prefix_att_masks"],
-                opset_version=19,
-                dynamo=dynamo,
-                do_constant_folding=True,
-                **export_kw,
-            )
+            try:
+                torch.onnx.export(
+                    self,
+                    tuple(dummy),
+                    output_path,
+                    export_params=True,
+                    input_names=input_names,
+                    output_names=["prefix_embs", "prefix_pad_masks", "prefix_att_masks"],
+                    opset_version=19,
+                    dynamo=dynamo,
+                    do_constant_folding=True,
+                    **export_kw,
+                )
+            except Exception:
+                if dynamo:
+                    logger.exception("embed_prefix export with dynamo=True failed, fallback to dynamo=False")
+                    torch.onnx.export(
+                        self,
+                        tuple(dummy),
+                        output_path,
+                        export_params=True,
+                        input_names=input_names,
+                        output_names=["prefix_embs", "prefix_pad_masks", "prefix_att_masks"],
+                        opset_version=19,
+                        dynamo=False,
+                        do_constant_folding=True,
+                        dynamic_axes={
+                            **{f"image_{i}": {0: "batch_size"} for i in range(self.num_image_views)},
+                            **{f"image_mask_{i}": {0: "batch_size"} for i in range(self.num_image_views)},
+                            "lang_tokens": {0: "batch_size", 1: "token_len"},
+                            "lang_masks": {0: "batch_size", 1: "token_len"},
+                            "prefix_embs": {0: "batch_size", 1: "prefix_seq"},
+                            "prefix_pad_masks": {0: "batch_size", 1: "prefix_seq"},
+                            "prefix_att_masks": {0: "batch_size", 1: "prefix_seq"},
+                        },
+                    )
+                else:
+                    raise
 
         end = time.time()
         logger.info("export embed_prefix onnx to %s done cost:%ss", output_dir, end - start)
@@ -214,8 +250,12 @@ class Pi05EmbedPrefix(nn.Module, Model):
         if dtype is not None:
             logger.debug("construct_model dtype=%s ignored (权重保持加载时 dtype)", dtype)
 
+        paligemma = pi05_model.paligemma_with_expert.paligemma
         return cls(
-            paligemma_with_expert=pi05_model.paligemma_with_expert,
+            vision_tower=paligemma.model.vision_tower,
+            multi_modal_projector=paligemma.model.multi_modal_projector,
+            embed_tokens=paligemma.language_model.embed_tokens,
+            hidden_size=int(paligemma.config.text_config.hidden_size),
             num_image_views=num_views,
             max_token_len=int(pi05_model.config.max_token_len),
         )
