@@ -148,51 +148,53 @@ class Pi05EmbedPrefix(nn.Module, Model):
         input_names.extend(["lang_tokens", "lang_masks"])
 
         output_path = f"{output_dir}/embed_prefix.onnx"
-        export_kw: dict = {}
-        if dynamo:
-            from torch.export import Dim
-
-            batch_dim = Dim("batch", min=1, max=4096)
-            token_dim = Dim("token_len", min=1, max=max_token_len)
-            ds_list: list[dict] = []
-            for i in range(self.num_image_views):
-                ds_list.append({0: batch_dim})  # image_i
-                ds_list.append({0: batch_dim})  # image_mask_i
-            ds_list.append({0: batch_dim, 1: token_dim})  # lang_tokens
-            ds_list.append({0: batch_dim, 1: token_dim})  # lang_masks
-            # forward(*inputs) 在 torch.export 侧只有一个顶层参数名 "inputs"（可变参数元组）
-            export_kw["dynamic_shapes"] = {"inputs": tuple(ds_list)}
+        fallback_order = [dynamo]
+        if not dynamo:
+            fallback_order.append(True)
         else:
-            export_kw["dynamic_axes"] = {}
+            fallback_order.append(False)
+
+        def _export_kwargs(use_dynamo: bool) -> dict:
+            if use_dynamo:
+                from torch.export import Dim
+
+                batch_dim = Dim("batch", min=1, max=4096)
+                token_dim = Dim("token_len", min=1, max=max_token_len)
+                ds_list: list[dict] = []
+                for _ in range(self.num_image_views):
+                    ds_list.append({0: batch_dim})  # image_i
+                    ds_list.append({0: batch_dim})  # image_mask_i
+                ds_list.append({0: batch_dim, 1: token_dim})  # lang_tokens
+                ds_list.append({0: batch_dim, 1: token_dim})  # lang_masks
+                # forward(*inputs) 在 torch.export 侧只有一个顶层参数名 "inputs"（可变参数元组）
+                return {"dynamic_shapes": {"inputs": tuple(ds_list)}}
+
+            dynamic_axes = {}
             for i in range(self.num_image_views):
-                export_kw["dynamic_axes"][f"image_{i}"] = {0: "batch_size"}
-                export_kw["dynamic_axes"][f"image_mask_{i}"] = {0: "batch_size"}
-            export_kw["dynamic_axes"]["lang_tokens"] = {0: "batch_size", 1: "token_len"}
-            export_kw["dynamic_axes"]["lang_masks"] = {0: "batch_size", 1: "token_len"}
-            export_kw["dynamic_axes"]["prefix_embs"] = {0: "batch_size", 1: "prefix_seq"}
-            export_kw["dynamic_axes"]["prefix_pad_masks"] = {0: "batch_size", 1: "prefix_seq"}
-            export_kw["dynamic_axes"]["prefix_att_masks"] = {0: "batch_size", 1: "prefix_seq"}
+                dynamic_axes[f"image_{i}"] = {0: "batch_size"}
+                dynamic_axes[f"image_mask_{i}"] = {0: "batch_size"}
+            dynamic_axes["lang_tokens"] = {0: "batch_size", 1: "token_len"}
+            dynamic_axes["lang_masks"] = {0: "batch_size", 1: "token_len"}
+            dynamic_axes["prefix_embs"] = {0: "batch_size", 1: "prefix_seq"}
+            dynamic_axes["prefix_pad_masks"] = {0: "batch_size", 1: "prefix_seq"}
+            dynamic_axes["prefix_att_masks"] = {0: "batch_size", 1: "prefix_seq"}
+            return {"dynamic_axes": dynamic_axes}
 
         logger.info("Start export embed_prefix onnx ...")
         print(colored("Start Pi05 embed_prefix (Pi05EmbedPrefix) export onnx...", "green"))
 
         with torch.inference_mode():
-            try:
-                torch.onnx.export(
-                    self,
-                    tuple(dummy),
-                    output_path,
-                    export_params=True,
-                    input_names=input_names,
-                    output_names=["prefix_embs", "prefix_pad_masks", "prefix_att_masks"],
-                    opset_version=19,
-                    dynamo=dynamo,
-                    do_constant_folding=True,
-                    **export_kw,
-                )
-            except Exception:
-                if dynamo:
-                    logger.exception("embed_prefix export with dynamo=True failed, fallback to dynamo=False")
+            last_err = None
+            used_dynamo = None
+            for idx, use_dynamo in enumerate(fallback_order):
+                export_kw = _export_kwargs(use_dynamo)
+                try:
+                    if idx > 0:
+                        logger.warning(
+                            "embed_prefix export fallback attempt %s: dynamo=%s",
+                            idx,
+                            use_dynamo,
+                        )
                     torch.onnx.export(
                         self,
                         tuple(dummy),
@@ -201,23 +203,30 @@ class Pi05EmbedPrefix(nn.Module, Model):
                         input_names=input_names,
                         output_names=["prefix_embs", "prefix_pad_masks", "prefix_att_masks"],
                         opset_version=19,
-                        dynamo=False,
+                        dynamo=use_dynamo,
                         do_constant_folding=True,
-                        dynamic_axes={
-                            **{f"image_{i}": {0: "batch_size"} for i in range(self.num_image_views)},
-                            **{f"image_mask_{i}": {0: "batch_size"} for i in range(self.num_image_views)},
-                            "lang_tokens": {0: "batch_size", 1: "token_len"},
-                            "lang_masks": {0: "batch_size", 1: "token_len"},
-                            "prefix_embs": {0: "batch_size", 1: "prefix_seq"},
-                            "prefix_pad_masks": {0: "batch_size", 1: "prefix_seq"},
-                            "prefix_att_masks": {0: "batch_size", 1: "prefix_seq"},
-                        },
+                        **export_kw,
                     )
-                else:
-                    raise
+                    used_dynamo = use_dynamo
+                    break
+                except Exception as err:
+                    last_err = err
+                    logger.exception(
+                        "embed_prefix export failed with dynamo=%s, will %s",
+                        use_dynamo,
+                        "fallback" if idx < len(fallback_order) - 1 else "raise",
+                    )
+            if used_dynamo is None:
+                # If all attempts fail, re-raise the last one.
+                raise RuntimeError("embed_prefix export failed with both dynamo and torchscript paths") from last_err
 
         end = time.time()
-        logger.info("export embed_prefix onnx to %s done cost:%ss", output_dir, end - start)
+        logger.info(
+            "export embed_prefix onnx to %s done cost:%ss (dynamo=%s)",
+            output_dir,
+            end - start,
+            used_dynamo,
+        )
         print(
             colored(
                 f"Pi05 embed_prefix export onnx done to {output_path} cost:{end - start}s",
