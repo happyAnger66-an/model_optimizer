@@ -84,6 +84,40 @@ class Pi05TensorRTExecutor(Executor):
 
                 self.pi05_model.paligemma_with_expert.paligemma.model.get_image_features = get_image_features
 
+            embed_prefix_engine_name = getattr(
+                self.config, "embed_prefix_engine", None
+            )
+            if embed_prefix_engine_name:
+                print(
+                    colored(
+                        f"replace embed_prefix with {embed_prefix_engine_name}",
+                        "green",
+                    )
+                )
+                embed_prefix_engine = Engine(
+                    os.path.join(self.config.engine_path, embed_prefix_engine_name),
+                    perf=True,
+                )
+
+                def embed_prefix_trt(self_m, images, img_masks, lang_tokens, lang_masks):
+                    """与 ``PI0Pytorch.embed_prefix`` 同签名；输入名对齐 ``embed_prefix.onnx``。"""
+                    kw = {}
+                    for i, (img, m) in enumerate(zip(images, img_masks, strict=True)):
+                        kw[f"image_{i}"] = img
+                        kw[f"image_mask_{i}"] = m
+                    kw["lang_tokens"] = lang_tokens
+                    kw["lang_masks"] = lang_masks
+                    out = embed_prefix_engine(**kw)
+                    return (
+                        out["prefix_embs"],
+                        out["prefix_pad_masks"],
+                        out["prefix_att_masks"],
+                    )
+
+                self.pi05_model.embed_prefix = types.MethodType(
+                    embed_prefix_trt, self.pi05_model
+                )
+
             if self.config.llm_engine:
                 print(
                     colored(f"replace language_model with {self.config.llm_engine}", "green"))

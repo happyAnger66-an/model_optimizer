@@ -24,6 +24,9 @@ def init_registry():
     from .pi05.dit import Pi05DenoiseStep
     register_model_cls("pi05_libero/denoise", Pi05DenoiseStep)
 
+    from .pi05.embed_prefix import Pi05EmbedPrefix
+    register_model_cls("pi05_libero/embed_prefix", Pi05EmbedPrefix)
+
     from .yolo import YoloModel
     register_model_cls("yolo", YoloModel)
     

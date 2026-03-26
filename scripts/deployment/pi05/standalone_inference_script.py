@@ -325,6 +325,9 @@ class ArgsConfig:
     denoise_engine: str = ""
     """Pi05DenoiseStep 引擎文件名（置于 ``trt_engine_path`` 目录下，如 ``denoise.engine``）。仅 inference_mode='tensorrt' 时使用。"""
 
+    embed_prefix_engine: str = ""
+    """Pi05EmbedPrefix 融合前缀嵌入引擎（如 ``embed_prefix.engine``），置于 ``trt_engine_path`` 下。仅 inference_mode='tensorrt' 时使用。"""
+
     denoising_steps: int = 10
     """Number of denoising steps to use."""
 
@@ -433,6 +436,9 @@ def main(args: ArgsConfig):
             
             if args.denoise_engine:
                 config["denoise_engine"] = args.denoise_engine
+
+            if args.embed_prefix_engine:
+                config["embed_prefix_engine"] = args.embed_prefix_engine
 
             if config is not None:
                 config = addict.Dict(config)

@@ -16,6 +16,7 @@ from .vit import Vit
 from .llm import LLM
 from .expert import Expert
 from .dit import Pi05DenoiseStep
+from .embed_prefix import Pi05EmbedPrefix
 from termcolor import colored
 
 from model_optimizer.infer.tensorrt.trt_torch import Engine
@@ -140,6 +141,8 @@ class Pi05Model(Model):
             sub_model = Expert.construct_model(self.pi05_model)
         elif sub_model_name == "denoise":
             sub_model = Pi05DenoiseStep.construct_model(self.pi05_model)
+        elif sub_model_name == "embed_prefix":
+            sub_model = Pi05EmbedPrefix.construct_model(self.pi05_model)
         else:
             raise ValueError(f"Invalid sub model name: {sub_model_name}")
         sub_model.quantize(model_dir, quant_cfg, calib_data, calib_method)

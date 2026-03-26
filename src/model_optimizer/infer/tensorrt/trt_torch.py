@@ -46,6 +46,11 @@ def torch_type(name, trt_type):
     )
 
 
+def _trt_shape_has_dynamic_dims(shape: tuple) -> bool:
+    """TensorRT 用负数（常为 -1）表示动态维；不能与 torch.Size 直接相等比较。"""
+    return any(int(d) < 0 for d in shape)
+
+
 class Engine(object):
     def __init__(self, file, return_wrap=None, perf=False, plugins=[]):
         super().__init__()
@@ -118,6 +123,25 @@ class Engine(object):
     def set_runtime_tensor_shape(self, name, shape):
         self.execution_context.set_input_shape(name, shape)
 
+    def _bind_input_tensor(self, name, x, dtype, reference_tensors):
+        """绑定单个输入：动态维时先 ``set_input_shape``，再与静态维校验。"""
+        runtime_shape = self.execution_context.get_tensor_shape(name)
+        assert isinstance(x, torch.Tensor), f"Unsupported tensor type for {name}: {type(x)}"
+        if _trt_shape_has_dynamic_dims(runtime_shape):
+            self.execution_context.set_input_shape(name, tuple(x.shape))
+        else:
+            assert tuple(x.shape) == tuple(runtime_shape), (
+                f"Invalid input[{name}] shape: {tuple(x.shape)} != {tuple(runtime_shape)}"
+            )
+        if dtype != x.dtype:
+            print(colored(
+                f"CastType tensor dtype {name}, excepted dtype is {dtype}, but got {x.dtype} Convert to {dtype}", "yellow"))
+            x = x.to(dtype)
+        assert x.is_cuda, f"Invalid tensor device for {name}, expected cuda, got {x.device}"
+        x = x.cuda().contiguous()
+        self.execution_context.set_tensor_address(name, x.data_ptr())
+        reference_tensors.append(x)
+
     def forward(self, *args, **kwargs):
         self.count += 1
         start_time = time.perf_counter()
@@ -126,48 +150,28 @@ class Engine(object):
         stream = torch.cuda.current_stream()
         for iarg, x in enumerate(args):
             name, shape, dtype = self.in_meta[iarg]
-            runtime_shape = self.execution_context.get_tensor_shape(name)
-            assert isinstance(
-                x, torch.Tensor), f"Unsupported tensor type: {type(x)}"
-            assert runtime_shape == x.shape, f"Invalid input shape: {runtime_shape} != {x.shape}"
-            if dtype != x.dtype:
-                print(colored(
-                    f"CastType tensor dtype {name}, excepted dtype is {dtype}, but got {x.dtype} Convert to {dtype}", "yellow"))
-                x = x.to(dtype)
-#            assert (
-#                dtype == x.dtype
-#            ), f"Invalid tensor dtype {name}, excepted dtype is {dtype}, but got {x.dtype}"
-            assert x.is_cuda, f"Invalid tensor device, excepted device is cuda, but got {x.device}"
-            x = x.cuda().contiguous()
-            self.execution_context.set_tensor_address(name, x.data_ptr())
-            reference_tensors.append(x)
+            self._bind_input_tensor(name, x, dtype, reference_tensors)
 
         for name, shape, dtype in self.in_meta:
             if name not in kwargs:
                 continue
 
-            runtime_shape = self.execution_context.get_tensor_shape(name)
             x = kwargs[name]
             assert isinstance(
                 x, torch.Tensor), f"Unsupported tensor[{name}] type: {type(x)}"
-            assert (
-                runtime_shape == x.shape
-            ), f"Invalid input[{name}] shape: {x.shape}, but the expected shape is: {runtime_shape}"
-            assert (
-                dtype == x.dtype
-            ), f"Invalid tensor {name} dtype, expected dtype is {dtype}, but got {x.dtype}"
-            assert (
-                x.is_cuda
-            ), f"Invalid tensor[{name}] device, expected device is cuda, but got {x.device}"
-            x = x.cuda().contiguous()
-            self.execution_context.set_tensor_address(name, x.data_ptr())
-            reference_tensors.append(x)
+            self._bind_input_tensor(name, x, dtype, reference_tensors)
 
         for item in self.out_meta:
             name = item[0]
+            dtype = item[2]
             runtime_shape = self.execution_context.get_tensor_shape(name)
+            if _trt_shape_has_dynamic_dims(runtime_shape):
+                raise RuntimeError(
+                    f"Output {name} still has dynamic shape {runtime_shape} after binding inputs; "
+                    "check that all dynamic inputs were provided."
+                )
             output_tensor = torch.zeros(
-                *runtime_shape, dtype=item[2], device=reference_tensors[0].device
+                tuple(runtime_shape), dtype=dtype, device=reference_tensors[0].device
             )
             self.execution_context.set_tensor_address(
                 name, output_tensor.data_ptr())
@@ -183,8 +187,8 @@ class Engine(object):
         end_time = time.perf_counter()
         if self.perf and self.count > 100:
             self.time_results['total'].append(end_time - start_time)
-            print(colored(
-                f"total time: {np.mean(self.time_results['total'])*1000:.2f} ± {np.std(self.time_results['total'])*1000:.2f} ms", "green"))
+            #print(colored(
+            #    f"total time: {np.mean(self.time_results['total'])*1000:.2f} ± {np.std(self.time_results['total'])*1000:.2f} ms", "green"))
 
         if return_list:
             print(f"return_list: {return_list}")
