@@ -198,7 +198,7 @@ def run_single_trajectory(
             model = policy._model
 
     i = 0
-    for obs in get_input_data(args.input_data_path, 40):
+    for obs in get_input_data(args.input_data_path, 100):
         if args.save_input_path:
             input_data_list.append(obs)
 
