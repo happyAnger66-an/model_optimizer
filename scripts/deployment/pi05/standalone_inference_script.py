@@ -190,6 +190,13 @@ def run_single_trajectory(
         expert_calib_collector = Pi05ExpertCalibCollector(policy._model, args.calib_save_path)
         vit_calib_collector = Pi05VitCalibCollector(policy._model, args.calib_save_path)
 
+    model = None
+    if perf:
+        if hasattr(policy, "_policy"):
+            model = policy._policy._model
+        else:
+            model = policy._model
+
     i = 0
     for obs in get_input_data(args.input_data_path, 40):
         if args.save_input_path:
@@ -202,11 +209,6 @@ def run_single_trajectory(
             output_data_list.append(_action_chunk)
 
         if perf:
-            model = None
-            if hasattr(policy, "_policy"):
-                model = policy._policy._model
-            else:
-                model = policy._model
             model.perf = True
         inference_time = time.time() - inference_start
         print(
@@ -221,18 +223,21 @@ def run_single_trajectory(
         vit_calib_collector.stop_collect()
 
     if perf:
-        print(colored(
-            f"e2e {np.mean(time_results)*1000:.2f} ± {np.std(time_results)*1000:.2f} ms (shared)", "green"))
-        print(colored(
-            f"suffix {np.mean(model.time_results['suffix'])*1000:.2f} ± {np.std(model.time_results['suffix'])*1000:.2f} ms (shared)", "green"))
-        print(colored(
-            f"action {np.mean(model.time_results['action'])*1000:.2f} ± {np.std(model.time_results['action'])*1000:.2f} ms (shared)", "green"))
-        print(colored(
-            f"embed_prefix {np.mean(model.time_results['vit'])*1000:.2f} ± {np.std(model.time_results['vit'])*1000:.2f} ms (shared)", "green"))
-        print(colored(
-            f"lang_emb {np.mean(model.time_results['lang_emb'])*1000:.2f} ± {np.std(model.time_results['lang_emb'])*1000:.2f} ms (shared)", "green"))
-        print(colored(
-            f"llm {np.mean(model.time_results['llm'])*1000:.2f} ± {np.std(model.time_results['llm'])*1000:.2f} ms (shared)", "green"))
+        if time_results:
+            print(colored(
+                f"e2e {np.mean(time_results)*1000:.2f} ± {np.std(time_results)*1000:.2f} ms (shared)", "green"))
+        tr = getattr(model, "time_results", None) if model is not None else None
+        if tr:
+            for key, label in (
+                ("suffix", "suffix"),
+                ("action", "action"),
+                ("vit", "embed_prefix"),
+                ("lang_emb", "lang_emb"),
+                ("llm", "llm"),
+            ):
+                if key in tr and tr[key]:
+                    print(colored(
+                        f"{label} {np.mean(tr[key])*1000:.2f} ± {np.std(tr[key])*1000:.2f} ms (shared)", "green"))
 
     if args.save_input_path:
         print(colored(f"save input datas to {args.save_input_path}", "green"))
@@ -316,6 +321,9 @@ class ArgsConfig:
 
     expert_engine: str = ""
     """Path to TensorRT expert engine file (.trt). Used only when inference_mode='tensorrt'."""
+    
+    denoise_engine: str = ""
+    """Pi05DenoiseStep 引擎文件名（置于 ``trt_engine_path`` 目录下，如 ``denoise.engine``）。仅 inference_mode='tensorrt' 时使用。"""
 
     denoising_steps: int = 10
     """Number of denoising steps to use."""
@@ -422,6 +430,9 @@ def main(args: ArgsConfig):
 
             if args.llm_engine:
                 config["llm_engine"] = args.llm_engine
+            
+            if args.denoise_engine:
+                config["denoise_engine"] = args.denoise_engine
 
             if config is not None:
                 config = addict.Dict(config)

@@ -1,4 +1,5 @@
 import os
+import types
 from functools import partial
 
 from termcolor import colored
@@ -44,6 +45,26 @@ class Pi05TensorRTExecutor(Executor):
             k_v_cache.update(input_keys[i:i+1], input_values[i:i+1], i)
 
         return k_v_cache
+
+    @staticmethod
+    def _stack_past_key_value_tensors(past_key_values):
+        """将 LLM 输出的 KV（与 expert TRT 包装一致）堆成 ``[num_layers, ...]`` 张量。"""
+        if past_key_values is None:
+            raise ValueError("past_key_values is None")
+        n = len(past_key_values)
+        keys = []
+        vals = []
+        for i in range(n):
+            entry = past_key_values[i]
+            if isinstance(entry, (tuple, list)):
+                k, v = entry[0], entry[1]
+            else:
+                raise TypeError(
+                    f"Unexpected past_key_values[{i}] type: {type(entry)}"
+                )
+            keys.append(k)
+            vals.append(v)
+        return torch.cat(keys, dim=0), torch.cat(vals, dim=0)
 
     def _setup_trt_engine(self):
         if self.config.engine_path:
@@ -95,6 +116,7 @@ class Pi05TensorRTExecutor(Executor):
 
                 self.pi05_model.paligemma_with_expert.paligemma.model.language_model.forward = llm_forward
 
+
             if self.config.expert_engine:
                 print(
                     colored(f"replace expert with {self.config.expert_engine}", "green"))
@@ -130,6 +152,38 @@ class Pi05TensorRTExecutor(Executor):
                     return expert_engine(attention_mask, position_ids, inputs_embeds, adarms_cond, input_keys, input_values)
 
                 self.pi05_model.paligemma_with_expert.gemma_expert.model.forward = expert_forward
+
+            denoise_engine_name = getattr(self.config, "denoise_engine", None)
+            if denoise_engine_name:
+                print(
+                    colored(
+                        f"replace denoise_step with {denoise_engine_name}", "green"
+                    )
+                )
+                denoise_engine = Engine(
+                    os.path.join(self.config.engine_path, denoise_engine_name),
+                    perf=True,
+                )
+
+                def denoise_step_trt(self_m, state, prefix_pad_masks, past_key_values, x_t, timestep):
+                    del state  # pi05 embed_suffix 不使用 state；保留签名以兼容 PI0Pytorch.denoise_step
+                    input_keys, input_values = self._stack_past_key_value_tensors(
+                        past_key_values
+                    )
+                    outputs = denoise_engine(
+                        prefix_pad_masks=prefix_pad_masks,
+                        past_keys=input_keys,
+                        past_values=input_values,
+                        x_t=x_t,
+                        timestep=timestep,
+                    )
+                    if isinstance(outputs, dict):
+                        return outputs["v_t"]
+                    return outputs
+
+                self.pi05_model.denoise_step = types.MethodType(
+                    denoise_step_trt, self.pi05_model
+                )
 
     def _release_pytorch_model(self):
         if self.config.vit_engine:
