@@ -76,16 +76,33 @@ class Pi05EmbedPrefix(nn.Module, Model):
         pad_masks: list[torch.Tensor] = []
         att_masks: list[int] = []
 
-        for img, img_mask in zip(images, img_masks, strict=True):
-            image_outputs = self.vision_tower(img)
-            selected_image_feature = image_outputs.last_hidden_state
-            img_emb = self.multi_modal_projector(selected_image_feature)
-            img_emb = img_emb / math.sqrt(float(self.hidden_size))
-            bsize, num_img_embs = img_emb.shape[:2]
+        # Keep external interface unchanged (image_0/image_1/...), but batch all views
+        # into a single tower forward to reduce per-view launch overhead.
+        batched_images = torch.stack(images, dim=1)  # [B, V, 3, H, W]
+        bsize, num_views = batched_images.shape[:2]
+        flat_images = batched_images.reshape(
+            bsize * num_views,
+            batched_images.shape[2],
+            batched_images.shape[3],
+            batched_images.shape[4],
+        )
 
-            embs.append(img_emb)
-            pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
-            att_masks += [0] * num_img_embs
+        image_outputs = self.vision_tower(flat_images)
+        selected_image_feature = image_outputs.last_hidden_state
+        flat_img_emb = self.multi_modal_projector(selected_image_feature)
+        flat_img_emb = flat_img_emb / math.sqrt(float(self.hidden_size))
+
+        num_img_embs = flat_img_emb.shape[1]
+        img_emb = flat_img_emb.reshape(bsize, num_views, num_img_embs, flat_img_emb.shape[-1])
+        img_emb = img_emb.reshape(bsize, num_views * num_img_embs, flat_img_emb.shape[-1])
+
+        stacked_img_masks = torch.stack(img_masks, dim=1)  # [B, V]
+        img_pad_masks = stacked_img_masks[:, :, None].expand(bsize, num_views, num_img_embs)
+        img_pad_masks = img_pad_masks.reshape(bsize, num_views * num_img_embs)
+
+        embs.append(img_emb)
+        pad_masks.append(img_pad_masks)
+        att_masks += [0] * (num_views * num_img_embs)
 
         lang_emb = self.embed_tokens(lang_tokens)
         lang_emb_dim = lang_emb.shape[-1]
