@@ -96,3 +96,12 @@ register_model_group(
     },
     template="pi05",
 )
+
+register_model_group(
+    models={
+        "pi05_libero/denoise": {
+            DownloadSource.DEFAULT: "lerobot/pi05_base",
+        }
+    },
+    template="pi05",
+)

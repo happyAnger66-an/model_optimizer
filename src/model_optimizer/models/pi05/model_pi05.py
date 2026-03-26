@@ -15,6 +15,7 @@ from ..model import Model
 from .vit import Vit
 from .llm import LLM
 from .expert import Expert
+from .dit import Pi05DenoiseStep
 from termcolor import colored
 
 from model_optimizer.infer.tensorrt.trt_torch import Engine
@@ -137,6 +138,8 @@ class Pi05Model(Model):
             sub_model = LLM.construct_model(self.pi05_model)
         elif sub_model_name == "expert":
             sub_model = Expert.construct_model(self.pi05_model)
+        elif sub_model_name == "denoise":
+            sub_model = Pi05DenoiseStep.construct_model(self.pi05_model)
         else:
             raise ValueError(f"Invalid sub model name: {sub_model_name}")
         sub_model.quantize(model_dir, quant_cfg, calib_data, calib_method)
@@ -150,4 +153,7 @@ class Pi05Model(Model):
 
         expert_model = Expert.construct_model(self.pi05_model)
         expert_model.export(output_dir)
-        return vit_model, llm_model, expert_model
+
+        denoise_model = Pi05DenoiseStep.construct_model(self.pi05_model)
+        denoise_model.export(output_dir)
+        return vit_model, llm_model, expert_model, denoise_model

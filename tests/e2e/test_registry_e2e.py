@@ -29,6 +29,13 @@ class TestModelRegistry:
         cls = get_model_cls("pi05_libero/llm")
         assert cls is not None
 
+    def test_get_model_cls_pi05_denoise(self):
+        """可获取 pi05_libero/denoise 模型类。"""
+        from model_optimizer.models.registry import get_model_cls
+
+        cls = get_model_cls("pi05_libero/denoise")
+        assert cls is not None
+
     def test_invalid_model_raises(self):
         """无效 model_name 抛出 ValueError。"""
         from model_optimizer.models.registry import get_model_cls

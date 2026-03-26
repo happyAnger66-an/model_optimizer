@@ -21,6 +21,9 @@ def init_registry():
     from .pi05.expert import Expert
     register_model_cls("pi05_libero/expert", Expert)
 
+    from .pi05.dit import Pi05DenoiseStep
+    register_model_cls("pi05_libero/denoise", Pi05DenoiseStep)
+
     from .yolo import YoloModel
     register_model_cls("yolo", YoloModel)
     
