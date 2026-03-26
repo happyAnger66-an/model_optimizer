@@ -19,12 +19,15 @@ _C, _H, _W = 3, 224, 224
 # 与 openpi Pi0Config（pi05）默认 max_token_len 一致
 _MAX_TOKEN_LEN = 200
 
-# 动态 batch / token 维：无 multi-batch 需求时可令 MIN=OPT=MAX
+# NOTE:
+# 目前 embed_prefix.onnx 在实际导出路径中通常将 token 维固定为 200（静态轴）。
+# 若 profile 给出 token 维 min!=opt!=max，TensorRT 会报 profile 维度不匹配。
+# 因此这里将 token 维固定为 200；如后续改为真正动态 token，再同步调整。
 _BATCH_MIN = 1
 _BATCH_OPT = 1
 _BATCH_MAX = 4
 
-_TOKEN_MIN = 1
+_TOKEN_MIN = _MAX_TOKEN_LEN
 _TOKEN_OPT = _MAX_TOKEN_LEN
 _TOKEN_MAX = _MAX_TOKEN_LEN
 
