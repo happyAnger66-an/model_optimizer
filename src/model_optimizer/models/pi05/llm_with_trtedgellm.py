@@ -77,11 +77,13 @@ class GemmaAttentionTrtEdge(nn.Module):
         super().__init__()
         if native_attn is None:
             raise ValueError("native_attn is required")
-        self.add_module("native", native_attn)
+        # 用属性赋值注册子模块，勿用 add_module：add_module 会 hasattr(self, "native")，
+        # 在自定义 __getattr__ 下会先于 _modules 写入触发委托，导致递归或链式 AttributeError。
+        self.native = native_attn
         _ensure_trt_edgellm_on_path()
         from tensorrt_edgellm.llm_models.layers.layers import EdgeLLMAttention
 
-        self.add_module("edge", EdgeLLMAttention(native_attn, eagle3_draft=False))
+        self.edge = EdgeLLMAttention(native_attn, eagle3_draft=False)
 
     def forward(self, *args: Any, **kwargs: Any):
         return self.native.forward(*args, **kwargs)
@@ -90,8 +92,11 @@ class GemmaAttentionTrtEdge(nn.Module):
         try:
             return super().__getattr__(name)
         except AttributeError:
-            # 必须用 _modules 取 native：add_module("native", ...) 内部会 hasattr(self, "native")，
-            # 若走 self.native 会再次进入 __getattr__，导致 RecursionError。
+            # 勿把 native/edge 的缺失转发到内层 GemmaAttention（避免误解析或掩盖错误）。
+            if name in ("native", "edge"):
+                raise AttributeError(
+                    f"'{type(self).__name__}' object has no attribute '{name}'"
+                ) from None
             native = self._modules.get("native")
             if native is None:
                 raise AttributeError(
