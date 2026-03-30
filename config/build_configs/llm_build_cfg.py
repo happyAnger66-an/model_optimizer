@@ -1,5 +1,7 @@
+# TensorRT-Edge-LLM AttentionPlugin 在 ONNX 中多为 FP16；若 bf16 建引擎报
+# "doesn't report any supported format combinations"，请改为 "fp16"。
 build_cfg = {
-    "precision": "bf16",
+    "precision": "fp16",
     "workspace_mb": 8192,
     "min_shapes": {
         "inputs_embeds": (1, 968, 2048),

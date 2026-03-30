@@ -30,6 +30,15 @@ def _load_trt_plugin_shared_libraries(
         ctypes.CDLL(ap, mode=ctypes.RTLD_GLOBAL)
 
 
+def _network_creation_flags(*, strongly_typed: bool) -> int:
+    flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+    if strongly_typed:
+        st_flag = getattr(trt.NetworkDefinitionCreationFlag, "STRONGLY_TYPED", None)
+        if st_flag is not None:
+            flags |= 1 << int(st_flag)
+    return flags
+
+
 def build_engine(
     onnx_path: str,
     engine_path: str,
@@ -42,6 +51,7 @@ def build_engine(
     *,
     plugin_lib_paths: Sequence[str] | None = None,
     init_builtin_trt_plugins: bool = True,
+    strongly_typed_network: bool = True,
 ):
     """
     Build TensorRT engine from ONNX model.
@@ -63,6 +73,16 @@ def build_engine(
         init_builtin_trt_plugins:
             若为 True，在加载自定义库之前调用 ``trt.init_libnvinfer_plugins``，注册随
             TensorRT 安装的 ``libnvinfer_plugin`` 等内置插件（常见 ONNX 自定义域会依赖）。
+        strongly_typed_network:
+            若为 True（默认），创建网络时附加 ``STRONGLY_TYPED``，与 TRT 10+ 在
+            ``selectIODTypesForPluginV3...`` 中的类型推断一致；含 ``trt::AttentionPlugin``
+            等自定义插件时，可避免出现
+            ``doesn't report any supported format combinations``（弱类型图 + 插件 I/O
+            不匹配）。若解析失败可改为 False 试旧行为。
+
+    注意：TensorRT-Edge-LLM 的 AttentionPlugin 在 ONNX schema 中多为 **FP16** 张量；
+    若 ``precision="bf16"`` 建引擎仍报插件格式组合错误，请将 ``precision`` 改为
+    ``"fp16"``，并尽量以 FP16 导出 ONNX（与插件一致）。
     """
     logger.info("=" * 80)
     logger.info("TensorRT Engine Builder")
@@ -98,8 +118,17 @@ def build_engine(
     logger.info("\n[Step 1/5] Creating TensorRT builder...")
     print(colored("\n[Step 1/5] Creating TensorRT builder...", print_color))
     builder = trt.Builder(TRT_LOGGER)
-    network = builder.create_network(
-        1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+    net_flags = _network_creation_flags(strongly_typed=strongly_typed_network)
+    network = builder.create_network(net_flags)
+    if strongly_typed_network and getattr(
+        trt.NetworkDefinitionCreationFlag, "STRONGLY_TYPED", None
+    ) is not None:
+        logger.info("Network flags: EXPLICIT_BATCH | STRONGLY_TYPED")
+        print(colored("Network flags: EXPLICIT_BATCH | STRONGLY_TYPED", print_color))
+    elif strongly_typed_network:
+        logger.warning(
+            "STRONGLY_TYPED not available in this TensorRT build; using EXPLICIT_BATCH only"
+        )
     parser = trt.OnnxParser(network, TRT_LOGGER)
 
     # Parse ONNX model
