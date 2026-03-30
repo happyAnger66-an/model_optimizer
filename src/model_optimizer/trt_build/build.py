@@ -1,7 +1,9 @@
 import argparse
+import ctypes
 import logging
 import os
 import time
+from collections.abc import Sequence
 
 import tensorrt as trt
 
@@ -14,6 +16,20 @@ logger = logging.getLogger(__name__)
 print_color = "green"
 
 
+def _load_trt_plugin_shared_libraries(
+    paths: Sequence[str],
+    *,
+    logger_: logging.Logger,
+) -> None:
+    """在解析 ONNX / 构建网络之前加载自定义插件 .so（注册 IPluginCreator 等）。"""
+    for p in paths:
+        ap = os.path.abspath(os.path.expanduser(p))
+        if not os.path.isfile(ap):
+            raise FileNotFoundError(f"Plugin library not found: {ap}")
+        logger_.info("Loading TensorRT plugin library: %s", ap)
+        ctypes.CDLL(ap, mode=ctypes.RTLD_GLOBAL)
+
+
 def build_engine(
     onnx_path: str,
     engine_path: str,
@@ -23,6 +39,9 @@ def build_engine(
     min_shapes: dict = None,
     opt_shapes: dict = None,
     max_shapes: dict = None,
+    *,
+    plugin_lib_paths: Sequence[str] | None = None,
+    init_builtin_trt_plugins: bool = True,
 ):
     """
     Build TensorRT engine from ONNX model.
@@ -35,6 +54,15 @@ def build_engine(
         min_shapes: Minimum input shapes (dict: name -> shape tuple)
         opt_shapes: Optimal input shapes (dict: name -> shape tuple)
         max_shapes: Maximum input shapes (dict: name -> shape tuple)
+        plugin_lib_paths:
+            自定义 TensorRT 插件 .so 的绝对或相对路径列表（如 TensorRT-Edge-LLM 编译出的
+            ``lib*.so``）。TensorRT Python API 没有单独的 “插件搜索路径” 参数；必须在
+            ``OnnxParser.parse_from_file`` **之前** 用 ``ctypes.CDLL(..., RTLD_GLOBAL)``
+            加载，使插件向 TensorRT 注册。可与环境变量 ``LD_LIBRARY_PATH`` 配合（依赖的
+            CUDA/TRT 库仍需能被动态链接器找到）。
+        init_builtin_trt_plugins:
+            若为 True，在加载自定义库之前调用 ``trt.init_libnvinfer_plugins``，注册随
+            TensorRT 安装的 ``libnvinfer_plugin`` 等内置插件（常见 ONNX 自定义域会依赖）。
     """
     logger.info("=" * 80)
     logger.info("TensorRT Engine Builder")
@@ -56,6 +84,15 @@ def build_engine(
 
     # Create TensorRT logger
     TRT_LOGGER = trt.Logger(trt.Logger.VERBOSE)
+
+    if init_builtin_trt_plugins:
+        trt.init_libnvinfer_plugins(TRT_LOGGER, "")
+        logger.info("Initialized built-in TensorRT plugin registry (libnvinfer_plugin)")
+        print(colored("Initialized built-in TensorRT plugin registry", print_color))
+
+    if plugin_lib_paths:
+        _load_trt_plugin_shared_libraries(plugin_lib_paths, logger_=logger)
+        print(colored(f"Loaded {len(plugin_lib_paths)} custom plugin library(ies)", print_color))
 
     # Create builder and network
     logger.info("\n[Step 1/5] Creating TensorRT builder...")
