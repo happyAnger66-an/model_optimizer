@@ -64,7 +64,12 @@ _ATTENTION_PLUGIN_FAKE_REGISTERED = False
 
 
 def _onnx_trt_attention_plugin_separate_qkv(*args: Any) -> Any:
-    """Dynamo ONNX：与 NVIDIA 新版 ``attention_plugin``（独立 q/k/v + fp8/sliding 属性）一致。"""
+    """Dynamo ONNX：PyTorch 侧 ``trt::attention_plugin`` 多为独立 q/k/v，但 C++ ``AttentionPlugin``（见
+    ``attentionPlugin.cpp``）**第一个输入必须是沿最后一维拼接后的单张量 QKV**，形状
+    ``[B, S, (Hq+2*Hkv)*D]``。若直接向 ONNX 写入三个输入，建引擎时会报
+    ``could not find any supported formats consistent with input/output data types``。
+    此处用 ``Concat(q,k,v, axis=2)`` 与 pip / 本地 EdgeLLM 在 ``Fused`` 路径上的约定对齐。
+    """
     if len(args) == 16:
         (
             q,
@@ -109,14 +114,15 @@ def _onnx_trt_attention_plugin_separate_qkv(*args: Any) -> Any:
     except ImportError:
         trt_onnx_opset = 19
 
+    from onnxscript import opset19 as onnx_op
     from onnxscript.values import Opset
+
+    qkv = onnx_op.Concat(q, k, v, axis=2)
 
     trt = Opset("trt", int(trt_onnx_opset))
     ap_op = trt.AttentionPlugin
     inputs: list[Any] = [
-        q,
-        k,
-        v,
+        qkv,
         past_key_value,
         context_lengths,
         rope_rotary_cos_sin,
