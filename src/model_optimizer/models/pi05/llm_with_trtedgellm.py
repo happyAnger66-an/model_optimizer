@@ -22,6 +22,7 @@ TensorRT-Edge-LLM 的核心 ONNX/TRT 优化在 **EdgeLLMAttention**（``trt::att
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import sys
@@ -62,6 +63,138 @@ def _ensure_trt_edgellm_on_path() -> None:
 _ATTENTION_PLUGIN_FAKE_REGISTERED = False
 
 
+def _onnx_trt_attention_plugin_separate_qkv(*args: Any) -> Any:
+    """Dynamo ONNX：与 NVIDIA 新版 ``attention_plugin``（独立 q/k/v + fp8/sliding 属性）一致。"""
+    if len(args) == 16:
+        (
+            q,
+            k,
+            v,
+            past_key_value,
+            context_lengths,
+            rope_rotary_cos_sin,
+            kvcache_start_index,
+            num_q_heads,
+            num_kv_heads,
+            enable_tree_attention,
+            head_size,
+            enable_fp8_kv_cache,
+            sliding_window_size,
+            attention_mask,
+            position_ids,
+            k_v_scale_quant_orig,
+        ) = args
+    else:
+        (
+            q,
+            k,
+            v,
+            past_key_value,
+            context_lengths,
+            rope_rotary_cos_sin,
+            kvcache_start_index,
+            num_q_heads,
+            num_kv_heads,
+            enable_tree_attention,
+            head_size,
+            enable_fp8_kv_cache,
+            sliding_window_size,
+            attention_mask,
+            position_ids,
+        ) = args
+        k_v_scale_quant_orig = None
+
+    try:
+        from tensorrt_edgellm.common import ONNX_OPSET_VERSION as trt_onnx_opset
+    except ImportError:
+        trt_onnx_opset = 19
+
+    from onnxscript.values import Opset
+
+    trt = Opset("trt", int(trt_onnx_opset))
+    ap_op = trt.AttentionPlugin
+    inputs: list[Any] = [
+        q,
+        k,
+        v,
+        past_key_value,
+        context_lengths,
+        rope_rotary_cos_sin,
+        kvcache_start_index,
+    ]
+    if enable_tree_attention:
+        inputs.append(attention_mask)
+        inputs.append(position_ids)
+    if enable_fp8_kv_cache:
+        inputs.append(k_v_scale_quant_orig)
+
+    return ap_op(
+        *inputs,
+        num_q_heads=int(num_q_heads),
+        num_kv_heads=int(num_kv_heads),
+        head_size=int(head_size),
+        enable_tree_attention=1 if enable_tree_attention else 0,
+        enable_fp8_kv_cache=1 if enable_fp8_kv_cache else 0,
+        sliding_window_size=int(sliding_window_size),
+        _outputs=2,
+    )
+
+
+def _onnx_trt_attention_plugin_qkv_concat(*args: Any) -> Any:
+    """Dynamo ONNX：与 ``third_party`` 等旧版 ``attention_plugin``（单路 qkv 拼接）一致。"""
+    qkv, past_key_value, context_lengths, rope_rotary_cos_sin, kvcache_start_index = args[:5]
+    num_q_heads, num_kv_heads, enable_tree_attention, head_size = args[5:9]
+    attention_mask = args[9] if len(args) > 9 else None
+    position_ids = args[10] if len(args) > 10 else None
+
+    try:
+        from tensorrt_edgellm.common import ONNX_OPSET_VERSION as trt_onnx_opset
+    except ImportError:
+        trt_onnx_opset = 19
+
+    from onnxscript.values import Opset
+
+    trt = Opset("trt", int(trt_onnx_opset))
+    ap_op = trt.AttentionPlugin
+    inputs: list[Any] = [
+        qkv,
+        past_key_value,
+        context_lengths,
+        rope_rotary_cos_sin,
+        kvcache_start_index,
+    ]
+    if enable_tree_attention:
+        inputs.append(attention_mask)
+        inputs.append(position_ids)
+
+    return ap_op(
+        *inputs,
+        num_q_heads=int(num_q_heads),
+        num_kv_heads=int(num_kv_heads),
+        head_size=int(head_size),
+        enable_tree_attention=1 if enable_tree_attention else 0,
+        _outputs=2,
+    )
+
+
+def _dynamo_onnx_trt_attention_plugin(*args: Any, **kwargs: Any) -> Any:
+    """``torch.onnx.export(..., dynamo=True)`` 的 custom_translation_table 目标函数。"""
+    del kwargs
+    # 新版至少 13 个位置参数（7 个张量 + 6 个标量）；旧版单 qkv 最多约 11 个。
+    if len(args) >= 13:
+        return _onnx_trt_attention_plugin_separate_qkv(*args)
+    return _onnx_trt_attention_plugin_qkv_concat(*args)
+
+
+def trt_attention_plugin_custom_translation_table() -> dict[Any, Any]:
+    """供 Dynamo ONNX 将 ``torch.ops.trt.attention_plugin.default`` 落到 ``trt.AttentionPlugin``。"""
+    trt_ns = getattr(torch.ops, "trt", None)
+    packet = getattr(trt_ns, "attention_plugin", None) if trt_ns is not None else None
+    if packet is None or not hasattr(packet, "default"):
+        return {}
+    return {packet.default: _dynamo_onnx_trt_attention_plugin}
+
+
 def register_attention_plugin_fake_for_torch_export() -> None:
     """为 ``trt::attention_plugin`` 注册 FakeTensor/meta 实现。
 
@@ -69,6 +202,8 @@ def register_attention_plugin_fake_for_torch_export() -> None:
     ``register_fake``，否则会报 ``There was no fake impl registered``。
     与 TensorRT-Edge-LLM ``attention_plugin.py`` 中 eager dummy 的输出形状保持一致。
     若上游已为该 op 注册 fake（``_abstract_fn`` 非空），则不再覆盖。
+
+    同时兼容 **单张量 qkv**（``third_party`` 旧接口）与 **独立 q/k/v**（pip 新版）两种实现。
     """
     global _ATTENTION_PLUGIN_FAKE_REGISTERED
     if _ATTENTION_PLUGIN_FAKE_REGISTERED:
@@ -85,27 +220,54 @@ def register_attention_plugin_fake_for_torch_export() -> None:
         _ATTENTION_PLUGIN_FAKE_REGISTERED = True
         return
 
-    def _attention_plugin_fake(
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        past_key_value: torch.Tensor,
-        context_lengths: torch.Tensor,
-        rope_rotary_cos_sin: torch.Tensor,
-        kvcache_start_index: torch.Tensor,
-        num_q_heads: int,
-        num_kv_heads: int,
-        enable_tree_attention: bool,
-        head_size: int,
-        enable_fp8_kv_cache: bool,
-        sliding_window_size: int = -1,
-        attention_mask: torch.Tensor | None = None,
-        position_ids: torch.Tensor | None = None,
-        k_v_scale_quant_orig: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        batch_size, seq_len, _ = q.shape
-        attn_output = q.new_zeros((batch_size, seq_len, num_q_heads, head_size))
-        return attn_output, past_key_value.clone()
+    init_fn = getattr(attention_plugin, "_init_fn", None)
+    if init_fn is None:
+        return
+    params = list(inspect.signature(init_fn).parameters.keys())
+    fused_qkv = bool(params) and params[0] == "qkv"
+
+    if fused_qkv:
+
+        def _attention_plugin_fake(
+            qkv: torch.Tensor,
+            past_key_value: torch.Tensor,
+            context_lengths: torch.Tensor,
+            rope_rotary_cos_sin: torch.Tensor,
+            kvcache_start_index: torch.Tensor,
+            num_q_heads: int,
+            num_kv_heads: int,
+            enable_tree_attention: bool,
+            head_size: int,
+            attention_mask: torch.Tensor | None = None,
+            position_ids: torch.Tensor | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            batch_size, seq_len, _ = qkv.shape
+            attn_output = qkv.new_zeros((batch_size, seq_len, num_q_heads, head_size))
+            return attn_output, past_key_value.clone()
+
+    else:
+
+        def _attention_plugin_fake(
+            q: torch.Tensor,
+            k: torch.Tensor,
+            v: torch.Tensor,
+            past_key_value: torch.Tensor,
+            context_lengths: torch.Tensor,
+            rope_rotary_cos_sin: torch.Tensor,
+            kvcache_start_index: torch.Tensor,
+            num_q_heads: int,
+            num_kv_heads: int,
+            enable_tree_attention: bool,
+            head_size: int,
+            enable_fp8_kv_cache: bool,
+            sliding_window_size: int = -1,
+            attention_mask: torch.Tensor | None = None,
+            position_ids: torch.Tensor | None = None,
+            k_v_scale_quant_orig: torch.Tensor | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            batch_size, seq_len, _ = q.shape
+            attn_output = q.new_zeros((batch_size, seq_len, num_q_heads, head_size))
+            return attn_output, past_key_value.clone()
 
     reg(_attention_plugin_fake)
     _ATTENTION_PLUGIN_FAKE_REGISTERED = True
@@ -587,29 +749,37 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
         position_ids = torch.randint(1, 1000, (1, 968), dtype=torch.int64, device="cuda")
 
         onnx_path = f"{output_dir}/llm.onnx"
+        export_kwargs: dict[str, Any] = {
+            "export_params": True,
+            "input_names": ["inputs_embeds", "attention_mask", "position_ids"],
+            "output_names": ["past_keys", "past_values", "last_hidden_state"],
+            "opset_version": 19,
+            "dynamo": dynamo,
+            "do_constant_folding": True,
+            "dynamic_axes": {
+                "inputs_embeds": {0: "batch_size", 1: "seq_len"},
+                "attention_mask": {
+                    0: "batch_size",
+                    2: "seq_len",
+                    3: "seq_len",
+                },
+                "position_ids": {0: "batch_size", 1: "seq_len"},
+                "past_keys": {2: "seq_len"},
+                "past_values": {2: "seq_len"},
+                "last_hidden_state": {0: "batch_size", 1: "seq_len"},
+            },
+        }
+        # Dynamo 路径不走 TorchScript symbolic；需在 custom_translation_table 中注册 trt 算子。
+        if dynamo:
+            tbl = trt_attention_plugin_custom_translation_table()
+            if tbl:
+                export_kwargs["custom_translation_table"] = tbl
         with torch.inference_mode():
             torch.onnx.export(
                 export_net,
                 (inputs_embeds, attention_mask, position_ids),
                 onnx_path,
-                export_params=True,
-                input_names=["inputs_embeds", "attention_mask", "position_ids"],
-                output_names=["past_keys", "past_values", "last_hidden_state"],
-                opset_version=19,
-                dynamo=dynamo,
-                do_constant_folding=True,
-                dynamic_axes={
-                    "inputs_embeds": {0: "batch_size", 1: "seq_len"},
-                    "attention_mask": {
-                        0: "batch_size",
-                        2: "seq_len",
-                        3: "seq_len",
-                    },
-                    "position_ids": {0: "batch_size", 1: "seq_len"},
-                    "past_keys": {2: "seq_len"},
-                    "past_values": {2: "seq_len"},
-                    "last_hidden_state": {0: "batch_size", 1: "seq_len"},
-                },
+                **export_kwargs,
             )
 
         end = time.time()
