@@ -366,6 +366,34 @@ def _gated_residual(
     return x + y * gate
 
 
+def _bf16_to_fp16_inplace_for_trt_onnx_export(
+    module: nn.Module,
+) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    """将 ``module`` 内 BFloat16 的 Parameter/Buffer 暂时改为 FP16，供 TRT 友好 ONNX 导出。
+
+    激活已用 FP16 时，若 ``Linear`` 权重仍为 BF16，图中 ``MatMul`` 会出现 Half×BF16，
+    TensorRT 报错 ``IMatrixMultiplyLayer must have same input types``。导出结束后需调用
+    :func:`_restore_bf16_after_trt_onnx_export`。
+    """
+    swaps: list[tuple[torch.Tensor, torch.Tensor]] = []
+    for t in list(module.parameters()) + list(module.buffers()):
+        if not t.is_floating_point() or t.dtype != torch.bfloat16:
+            continue
+        orig = t.detach().clone()
+        with torch.no_grad():
+            t.copy_(t.to(torch.float16))
+        swaps.append((t, orig))
+    return swaps
+
+
+def _restore_bf16_after_trt_onnx_export(
+    swaps: list[tuple[torch.Tensor, torch.Tensor]],
+) -> None:
+    for t, orig in swaps:
+        with torch.no_grad():
+            t.copy_(orig)
+
+
 class GemmaModelEdgeOnnxExport(nn.Module):
     """
     仅用于 ONNX 导出：复现 Gemma 解码器数据流（RMSNorm + MLP + 最终 norm），
@@ -739,47 +767,54 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
         # 不用 torch.onnx.export(self)：self.forward 仍走 GemmaModel + native 注意力。
         # 必须用 GemmaModelEdgeOnnxExport 显式走 layer.self_attn.edge.forward，图中才有 trt::attention_plugin。
         gemma = self.model._hf_gemma
-        export_net = GemmaModelEdgeOnnxExport(gemma).eval().cuda()
+        weight_swaps = _bf16_to_fp16_inplace_for_trt_onnx_export(gemma)
+        try:
+            export_net = GemmaModelEdgeOnnxExport(gemma).eval().cuda()
 
-        inputs_embeds = torch.randn(
-            (1, 968, 2048), dtype=torch.float16, device="cuda"
-        )
-        attention_mask = torch.randn((1, 1, 968, 968), dtype=torch.float32, device="cuda")
-        position_ids = torch.randint(1, 1000, (1, 968), dtype=torch.int64, device="cuda")
-
-        onnx_path = f"{output_dir}/llm.onnx"
-        export_kwargs: dict[str, Any] = {
-            "export_params": True,
-            "input_names": ["inputs_embeds", "attention_mask", "position_ids"],
-            "output_names": ["past_keys", "past_values", "last_hidden_state"],
-            "opset_version": 19,
-            "dynamo": dynamo,
-            "do_constant_folding": True,
-            "dynamic_axes": {
-                "inputs_embeds": {0: "batch_size", 1: "seq_len"},
-                "attention_mask": {
-                    0: "batch_size",
-                    2: "seq_len",
-                    3: "seq_len",
-                },
-                "position_ids": {0: "batch_size", 1: "seq_len"},
-                "past_keys": {2: "seq_len"},
-                "past_values": {2: "seq_len"},
-                "last_hidden_state": {0: "batch_size", 1: "seq_len"},
-            },
-        }
-        # Dynamo 路径不走 TorchScript symbolic；需在 custom_translation_table 中注册 trt 算子。
-        if dynamo:
-            tbl = trt_attention_plugin_custom_translation_table()
-            if tbl:
-                export_kwargs["custom_translation_table"] = tbl
-        with torch.inference_mode():
-            torch.onnx.export(
-                export_net,
-                (inputs_embeds, attention_mask, position_ids),
-                onnx_path,
-                **export_kwargs,
+            inputs_embeds = torch.randn(
+                (1, 968, 2048), dtype=torch.float16, device="cuda"
             )
+            attention_mask = torch.randn(
+                (1, 1, 968, 968), dtype=torch.float32, device="cuda"
+            )
+            position_ids = torch.randint(
+                1, 1000, (1, 968), dtype=torch.int64, device="cuda"
+            )
+
+            onnx_path = f"{output_dir}/llm.onnx"
+            export_kwargs: dict[str, Any] = {
+                "export_params": True,
+                "input_names": ["inputs_embeds", "attention_mask", "position_ids"],
+                "output_names": ["past_keys", "past_values", "last_hidden_state"],
+                "opset_version": 19,
+                "dynamo": dynamo,
+                "do_constant_folding": True,
+                "dynamic_axes": {
+                    "inputs_embeds": {0: "batch_size", 1: "seq_len"},
+                    "attention_mask": {
+                        0: "batch_size",
+                        2: "seq_len",
+                        3: "seq_len",
+                    },
+                    "position_ids": {0: "batch_size", 1: "seq_len"},
+                    "past_keys": {2: "seq_len"},
+                    "past_values": {2: "seq_len"},
+                    "last_hidden_state": {0: "batch_size", 1: "seq_len"},
+                },
+            }
+            if dynamo:
+                tbl = trt_attention_plugin_custom_translation_table()
+                if tbl:
+                    export_kwargs["custom_translation_table"] = tbl
+            with torch.inference_mode():
+                torch.onnx.export(
+                    export_net,
+                    (inputs_embeds, attention_mask, position_ids),
+                    onnx_path,
+                    **export_kwargs,
+                )
+        finally:
+            _restore_bf16_after_trt_onnx_export(weight_swaps)
 
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
@@ -811,33 +846,43 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
 
         # 同 instance export：必须 trace GemmaModelEdgeOnnxExport，见类文档与 export() 内注释。
         gemma = llm_model.model._hf_gemma
-        export_net = GemmaModelEdgeOnnxExport(gemma).eval().cuda()
+        weight_swaps = _bf16_to_fp16_inplace_for_trt_onnx_export(gemma)
+        try:
+            export_net = GemmaModelEdgeOnnxExport(gemma).eval().cuda()
 
-        inputs_embeds = torch.randn((1, 968, 2048), dtype=torch.float16, device="cuda")
-        attention_mask = torch.randn((1, 1, 968, 968), dtype=torch.float32, device="cuda")
-        position_ids = torch.randint(1, 1000, (1, 968), dtype=torch.int64, device="cuda")
-
-        with torch.inference_mode():
-            torch.onnx.export(
-                export_net,
-                (inputs_embeds, attention_mask, position_ids),
-                f"{output_dir}/llm.onnx",
-                input_names=["inputs_embeds", "attention_mask", "position_ids"],
-                output_names=["past_keys", "past_values", "last_hidden_state"],
-                opset_version=19,
-                dynamo=False,
-                do_constant_folding=True,
-                dynamic_axes={
-                    "inputs_embeds": {0: "batch_size", 1: "seq_len"},
-                    "attention_mask": {
-                        0: "batch_size",
-                        2: "seq_len",
-                        3: "seq_len",
-                    },
-                    "position_ids": {0: "batch_size", 1: "seq_len"},
-                    "last_hidden_state": {0: "batch_size", 1: "seq_len"},
-                },
+            inputs_embeds = torch.randn(
+                (1, 968, 2048), dtype=torch.float16, device="cuda"
             )
+            attention_mask = torch.randn(
+                (1, 1, 968, 968), dtype=torch.float32, device="cuda"
+            )
+            position_ids = torch.randint(
+                1, 1000, (1, 968), dtype=torch.int64, device="cuda"
+            )
+
+            with torch.inference_mode():
+                torch.onnx.export(
+                    export_net,
+                    (inputs_embeds, attention_mask, position_ids),
+                    f"{output_dir}/llm.onnx",
+                    input_names=["inputs_embeds", "attention_mask", "position_ids"],
+                    output_names=["past_keys", "past_values", "last_hidden_state"],
+                    opset_version=19,
+                    dynamo=False,
+                    do_constant_folding=True,
+                    dynamic_axes={
+                        "inputs_embeds": {0: "batch_size", 1: "seq_len"},
+                        "attention_mask": {
+                            0: "batch_size",
+                            2: "seq_len",
+                            3: "seq_len",
+                        },
+                        "position_ids": {0: "batch_size", 1: "seq_len"},
+                        "last_hidden_state": {0: "batch_size", 1: "seq_len"},
+                    },
+                )
+        finally:
+            _restore_bf16_after_trt_onnx_export(weight_swaps)
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
         return llm_model
