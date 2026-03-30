@@ -59,6 +59,58 @@ def _ensure_trt_edgellm_on_path() -> None:
             sys.path.insert(0, p)
 
 
+_ATTENTION_PLUGIN_FAKE_REGISTERED = False
+
+
+def register_attention_plugin_fake_for_torch_export() -> None:
+    """为 ``trt::attention_plugin`` 注册 FakeTensor/meta 实现。
+
+    ``torch.onnx.export(..., dynamo=True)`` 会先走 ``torch.export``，自定义算子必须提供
+    ``register_fake``，否则会报 ``There was no fake impl registered``。
+    与 TensorRT-Edge-LLM ``attention_plugin.py`` 中 eager dummy 的输出形状保持一致。
+    若上游已为该 op 注册 fake（``_abstract_fn`` 非空），则不再覆盖。
+    """
+    global _ATTENTION_PLUGIN_FAKE_REGISTERED
+    if _ATTENTION_PLUGIN_FAKE_REGISTERED:
+        return
+    try:
+        from tensorrt_edgellm.llm_models.layers.attention_plugin import attention_plugin
+    except ImportError:
+        return
+
+    reg = getattr(attention_plugin, "register_fake", None)
+    if reg is None:
+        return
+    if getattr(attention_plugin, "_abstract_fn", None) is not None:
+        _ATTENTION_PLUGIN_FAKE_REGISTERED = True
+        return
+
+    def _attention_plugin_fake(
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        past_key_value: torch.Tensor,
+        context_lengths: torch.Tensor,
+        rope_rotary_cos_sin: torch.Tensor,
+        kvcache_start_index: torch.Tensor,
+        num_q_heads: int,
+        num_kv_heads: int,
+        enable_tree_attention: bool,
+        head_size: int,
+        enable_fp8_kv_cache: bool,
+        sliding_window_size: int = -1,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
+        k_v_scale_quant_orig: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        batch_size, seq_len, _ = q.shape
+        attn_output = q.new_zeros((batch_size, seq_len, num_q_heads, head_size))
+        return attn_output, past_key_value.clone()
+
+    reg(_attention_plugin_fake)
+    _ATTENTION_PLUGIN_FAKE_REGISTERED = True
+
+
 class GemmaAttentionTrtEdge(nn.Module):
     """
     包装 HuggingFace/OpenPI 的 Gemma 自注意力：保留 ``native`` 的 HF 前向，并附加同权的 ``EdgeLLMAttention``。
@@ -521,6 +573,7 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
         )
 
         register_attention_plugin_onnx_symbolic_functions()
+        register_attention_plugin_fake_for_torch_export()
 
         # 不用 torch.onnx.export(self)：self.forward 仍走 GemmaModel + native 注意力。
         # 必须用 GemmaModelEdgeOnnxExport 显式走 layer.self_attn.edge.forward，图中才有 trt::attention_plugin。
@@ -585,6 +638,7 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
         )
 
         register_attention_plugin_onnx_symbolic_functions()
+        register_attention_plugin_fake_for_torch_export()
 
         # 同 instance export：必须 trace GemmaModelEdgeOnnxExport，见类文档与 export() 内注释。
         gemma = llm_model.model._hf_gemma
