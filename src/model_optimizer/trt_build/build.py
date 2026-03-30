@@ -81,8 +81,13 @@ def build_engine(
             不匹配）。若解析失败可改为 False 试旧行为。
 
     注意：TensorRT-Edge-LLM 的 AttentionPlugin 在 ONNX schema 中多为 **FP16** 张量；
-    若 ``precision="bf16"`` 建引擎仍报插件格式组合错误，请将 ``precision`` 改为
-    ``"fp16"``，并尽量以 FP16 导出 ONNX（与插件一致）。
+    若 ``precision="bf16"`` 建引擎仍报插件格式组合错误，请将 **ONNX 导出为 FP16**
+    （与插件一致）。
+
+    **STRONGLY_TYPED 与 Builder 混精标志互斥**：开启 ``strongly_typed_network`` 时，
+    不能再设置 ``FP16`` / ``BF16`` / ``FP8`` / ``INT4`` 等 ``BuilderFlag``；否则 TRT 报错
+    ``!config.getFlag(BuilderFlag::kFP16)``。此时 ``precision`` 仅作日志提示，实际精度以
+    ONNX 图中类型为准。
     """
     logger.info("=" * 80)
     logger.info("TensorRT Engine Builder")
@@ -175,8 +180,19 @@ def build_engine(
     config.set_memory_pool_limit(
         trt.MemoryPoolType.WORKSPACE, workspace_mb * (1024**2))
 
-    # Set precision
-    if precision == "fp16":
+    # Set precision（STRONGLY_TYPED 网络禁止再开 FP16/BF16 等 Builder 混精标志）
+    if strongly_typed_network:
+        logger.info(
+            "Skipping BuilderFlag FP16/BF16/FP8/INT4: STRONGLY_TYPED network "
+            f"(precision hint from config: {precision!r} — actual types follow ONNX)"
+        )
+        print(
+            colored(
+                "Skipping global precision flags (STRONGLY_TYPED: types from ONNX)",
+                print_color,
+            )
+        )
+    elif precision == "fp16":
         config.set_flag(trt.BuilderFlag.FP16)
         logger.info("Enabled FP16 mode")
     elif precision == "bf16":
