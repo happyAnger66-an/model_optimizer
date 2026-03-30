@@ -18,6 +18,9 @@ def init_registry():
     from .pi05.llm import LLM
     register_model_cls("pi05_libero/llm", LLM)
     
+    from .pi05.llm_with_trtedgellm import LLMWithTrtEdgeLLM
+    register_model_cls("pi05_libero/llm_with_trtedge", LLMWithTrtEdgeLLM)
+    
     from .pi05.expert import Expert
     register_model_cls("pi05_libero/expert", Expert)
 
