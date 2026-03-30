@@ -90,7 +90,14 @@ class GemmaAttentionTrtEdge(nn.Module):
         try:
             return super().__getattr__(name)
         except AttributeError:
-            return getattr(self.native, name)
+            # 必须用 _modules 取 native：add_module("native", ...) 内部会 hasattr(self, "native")，
+            # 若走 self.native 会再次进入 __getattr__，导致 RecursionError。
+            native = self._modules.get("native")
+            if native is None:
+                raise AttributeError(
+                    f"'{type(self).__name__}' object has no attribute '{name}'"
+                ) from None
+            return getattr(native, name)
 
 
 def install_gemma_edge_attention_wrappers(
