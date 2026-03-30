@@ -368,30 +368,40 @@ def _gated_residual(
 
 def _bf16_to_fp16_inplace_for_trt_onnx_export(
     module: nn.Module,
-) -> list[tuple[torch.Tensor, torch.Tensor]]:
+) -> list[tuple[torch.nn.Parameter | torch.Tensor, torch.Tensor]]:
     """将 ``module`` 内 BFloat16 的 Parameter/Buffer 暂时改为 FP16，供 TRT 友好 ONNX 导出。
 
     激活已用 FP16 时，若 ``Linear`` 权重仍为 BF16，图中 ``MatMul`` 会出现 Half×BF16，
     TensorRT 报错 ``IMatrixMultiplyLayer must have same input types``。导出结束后需调用
     :func:`_restore_bf16_after_trt_onnx_export`。
+
+    注意：对 ``nn.Parameter`` 使用 ``copy_(x.to(fp16))`` **不会** 把 dtype 从 BF16 改成 FP16
+    （值会被 cast 回 Parameter 原有 dtype），必须用 ``t.data = t.data.to(torch.float16)``。
     """
-    swaps: list[tuple[torch.Tensor, torch.Tensor]] = []
-    for t in list(module.parameters()) + list(module.buffers()):
-        if not t.is_floating_point() or t.dtype != torch.bfloat16:
+    swaps: list[tuple[torch.nn.Parameter | torch.Tensor, torch.Tensor]] = []
+    for _, p in module.named_parameters():
+        if p.dtype != torch.bfloat16:
             continue
-        orig = t.detach().clone()
+        orig = p.detach().clone()
         with torch.no_grad():
-            t.copy_(t.to(torch.float16))
-        swaps.append((t, orig))
+            p.data = p.data.to(torch.float16)
+        swaps.append((p, orig))
+    for _, b in module.named_buffers():
+        if not b.is_floating_point() or b.dtype != torch.bfloat16:
+            continue
+        orig = b.detach().clone()
+        with torch.no_grad():
+            b.data = b.data.to(torch.float16)
+        swaps.append((b, orig))
     return swaps
 
 
 def _restore_bf16_after_trt_onnx_export(
-    swaps: list[tuple[torch.Tensor, torch.Tensor]],
+    swaps: list[tuple[torch.nn.Parameter | torch.Tensor, torch.Tensor]],
 ) -> None:
     for t, orig in swaps:
         with torch.no_grad():
-            t.copy_(orig)
+            t.data = orig.clone().to(device=t.device)
 
 
 class GemmaModelEdgeOnnxExport(nn.Module):
