@@ -401,12 +401,11 @@ class GemmaModelEdgeOnnxExport(nn.Module):
         gemma = self.gemma
         device = inputs_embeds.device
         bsz, seq_len, _ = inputs_embeds.shape
-        hidden_states = inputs_embeds
-        if (
-            len(gemma.layers) > 0
-            and gemma.layers[0].self_attn.native.q_proj.weight.dtype == torch.bfloat16
-        ):
-            hidden_states = hidden_states.to(torch.bfloat16)
+        # TensorRT C++ AttentionPlugin 仅接受 FP16（kHALF），见
+        # third_party/TensorRT-Edge-LLM/cpp/plugins/attentionPlugin.cpp supportsFormatCombination。
+        # 若此处按权重升为 BF16，ONNX 中插件前后易出现 BFLOAT16，建引擎报
+        # "doesn't report any supported format combinations"。导出 TRT 时激活统一用 FP16。
+        hidden_states = inputs_embeds.to(torch.float16)
 
         position_ids_i64 = position_ids
         if position_ids_i64.dim() != 2:
@@ -743,7 +742,7 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
         export_net = GemmaModelEdgeOnnxExport(gemma).eval().cuda()
 
         inputs_embeds = torch.randn(
-            (1, 968, 2048), dtype=torch.bfloat16, device="cuda"
+            (1, 968, 2048), dtype=torch.float16, device="cuda"
         )
         attention_mask = torch.randn((1, 1, 968, 968), dtype=torch.float32, device="cuda")
         position_ids = torch.randint(1, 1000, (1, 968), dtype=torch.int64, device="cuda")
