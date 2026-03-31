@@ -8,6 +8,7 @@ import gradio as gr
 from . import CommandRunner
 from ..control import get_running_info
 from ..extras.constants import RUNNING_LOG
+from ..extras.constants import PROGRESS_LOG
 
 
 def _step_done(line: str) -> str:
@@ -180,9 +181,24 @@ class ExportCommand(CommandRunner):
 
         os.makedirs(self.output_path, exist_ok=True)
         cmd_md = "### 执行命令\n\n```bash\n" + " ".join(cmd_list) + "\n```"
-        # 关键：将子进程 stdout/stderr 统一写入 running_log.txt，保证 WebUI 可持续读取日志更新
+        # 每次开始前清理旧日志/旧进度，避免前端显示“上一次操作”的残留内容
         running_log_path = os.path.join(self.output_path, RUNNING_LOG)
+        progress_path = os.path.join(self.output_path, PROGRESS_LOG)
+        for p in (running_log_path, progress_path):
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+
+        # 关键：将子进程 stdout/stderr 统一写入 running_log.txt，保证 WebUI 可持续读取日志更新
         log_f = open(running_log_path, "a+", encoding="utf-8")
+        try:
+            log_f.write("[webui] export started\n")
+            log_f.write("[webui] cmd: " + " ".join(cmd_list) + "\n")
+            log_f.flush()
+        except Exception:
+            pass
         self.exec_process = Popen(
             cmd_list,
             env=env,
@@ -209,7 +225,7 @@ class ExportCommand(CommandRunner):
             gr.Info("导出已完成。")
             steps_end = _steps_md_done_all()
         else:
-            gr.Warning("导出失败，请查看下方日志。")
+            gr.Warning(f"导出失败（exit code={return_code}），请查看下方日志。")
             steps_end = _steps_md_failed()
 
         # 最后再刷新一轮日志与进度（若 progress.jsonl 存在，会显示 100%）
