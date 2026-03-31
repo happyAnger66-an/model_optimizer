@@ -22,6 +22,7 @@ class BuildCommand(CommandRunner):
     def check_inputs(self):
         self.output_box = self.get_elem_by_id("compile.output_box")
         self.progress_bar = self.get_elem_by_id("compile.progress_bar")
+        # compile.export_dir 在 UI 语义上是“导出文件路径”（不是目录）
         self.output_path = self.get_data_elem_by_id("compile.export_dir")
         self.build_cfg = self.get_data_elem_by_id("compile.build_cfg")
 
@@ -50,9 +51,12 @@ class BuildCommand(CommandRunner):
             yield (error, gr.Slider(visible=False))
             return
 
-        os.makedirs(self.output_path, exist_ok=True)
-        running_log_path = os.path.join(self.output_path, RUNNING_LOG)
-        progress_path = os.path.join(self.output_path, PROGRESS_LOG)
+        export_file_path = str(self.output_path)
+        # 只创建父目录：export_dir 是文件路径时，不能当目录创建
+        log_dir = os.path.dirname(export_file_path) or "."
+        os.makedirs(log_dir, exist_ok=True)
+        running_log_path = os.path.join(log_dir, RUNNING_LOG)
+        progress_path = os.path.join(log_dir, PROGRESS_LOG)
         for p in (running_log_path, progress_path):
             try:
                 if os.path.exists(p):
@@ -89,7 +93,7 @@ class BuildCommand(CommandRunner):
         start_ts = time.time()
         return_code: int | None = None
         while return_code is None:
-            running_log, running_progress, _ = get_running_info(self.lang, self.output_path)
+            running_log, running_progress, _ = get_running_info(self.lang, log_dir)
             # 若没有 progress.jsonl，用轻量“时间进度”避免看起来卡住
             if not os.path.exists(progress_path):
                 pct = min(95.0, 3.0 + (time.time() - start_ts) * 1.5)
@@ -110,7 +114,7 @@ class BuildCommand(CommandRunner):
             gr.Info("编译已完成。")
         else:
             gr.Warning(f"编译失败（exit code={return_code}），请查看日志。")
-        running_log, running_progress, _ = get_running_info(self.lang, self.output_path)
+        running_log, running_progress, _ = get_running_info(self.lang, log_dir)
         yield (cmd_md + "\n\n" + (running_log or ""), running_progress)
         try:
             log_f.close()
