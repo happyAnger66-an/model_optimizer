@@ -175,8 +175,10 @@ class ExportCommand(CommandRunner):
 
         ok = (return_code == 0)
         if ok:
+            gr.Info("导出已完成。")
             steps_end = "### 导出步骤\n- **1) 参数校验**：已完成\n- **2) 启动导出进程**：已完成\n- **3) 导出中**：已完成"
         else:
+            gr.Warning("导出失败，请查看下方日志。")
             steps_end = "### 导出步骤\n- **1) 参数校验**：已完成\n- **2) 启动导出进程**：已完成\n- **3) 导出中**：失败"
 
         # 最后再刷新一轮日志与进度（若 progress.jsonl 存在，会显示 100%）
