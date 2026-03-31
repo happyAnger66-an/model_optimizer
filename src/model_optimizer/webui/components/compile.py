@@ -28,29 +28,22 @@ def create_compile_tab(engine: "Engine") -> dict[str, "Component"]:
     elem_dict = dict()
 
     with gr.Row():
-        shapes = gr.Textbox(value=None, scale=2)
+        build_cfg = gr.Textbox(value=None, scale=3, label="编译配置文件路径")
 
-    input_elems.update({shapes})
-    elem_dict.update(dict(shapes=shapes))
-
-    with gr.Row():
-        do_perf = gr.Checkbox(value=True)
-        extra_compile_args = gr.Textbox(value=None, scale=3)
-
-    input_elems.update({do_perf, extra_compile_args})
-    elem_dict.update(dict(do_perf=do_perf, extra_compile_args=extra_compile_args))
+    input_elems.update({build_cfg})
+    elem_dict.update(dict(build_cfg=build_cfg))
 
     with gr.Row():
-        output_dir = gr.Textbox()
+        export_dir = gr.Textbox(label="输出目录（export_dir）")
 
-    input_elems.update({output_dir})
-    elem_dict.update(dict(output_dir=output_dir))
+    input_elems.update({export_dir})
+    elem_dict.update(dict(export_dir=export_dir))
 
     with gr.Row():
         start_btn = gr.Button(variant="primary")
 
     with gr.Row():
-        progress_bar = gr.Slider(visible=False, interactive=False)
+        progress_bar = gr.Slider(visible=True, interactive=False)
 
     with gr.Row():
         output_box = gr.Markdown()

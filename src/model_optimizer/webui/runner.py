@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 from .runners.profile import ProfileCommand
 from .runners.export import ExportCommand
+from .runners.build import BuildCommand
 
 class Runner:
     r"""A class to manage the running status of the trainers."""
@@ -56,7 +57,8 @@ class Runner:
         yield from self._launch(data, do_quantize=False)
     
     def run_compile(self, data):
-        yield from self._launch(data, do_quantize=False)
+        self.cmd_runner = BuildCommand(self.manager, data)
+        yield from self.cmd_runner.run()
 
     def _parse_eval_args(self, data: dict["Component", Any]) -> dict[str, Any]:
         r"""Build and validate the evaluation arguments."""

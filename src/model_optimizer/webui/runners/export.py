@@ -207,6 +207,11 @@ class ExportCommand(CommandRunner):
             stderr=STDOUT,
             text=True,
         )
+        try:
+            log_f.write(f"[webui] pid: {self.exec_process.pid}\n")
+            log_f.flush()
+        except Exception:
+            pass
         steps_md = _steps_md_running()
 
         # Gradio 在不同版本下对“按组件返回 dict”的支持差异较大，这里固定返回 4 元组，

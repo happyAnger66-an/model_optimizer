@@ -150,6 +150,26 @@ LOCALES = {
             "info": "是否进行性能评估。",
         },
     },
+    "build_cfg": {
+        "en": {
+            "label": "Build config path",
+            "info": "Path to build configuration file.",
+        },
+        "zh": {
+            "label": "编译配置文件路径",
+            "info": "编译配置文件路径（build_cfg）。",
+        },
+    },
+    "export_dir": {
+        "en": {
+            "label": "Export dir",
+            "info": "Output directory for build artifacts.",
+        },
+        "zh": {
+            "label": "输出目录",
+            "info": "编译输出目录（export_dir）。",
+        },
+    },
     "e2e_profile": {
         "en": {
             "label": "Do e2e performance",
