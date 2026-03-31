@@ -13,6 +13,7 @@ from .components.top import create_top
 from .components.footer import create_footer
 
 from .commom import save_config
+from .css import CSS
 
 
 def create_ui(demo_mode: bool = False) -> "gr.Blocks":
@@ -20,7 +21,7 @@ def create_ui(demo_mode: bool = False) -> "gr.Blocks":
     hostname = os.getenv("HOSTNAME", os.getenv(
         "COMPUTERNAME", platform.node())).split(".")[0]
 
-    with gr.Blocks(title=f"Model Factory ({hostname})") as demo:
+    with gr.Blocks(title=f"Model Factory ({hostname})", css=CSS) as demo:
         title = gr.HTML()
         engine.manager.add_elems("head", {"title": title})
         engine.manager.add_elems("top", create_top())

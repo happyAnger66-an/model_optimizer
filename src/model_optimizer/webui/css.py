@@ -64,4 +64,21 @@ CSS = r"""
 .dark .modal-box {
   border: 2px solid white !important;
 }
+
+/* WebUI 导出步骤：进行中旋转指示（Markdown 内嵌 span 使用） */
+@keyframes export-step-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+.export-step-spin {
+  display: inline-block;
+  margin-right: 2px;
+  animation: export-step-spin 0.9s linear infinite;
+  vertical-align: -0.15em;
+  line-height: 1;
+}
 """

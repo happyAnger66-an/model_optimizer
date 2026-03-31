@@ -9,6 +9,63 @@ from . import CommandRunner
 from ..control import get_running_info
 from ..extras.constants import RUNNING_LOG
 
+
+def _step_done(line: str) -> str:
+    return f"- ✓ {line}"
+
+
+def _step_spin(line: str) -> str:
+    return (
+        '- <span class="export-step-spin" title="进行中">⟳</span> '
+        f"{line}"
+    )
+
+
+def _step_fail(line: str) -> str:
+    return f"- ✗ {line}"
+
+
+def _steps_header() -> str:
+    return "### 导出步骤"
+
+
+def _steps_md_running() -> str:
+    return "\n".join(
+        [
+            _steps_header(),
+            _step_done("**1) 参数校验**"),
+            _step_done("**2) 启动导出进程**"),
+            _step_spin("**3) 导出中**（可在下方查看日志）"),
+        ]
+    )
+
+
+def _steps_md_done_all() -> str:
+    return "\n".join(
+        [
+            _steps_header(),
+            _step_done("**1) 参数校验**"),
+            _step_done("**2) 启动导出进程**"),
+            _step_done("**3) 导出中**"),
+        ]
+    )
+
+
+def _steps_md_failed() -> str:
+    return "\n".join(
+        [
+            _steps_header(),
+            _step_done("**1) 参数校验**"),
+            _step_done("**2) 启动导出进程**"),
+            _step_fail("**3) 导出中** — 失败，请查看日志"),
+        ]
+    )
+
+
+def _steps_md_input_error() -> str:
+    return "\n".join([_steps_header(), _step_fail("**参数校验** — 失败")])
+
+
 class ExportCommand(CommandRunner):
     def __init__(self, manager, data):
         super().__init__(manager, data, "export")
@@ -59,23 +116,11 @@ class ExportCommand(CommandRunner):
 
         if has_real_progress:
             if phase == "running":
-                return_dict[self.steps_box] = "\n".join(
-                    [
-                        "### 导出步骤",
-                        "- **1) 参数校验**：已完成",
-                        "- **2) 启动导出进程**：已完成",
-                        "- **3) 导出中**：进行中（可在下方查看日志）",
-                    ]
-                )
+                return_dict[self.steps_box] = _steps_md_running()
             elif phase in ("return", "finish"):
                 ok = (self.exec_process is not None and self.exec_process.returncode == 0) or getattr(self, "aborted", False)
-                return_dict[self.steps_box] = "\n".join(
-                    [
-                        "### 导出步骤",
-                        "- **1) 参数校验**：已完成",
-                        "- **2) 启动导出进程**：已完成",
-                        f"- **3) 导出中**：{'已完成' if ok else '失败/中断'}",
-                    ]
+                return_dict[self.steps_box] = (
+                    _steps_md_done_all() if ok else _steps_md_failed()
                 )
             return
 
@@ -87,15 +132,7 @@ class ExportCommand(CommandRunner):
         if phase == "running":
             # 0~90%：随时间缓慢增长，避免长任务看起来“卡住”
             pct = min(90.0, 5.0 + elapsed_s * 2.0)
-            steps_md = "\n".join(
-                [
-                    "### 导出步骤",
-                    "- **1) 参数校验**：已完成",
-                    "- **2) 启动导出进程**：已完成",
-                    "- **3) 导出中**：进行中（可在下方查看日志）",
-                ]
-            )
-            return_dict[self.steps_box] = steps_md
+            return_dict[self.steps_box] = _steps_md_running()
             return_dict[self.progress_bar] = gr.Slider(
                 label=f"导出进行中（{pct:.1f}%）",
                 value=pct,
@@ -107,15 +144,9 @@ class ExportCommand(CommandRunner):
         elif phase in ("return", "finish"):
             # return：拿到最后一轮日志；finish：收尾隐藏进度条。这里把步骤补齐。
             ok = (self.exec_process is not None and self.exec_process.returncode == 0) or getattr(self, "aborted", False)
-            steps_md = "\n".join(
-                [
-                    "### 导出步骤",
-                    "- **1) 参数校验**：已完成",
-                    "- **2) 启动导出进程**：已完成",
-                    f"- **3) 导出中**：{'已完成' if ok else '失败/中断'}",
-                ]
+            return_dict[self.steps_box] = (
+                _steps_md_done_all() if ok else _steps_md_failed()
             )
-            return_dict[self.steps_box] = steps_md
             if phase == "return":
                 return_dict[self.progress_bar] = gr.Slider(
                     label="导出完成" if ok else "导出结束（失败/中断）",
@@ -132,7 +163,7 @@ class ExportCommand(CommandRunner):
             gr.Warning(error)
             # 注意：export 前端期望 4 个输出（steps/cmd/log/progress）
             yield (
-                "### 导出步骤\n- **参数校验**：失败",
+                _steps_md_input_error(),
                 "",
                 error,
                 gr.Slider(visible=False),
@@ -159,14 +190,14 @@ class ExportCommand(CommandRunner):
             stderr=STDOUT,
             text=True,
         )
-        steps_md = "### 导出步骤\n- **1) 参数校验**：已完成\n- **2) 启动导出进程**：已完成\n- **3) 导出中**：进行中（可在下方查看日志）"
+        steps_md = _steps_md_running()
 
         # Gradio 在不同版本下对“按组件返回 dict”的支持差异较大，这里固定返回 4 元组，
         # 与 export 页 outputs=[steps_box, cmd_box, output_box, progress_bar] 严格对齐。
         running_log = ""
         running_progress: gr.Slider = gr.Slider(visible=False)
-        return_code = -1
-        while return_code == -1:
+        return_code: int | None = None
+        while return_code is None:
             running_log, running_progress, _ = get_running_info(self.lang, self.output_path)
             yield (steps_md, cmd_md, running_log, running_progress)
             # stdout/stderr 已重定向到文件，这里只需要轮询进程状态
@@ -176,10 +207,10 @@ class ExportCommand(CommandRunner):
         ok = (return_code == 0)
         if ok:
             gr.Info("导出已完成。")
-            steps_end = "### 导出步骤\n- **1) 参数校验**：已完成\n- **2) 启动导出进程**：已完成\n- **3) 导出中**：已完成"
+            steps_end = _steps_md_done_all()
         else:
             gr.Warning("导出失败，请查看下方日志。")
-            steps_end = "### 导出步骤\n- **1) 参数校验**：已完成\n- **2) 启动导出进程**：已完成\n- **3) 导出中**：失败"
+            steps_end = _steps_md_failed()
 
         # 最后再刷新一轮日志与进度（若 progress.jsonl 存在，会显示 100%）
         running_log, running_progress, _ = get_running_info(self.lang, self.output_path)
