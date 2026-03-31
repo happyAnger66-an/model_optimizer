@@ -1,7 +1,7 @@
 import os
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..webui.extras.constants import PROGRESS_LOG, QUANTIZE_LOG, RUNNING_LOG
 
@@ -77,10 +77,12 @@ class ProgressTracker:
 
     log_dir: str
     total_steps: int
-    start_ts: float = time.time()
+    start_ts: float = field(default_factory=time.time)
     current_steps: int = 0
 
     def start(self, *, phase: str = "start", step_name: str = "开始") -> None:
+        # 重置起始时间，避免模块导入时间导致 elapsed/ETA 异常
+        self.start_ts = time.time()
         self.current_steps = 0
         self._emit(phase=phase, step_name=step_name)
 

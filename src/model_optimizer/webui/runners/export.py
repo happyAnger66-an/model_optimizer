@@ -1,6 +1,8 @@
 import os
+import sys
 import time
 from copy import deepcopy
+from pathlib import Path
 from subprocess import STDOUT, Popen
 
 import gradio as gr
@@ -173,7 +175,14 @@ class ExportCommand(CommandRunner):
 
         env = deepcopy(os.environ)
 
-        cmd_list = ["model-optimizer-cli", "export"]
+        # 重要：不要依赖 PATH 里的 model-optimizer-cli（可能是已安装旧版本，或内部再起子进程导致误判结束）。
+        # 强制用当前 workspace 的源码执行，确保 progress.jsonl/running_log.txt 与 UI 逻辑一致。
+        repo_root = Path(__file__).resolve().parents[5]  # .../src/model_optimizer/webui/runners/export.py -> repo root
+        src_dir = repo_root / "src"
+        env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONPATH"] = f"{src_dir}:{env.get('PYTHONPATH', '')}"
+
+        cmd_list = [sys.executable, "-u", "-m", "model_optimizer.launcher", "export"]
         cmd_list.extend(self._prepare_cli())
         self._cmd_list = cmd_list
         self._start_ts = time.time()

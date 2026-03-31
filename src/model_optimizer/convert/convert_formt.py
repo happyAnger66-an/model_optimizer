@@ -112,6 +112,8 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
         export_dir,
         f"[export] export_type={args.export_type}, simplifier={args.simplifier}, verify_data={args.verify_data}",
     )
+    # 立刻推进到 1/N：避免前端长时间停在 0/N（例如首次 import/初始化较慢时）。
+    tracker.advance(step_name="准备完成")
 
     from ..models.registry import get_model_cls
     model_cls = get_model_cls(model_name)
