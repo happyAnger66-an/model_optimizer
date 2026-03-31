@@ -6,6 +6,7 @@ from subprocess import PIPE, Popen
 import gradio as gr
 
 from . import CommandRunner
+from ..control import get_running_info
 
 class ExportCommand(CommandRunner):
     def __init__(self, manager, data):
@@ -128,7 +129,13 @@ class ExportCommand(CommandRunner):
         error = self.check_inputs()        
         if error:
             gr.Warning(error)
-            yield {self.output_box: error, self.steps_box: "### 导出步骤\n- **参数校验**：失败", self.cmd_box: ""}
+            # 注意：export 前端期望 4 个输出（steps/cmd/log/progress）
+            yield (
+                "### 导出步骤\n- **参数校验**：失败",
+                "",
+                error,
+                gr.Slider(visible=False),
+            )
             return
 
         env = deepcopy(os.environ)
@@ -143,8 +150,31 @@ class ExportCommand(CommandRunner):
         cmd_md = "### 执行命令\n\n```bash\n" + " ".join(cmd_list) + "\n```"
         self.exec_process = Popen(
             cmd_list, env=env, stderr=PIPE, text=True)
-        yield {
-            self.steps_box: "### 导出步骤\n- **1) 参数校验**：已完成\n- **2) 启动导出进程**：已完成\n- **3) 导出中**：即将开始",
-            self.cmd_box: cmd_md,
-        }
-        yield from self.monitor(finalize=False)
+        steps_md = "### 导出步骤\n- **1) 参数校验**：已完成\n- **2) 启动导出进程**：已完成\n- **3) 导出中**：进行中（可在下方查看日志）"
+
+        # Gradio 在不同版本下对“按组件返回 dict”的支持差异较大，这里固定返回 4 元组，
+        # 与 export 页 outputs=[steps_box, cmd_box, output_box, progress_bar] 严格对齐。
+        running_log = ""
+        running_progress: gr.Slider = gr.Slider(visible=False)
+        return_code = -1
+        while return_code == -1:
+            running_log, running_progress, _ = get_running_info(self.lang, self.output_path)
+            yield (steps_md, cmd_md, running_log, running_progress)
+            try:
+                stderr = self.exec_process.communicate(timeout=10)[1]
+                return_code = self.exec_process.returncode
+            except Exception:
+                continue
+
+        ok = (return_code == 0)
+        if ok:
+            steps_end = "### 导出步骤\n- **1) 参数校验**：已完成\n- **2) 启动导出进程**：已完成\n- **3) 导出中**：已完成"
+        else:
+            steps_end = "### 导出步骤\n- **1) 参数校验**：已完成\n- **2) 启动导出进程**：已完成\n- **3) 导出中**：失败"
+
+        # 最后再刷新一轮日志与进度（若 progress.jsonl 存在，会显示 100%）
+        running_log, running_progress, _ = get_running_info(self.lang, self.output_path)
+        if not ok:
+            # 失败时追加 stderr，避免只看到 running_log 而不知道子进程错误
+            running_log = (running_log or "") + f"\n\n```\n{stderr}\n```\n"
+        yield (steps_end, cmd_md, running_log, running_progress)
