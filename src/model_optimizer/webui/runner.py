@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 from .runners.profile import ProfileCommand
 from .runners.export import ExportCommand
 from .runners.build import BuildCommand
+from .runners.quantize import QuantizeCommand
 
 class Runner:
     r"""A class to manage the running status of the trainers."""
@@ -290,7 +291,8 @@ class Runner:
 
 
     def run_quantize(self, data):
-        yield from self._launch(data, do_quantize=True)
+        self.cmd_runner = QuantizeCommand(self.manager, data)
+        yield from self.cmd_runner.run()
 
     def monitor(self, finalize=True):
         r"""Monitorgit the training progress and logs."""

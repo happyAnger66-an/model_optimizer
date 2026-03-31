@@ -130,6 +130,26 @@ LOCALES = {
             "info": "使用的校准算法。",
         },
     },
+    "quantize_cfg": {
+        "en": {
+            "label": "Quantize config path",
+            "info": "Path to quantization configuration file.",
+        },
+        "zh": {
+            "label": "量化配置文件路径",
+            "info": "量化配置文件路径（quantize_cfg）。",
+        },
+    },
+    "calibrate_data": {
+        "en": {
+            "label": "Calibrate data path",
+            "info": "Path to calibration data for quantization.",
+        },
+        "zh": {
+            "label": "校准数据路径",
+            "info": "校准数据路径（calibrate_data）。",
+        },
+    },
     "progress_bar": {
         "en": {
             "label": "Progress bar",
