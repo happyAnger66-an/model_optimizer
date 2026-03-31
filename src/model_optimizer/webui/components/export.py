@@ -28,6 +28,12 @@ def create_export_tab(engine: "Engine") -> dict[str, "Component"]:
         progress_bar = gr.Slider(visible=True, interactive=False)
 
     with gr.Row():
+        steps_box = gr.Markdown(value="准备开始导出。")
+
+    with gr.Row():
+        cmd_box = gr.Markdown(value="")
+
+    with gr.Row():
         output_box = gr.Markdown()
 
     input_elems.update(
@@ -35,9 +41,11 @@ def create_export_tab(engine: "Engine") -> dict[str, "Component"]:
     elem_dict.update(dict(export_format=export_format, 
                           simplifier=simplifier,
                           output_dir=output_dir,
+                          steps_box=steps_box,
+                          cmd_box=cmd_box,
                           output_box=output_box,
                           progress_bar=progress_bar))
-    output_elems = [output_box, progress_bar]
+    output_elems = [steps_box, cmd_box, output_box, progress_bar]
     
     start_btn = gr.Button("开始导出")
     start_btn.click(fn=engine.runner.run_export, inputs=input_elems,

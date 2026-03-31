@@ -13,7 +13,7 @@ from ultralytics.nn.tasks import SegmentationModel
 
 from subprocess import Popen, PIPE, TimeoutExpired, STDOUT
 
-from ..progress.write import write_running_log
+from ..progress.write import ProgressTracker, write_running_log
 from ..webui.extras.constants import RUNNING_LOG
 
 from ..progress.write import write_quantize_progress
@@ -99,17 +99,35 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
 
     model_name = args.model_name
     model_path = args.model_path
+    export_dir = args.export_dir
+    os.makedirs(export_dir, exist_ok=True)
+
+    # WebUI 进度：统一写入 progress.jsonl（control.get_running_info 会读取）
+    tracker = ProgressTracker(export_dir, total_steps=3)
+    tracker.start(step_name="解析参数/准备导出目录")
+    write_running_log(export_dir, f"[export] model_name={model_name}")
+    write_running_log(export_dir, f"[export] model_path={model_path}")
+    write_running_log(export_dir, f"[export] export_dir={export_dir}")
+    write_running_log(
+        export_dir,
+        f"[export] export_type={args.export_type}, simplifier={args.simplifier}, verify_data={args.verify_data}",
+    )
 
     from ..models.registry import get_model_cls
     model_cls = get_model_cls(model_name)
+    tracker.advance(step_name="加载模型/构建导出包装")
     model = model_cls.construct_from_name_path(model_name, model_path)
-    export_model_path = model.export(args.export_dir)
+    tracker.advance(step_name="执行导出（生成 ONNX）")
+    export_model_path = model.export(export_dir)
+    write_running_log(export_dir, f"[export] export_model_path={export_model_path}")
 
     if args.verify_data:
         export_model = model_cls.construct_from_name_path(
             model_name, export_model_path)
         export_model.val(args.verify_data, batch_size=1,
-                         output_dir=args.export_dir)
+                         output_dir=export_dir)
+
+    tracker.finish(ok=True)
 
 
 '''

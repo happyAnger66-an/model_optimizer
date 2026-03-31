@@ -372,41 +372,6 @@ def _gated_residual(
     return x + y * gate
 
 
-def _gemma_rope_cos_sin_packed_for_attention_plugin(
-    rotary_emb: nn.Module,
-    hidden_states_ref: torch.Tensor,
-    batch_size: int,
-    max_position_embeddings: int,
-) -> torch.Tensor:
-    """构造 AttentionPlugin / ``applyRopeWriteKV`` 所需的 RoPE 缓存。
-
-    C++ 侧 ``cosSinCache`` 布局为 ``[B, L, rotaryDim]``（FP32），**末维前半为 cos、后半为 sin**
-    （见 ``initializeCosSinCache.cu`` / ``applyRopeWriteKV.cu``）。HuggingFace Gemma 的 ``rotary_emb``
-    返回的 ``cos, sin`` 均为 ``[B, S, D]``，且 ``D`` 维上由 ``cat(freqs, freqs)`` 复制两半；
-    若写成 ``cat(cos, sin, dim=-1)`` 会得到 ``2*D``，既违反 ``supportsFormatCombination`` 里
-    ``d[2] <= head_size``，也与内核装入方式不一致，**易导致 TRT enqueue 阶段越界 / segfault**。
-
-    第二维长度与 ``tensorrt_edgellm.onnx_export.llm_export.create_dummy_inputs`` 一致，取
-    ``max_position_embeddings``，便于 position 索引与官方导出形状对齐。
-    """
-    device = hidden_states_ref.device
-    position_ids = torch.arange(
-        max_position_embeddings,
-        device=device,
-        dtype=torch.long,
-    ).unsqueeze(0).expand(batch_size, -1)
-    cos, sin = rotary_emb(hidden_states_ref, position_ids)
-    cos_f = cos.to(torch.float32)
-    sin_f = sin.to(torch.float32)
-    d_rope = cos_f.shape[-1]
-    if d_rope % 2 != 0:
-        raise ValueError(
-            f"rotary_emb cos 末维应为偶数（Gemma cat(freqs,freqs)），当前 {d_rope}"
-        )
-    half = d_rope // 2
-    return torch.cat([cos_f[..., :half], sin_f[..., :half]], dim=-1)
-
-
 def _bf16_to_fp16_inplace_for_trt_onnx_export(
     module: nn.Module,
 ) -> list[tuple[torch.nn.Parameter | torch.Tensor, torch.Tensor]]:
@@ -458,9 +423,6 @@ class GemmaModelEdgeOnnxExport(nn.Module):
     输入接口与 :class:`LLM` 导出一致：``inputs_embeds``、``attention_mask``（4D，导出时仅参与形状/设备）、``position_ids``。
     内部按 ``tensorrt_edgellm.onnx_export.llm_export.create_dummy_inputs`` 的约定构造
     KV / RoPE / ``context_lengths`` 等，以便与 Edge 工具链对齐。
-    RoPE 张量为 FP32、形状 ``[B, max_position_embeddings, rotary_dim]``，末维为
-    ``[cos_0..cos_{d/2-1}, sin_0..sin_{d/2-1}]``（与 C++ ``cosSinCache`` 一致），**不是**
-    ``torch.cat([cos, sin], dim=-1)`` 的 ``2*head_dim`` 布局。
     """
 
     def __init__(self, gemma_model: nn.Module) -> None:
@@ -492,17 +454,12 @@ class GemmaModelEdgeOnnxExport(nn.Module):
         position_ids_i64 = position_ids
         if position_ids_i64.dim() != 2:
             raise ValueError(f"position_ids 期望 [batch, seq]，当前 {tuple(position_ids_i64.shape)}")
+        cos, sin = gemma.rotary_emb(hidden_states, position_ids_i64)
+        rope_rotary_cos_sin = torch.cat(
+            [cos.to(torch.float32), sin.to(torch.float32)], dim=-1
+        )
 
         cfg = gemma.config
-        max_pos = getattr(cfg, "max_position_embeddings", None)
-        if max_pos is None:
-            raise ValueError("Gemma config 缺少 max_position_embeddings，无法构造 Edge 约定长度的 RoPE 表")
-        rope_rotary_cos_sin = _gemma_rope_cos_sin_packed_for_attention_plugin(
-            gemma.rotary_emb,
-            hidden_states,
-            bsz,
-            int(max_pos),
-        )
         num_kv_heads = cfg.num_key_value_heads
         head_dim = getattr(cfg, "head_dim", cfg.hidden_size // cfg.num_attention_heads)
 
