@@ -1,12 +1,13 @@
 import os
 import time
 from copy import deepcopy
-from subprocess import PIPE, Popen
+from subprocess import STDOUT, Popen
 
 import gradio as gr
 
 from . import CommandRunner
 from ..control import get_running_info
+from ..extras.constants import RUNNING_LOG
 
 class ExportCommand(CommandRunner):
     def __init__(self, manager, data):
@@ -148,8 +149,16 @@ class ExportCommand(CommandRunner):
 
         os.makedirs(self.output_path, exist_ok=True)
         cmd_md = "### 执行命令\n\n```bash\n" + " ".join(cmd_list) + "\n```"
+        # 关键：将子进程 stdout/stderr 统一写入 running_log.txt，保证 WebUI 可持续读取日志更新
+        running_log_path = os.path.join(self.output_path, RUNNING_LOG)
+        log_f = open(running_log_path, "a+", encoding="utf-8")
         self.exec_process = Popen(
-            cmd_list, env=env, stderr=PIPE, text=True)
+            cmd_list,
+            env=env,
+            stdout=log_f,
+            stderr=STDOUT,
+            text=True,
+        )
         steps_md = "### 导出步骤\n- **1) 参数校验**：已完成\n- **2) 启动导出进程**：已完成\n- **3) 导出中**：进行中（可在下方查看日志）"
 
         # Gradio 在不同版本下对“按组件返回 dict”的支持差异较大，这里固定返回 4 元组，
@@ -160,11 +169,9 @@ class ExportCommand(CommandRunner):
         while return_code == -1:
             running_log, running_progress, _ = get_running_info(self.lang, self.output_path)
             yield (steps_md, cmd_md, running_log, running_progress)
-            try:
-                stderr = self.exec_process.communicate(timeout=10)[1]
-                return_code = self.exec_process.returncode
-            except Exception:
-                continue
+            # stdout/stderr 已重定向到文件，这里只需要轮询进程状态
+            time.sleep(10)
+            return_code = self.exec_process.poll()
 
         ok = (return_code == 0)
         if ok:
@@ -174,7 +181,8 @@ class ExportCommand(CommandRunner):
 
         # 最后再刷新一轮日志与进度（若 progress.jsonl 存在，会显示 100%）
         running_log, running_progress, _ = get_running_info(self.lang, self.output_path)
-        if not ok:
-            # 失败时追加 stderr，避免只看到 running_log 而不知道子进程错误
-            running_log = (running_log or "") + f"\n\n```\n{stderr}\n```\n"
         yield (steps_end, cmd_md, running_log, running_progress)
+        try:
+            log_f.close()
+        except Exception:
+            pass
