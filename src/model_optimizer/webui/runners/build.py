@@ -25,6 +25,8 @@ class BuildCommand(CommandRunner):
         self.output_path = self.get_data_elem_by_id("compile.export_dir")
         self.build_cfg = self.get_data_elem_by_id("compile.build_cfg")
 
+        if not self.model_path:
+            return self.alert("err_no_path")
         if not self.output_path:
             return self.alert("err_no_output_dir")
         if not self.build_cfg:
@@ -33,8 +35,6 @@ class BuildCommand(CommandRunner):
 
     def _prepare_cli(self) -> list[str]:
         return [
-            "--model_name",
-            str(self.model_name),
             "--model_path",
             str(self.model_path),
             "--build_cfg",
