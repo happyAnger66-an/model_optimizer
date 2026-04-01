@@ -51,7 +51,7 @@ def build_engine(
     *,
     plugin_lib_paths: Sequence[str] | None = None,
     init_builtin_trt_plugins: bool = True,
-    strongly_typed_network: bool = True,
+    strongly_typed_network: bool = False,
 ):
     """
     Build TensorRT engine from ONNX model.
