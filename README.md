@@ -27,8 +27,10 @@ The code was tested in the following environments
 #### 2.1.1 `download code`
 
 ```bash
-git clone git@github.com:happyAnger66-an/model_optimizer.git
-git checkout release-0.1
+git clone git@gitlab.anyverse.work:model/model_optimizer.git
+git checkout development
+git submodule update --init --recursive
+git lfs pull
 ```
 
 #### 2.1.2 `build docker image`
