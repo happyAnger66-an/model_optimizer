@@ -138,9 +138,34 @@ class Pi05TensorRTExecutor(Executor):
                                 adarms_cond=None, **kwargs):
                     outputs = llm_engine(
                         inputs_embeds, attention_mask, position_ids)
-                    k_v_cache = self._wrap_past_key_values(
-                        outputs['past_keys'],
-                        outputs['past_values'])
+                    # 兼容两种导出格式：
+                    # 1) 旧：past_keys/past_values
+                    # 2) 新：present_key_values.{i} per-layer，形状 [B,2,Hkv,S,D]
+                    if isinstance(outputs, dict) and "past_keys" in outputs and "past_values" in outputs:
+                        k_v_cache = self._wrap_past_key_values(
+                            outputs["past_keys"],
+                            outputs["past_values"],
+                        )
+                    else:
+                        # 收集 present_key_values.{i}
+                        present_keys = []
+                        present_vals = []
+                        i = 0
+                        while True:
+                            name = f"present_key_values.{i}"
+                            if not (isinstance(outputs, dict) and name in outputs):
+                                break
+                            kv = outputs[name]  # [B,2,Hkv,S,D]
+                            present_keys.append(kv[:, 0])  # [B,Hkv,S,D]
+                            present_vals.append(kv[:, 1])  # [B,Hkv,S,D]
+                            i += 1
+                        if i == 0:
+                            raise KeyError(
+                                "LLM engine outputs missing both (past_keys,past_values) and present_key_values.{i}."
+                            )
+                        input_keys = torch.cat(present_keys, dim=0)
+                        input_values = torch.cat(present_vals, dim=0)
+                        k_v_cache = self._wrap_past_key_values(input_keys, input_values)
 
                     output = BaseModelOutputWithPast(
                         last_hidden_state=outputs['last_hidden_state'],

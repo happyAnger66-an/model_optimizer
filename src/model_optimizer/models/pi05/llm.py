@@ -57,10 +57,9 @@ def _apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, s
 class GemmaModelNativeOnnxExport(torch.nn.Module):
     """仅用于 ONNX 导出：以“纯张量数据流”显式导出每层 KV cache，避免依赖 DynamicCache.update 的副作用。
 
-    目标输出与当前 LLM.forward 保持一致：
-    - past_keys:  (num_layers * batch, num_kv_heads, seq_len, head_dim)  (当前下游默认 batch=1)
-    - past_values:同上
+    目标输出对齐 TensorRT-Edge-LLM 的 per-layer 形式：
     - last_hidden_state: (batch, seq_len, hidden_size)
+    - present_key_values.{i}: (batch, 2, num_kv_heads, seq_len, head_dim)
     """
 
     def __init__(self, gemma_model: torch.nn.Module):
@@ -83,8 +82,7 @@ class GemmaModelNativeOnnxExport(torch.nn.Module):
         # 共享 RoPE embedding（cos/sin）
         cos, sin = gemma.rotary_emb(hidden_states, position_ids)
 
-        present_keys: list[torch.Tensor] = []
-        present_values: list[torch.Tensor] = []
+        present_key_values: list[torch.Tensor] = []
 
         for layer in gemma.layers[: gemma.config.num_hidden_layers]:
             residual = hidden_states
@@ -103,9 +101,8 @@ class GemmaModelNativeOnnxExport(torch.nn.Module):
             # rotary
             query_states, key_states = _apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-            # 保存每层 present KV（形状 [B, num_kv_heads, S, D]）
-            present_keys.append(key_states)
-            present_values.append(value_states)
+            # per-layer 输出：打包成 [B, 2, Hkv, S, D]，与 EdgeLLM 的 present_key_values.{i} 风格一致
+            present_key_values.append(torch.stack([key_states, value_states], dim=1))
 
             # attention (eager)
             key_states_rep = _repeat_kv(key_states, attn.num_key_value_groups)
@@ -130,9 +127,10 @@ class GemmaModelNativeOnnxExport(torch.nn.Module):
 
         hidden_states, _ = gemma.norm(hidden_states, None)
 
-        past_keys_tensor = torch.cat(present_keys, dim=0).to(torch.bfloat16)
-        past_values_tensor = torch.cat(present_values, dim=0).to(torch.bfloat16)
-        return past_keys_tensor, past_values_tensor, hidden_states
+        # 输出：last_hidden_state + per-layer present_key_values.{i}
+        # 为避免导出路径 dtype 混乱，这里保持与原导出一致：KV 输出为 bf16（由上游控制/可再调整）
+        present_key_values = [pkv.to(torch.bfloat16) for pkv in present_key_values]
+        return (hidden_states,) + tuple(present_key_values)
 
 
 class LLM(torch.nn.Module, Model):
@@ -294,6 +292,17 @@ class LLM(torch.nn.Module, Model):
     # am: torch.Size([1, 1, 968, 968]) - torch.float32, pi: torch.Size([1, 968])-torch.int64 prefix: torch.Size([1, 968, 2048])-torch.bfloat16
         with torch.inference_mode():
             export_net = GemmaModelNativeOnnxExport(self.model).eval().cuda()
+            num_layers = int(self.config.num_hidden_layers)
+            output_names = ["last_hidden_state"] + [f"present_key_values.{i}" for i in range(num_layers)]
+            dynamic_axes = {
+                "inputs_embeds": {0: "batch_size", 1: "seq_len"},
+                "attention_mask": {0: "batch_size", 2: "seq_len", 3: "seq_len"},
+                "position_ids": {0: "batch_size", 1: "seq_len"},
+                "last_hidden_state": {0: "batch_size", 1: "seq_len"},
+            }
+            for i in range(num_layers):
+                # [B, 2, Hkv, S, D]
+                dynamic_axes[f"present_key_values.{i}"] = {0: "batch_size", 3: "seq_len"}
             torch.onnx.export(
                 export_net,
                 # Include position_ids in ONNX export
@@ -302,17 +311,11 @@ class LLM(torch.nn.Module, Model):
                 export_params=True,
                 input_names=["inputs_embeds", "attention_mask",
                              "position_ids"],  # Add position_ids to input names
-                output_names=["past_keys", "past_values", "last_hidden_state"],
+                output_names=output_names,
                 opset_version=19,
                 dynamo=dynamo,
                 do_constant_folding=True,
-                dynamic_axes={
-                    "inputs_embeds": {0: "batch_size", 1: "seq_len"},
-                    "attention_mask": {0: "batch_size", 2: "seq_len", 3: "seq_len"},
-                    "position_ids": {0: "batch_size", 1: "seq_len"},
-                    "past_keys": {2: "seq_len"},
-                    "past_values": {2: "seq_len"},
-                }
+                dynamic_axes=dynamic_axes,
             )
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
