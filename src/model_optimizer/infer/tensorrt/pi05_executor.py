@@ -12,6 +12,20 @@ from .trt_torch import Engine
 from transformers.modeling_outputs import BaseModelOutputWithPooling, BaseModelOutputWithPast
 from transformers.cache_utils import DynamicCache
 
+
+def _sanitize_additive_attention_mask_for_trt(
+    attention_mask: torch.Tensor | None,
+    neg_cap: float | None,
+) -> torch.Tensor | None:
+    """PI0 使用 ~-2.38e38 的加性 mask；PyTorch softmax 在 float32 里可承受，TRT 融合核常溢出为 NaN。
+
+    将「过负」的 mask 裁剪到 ``neg_cap``（默认由调用方传入，如 -1e4），对允许/禁止注意力的逻辑不变。
+    ``neg_cap is None`` 时不修改，便于对比调试。
+    """
+    if attention_mask is None or neg_cap is None:
+        return attention_mask
+    return torch.clamp(attention_mask, min=neg_cap)
+
 # def embed_image(self, pixel_values):
 #    self.get_image_features(pixel_values)
 
@@ -136,6 +150,14 @@ class Pi05TensorRTExecutor(Executor):
                                 cache_position=None,
                                 logits_to_keep=None,
                                 adarms_cond=None, **kwargs):
+                    neg_cap = getattr(
+                        self.config,
+                        "trt_attention_mask_neg_cap",
+                        -1e4,
+                    )
+                    attention_mask = _sanitize_additive_attention_mask_for_trt(
+                        attention_mask, neg_cap
+                    )
                     outputs = llm_engine(
                         inputs_embeds, attention_mask, position_ids)
                     # 兼容两种导出格式：
@@ -201,6 +223,14 @@ class Pi05TensorRTExecutor(Executor):
                                    cache_position=None,
                                    adarms_cond=None,
                                    **kwargs):
+                    neg_cap = getattr(
+                        self.config,
+                        "trt_attention_mask_neg_cap",
+                        -1e4,
+                    )
+                    attention_mask = _sanitize_additive_attention_mask_for_trt(
+                        attention_mask, neg_cap
+                    )
                     input_keys = torch.cat(
                         [past_key_values[i][0] for i in range(len(past_key_values))], dim=0)
                     input_values = torch.cat(
