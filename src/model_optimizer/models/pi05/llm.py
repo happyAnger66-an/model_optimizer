@@ -101,7 +101,7 @@ class GemmaModelNativeOnnxExport(torch.nn.Module):
             # rotary
             query_states, key_states = _apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-            # per-layer 输出：打包成 [B, 2, Hkv, S, D]，与 EdgeLLM 的 present_key_values.{i} 风格一致
+            # per-layer 输出：打包成 [B, 2, Hkv, S, D]
             present_key_values.append(torch.stack([key_states, value_states], dim=1))
 
             # attention (eager)
@@ -293,6 +293,7 @@ class LLM(torch.nn.Module, Model):
         with torch.inference_mode():
             export_net = GemmaModelNativeOnnxExport(self.model).eval().cuda()
             num_layers = int(self.config.num_hidden_layers)
+            input_names = ["inputs_embeds", "attention_mask", "position_ids"]
             output_names = ["last_hidden_state"] + [f"present_key_values.{i}" for i in range(num_layers)]
             dynamic_axes = {
                 "inputs_embeds": {0: "batch_size", 1: "seq_len"},
@@ -309,8 +310,7 @@ class LLM(torch.nn.Module, Model):
                 (inputs_embeds, attention_mask, position_ids),
                 f"{output_dir}/llm.onnx",
                 export_params=True,
-                input_names=["inputs_embeds", "attention_mask",
-                             "position_ids"],  # Add position_ids to input names
+                input_names=input_names,
                 output_names=output_names,
                 opset_version=19,
                 dynamo=dynamo,
