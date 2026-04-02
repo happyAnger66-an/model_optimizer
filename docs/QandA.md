@@ -141,13 +141,15 @@ OpenPI 训练/推理仍通过 `third_party/openpi/.../pi0_pytorch.py` 的 `_prep
 
 因此在 **`src/model_optimizer/infer/tensorrt/pi05_executor.py`** 中，在调用 **`llm_engine`** / **`expert_engine`** 之前，对传入引擎的 `attention_mask` 执行：
 
-- `torch.clamp(attention_mask, min=neg_cap)`，默认 **`neg_cap = -1e4`**
+- `attention_mask.clamp(min=neg_cap)`，默认 **`neg_cap = -1e4`**
 - 与「禁止注意力」的语义一致（softmax 后仍为 0 概率），但避免 TRT 中 `-1e38` 量级导致的崩溃
 
 可通过 executor 的 config（如 `addict.Dict`）设置：
 
-- **`trt_attention_mask_neg_cap`**：浮点数，默认 **`-1e4`**（未设置时 `getattr` 亦为 `-1e4`）
+- **`trt_attention_mask_neg_cap`**：浮点数，默认 **`-1e4`**；读取时使用 **`Mapping.get(...)`**（见 `_resolve_trt_attention_mask_neg_cap`）
 - 设为 **`None`**：不做裁剪，便于与 PyTorch 或 debug 脚本做 A/B 对照
+
+**注意（addict.Dict）**：对缺失键不要用 `getattr(config, "trt_attention_mask_neg_cap", -1e4)`——`addict` 会为缺失键**自动创建嵌套 `Dict`**，默认的 `-1e4` 永远不会被用到，且会得到 `TypeError: ... got 'Dict'`。未配置该项时应依赖 `.get` 分支得到默认 `-1e4`。
 
 若你的入口未经过 `Pi05TensorRTExecutor` 而直接调用 `Engine`，应在**同样的边界**对 `attention_mask` 做等价处理。
 

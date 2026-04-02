@@ -1,6 +1,8 @@
 import numbers
 import os
 import types
+import warnings
+from collections.abc import Mapping
 from functools import partial
 
 from termcolor import colored
@@ -12,6 +14,35 @@ from .trt_torch import Engine
 
 from transformers.modeling_outputs import BaseModelOutputWithPooling, BaseModelOutputWithPast
 from transformers.cache_utils import DynamicCache
+
+_TRT_ATTN_MASK_NEG_CAP_KEY = "trt_attention_mask_neg_cap"
+
+
+def _resolve_trt_attention_mask_neg_cap(config) -> float | None:
+    """读取 ``trt_attention_mask_neg_cap``，默认 ``-1e4``；``None`` 表示关闭裁剪。
+
+    注意：``addict.Dict`` 对**缺失键**使用 ``getattr(obj, key, default)`` 时，会触发
+    ``__getattr__`` 并**新建嵌套 Dict**，不会返回 ``default``。因此必须用
+    ``Mapping.get`` 或 ``key in config`` 再取值。
+    """
+    default = -1e4
+    if config is None:
+        return default
+    if isinstance(config, Mapping):
+        raw = config.get(_TRT_ATTN_MASK_NEG_CAP_KEY, default)
+    else:
+        raw = getattr(config, _TRT_ATTN_MASK_NEG_CAP_KEY, default)
+    if raw is None:
+        return None
+    if isinstance(raw, numbers.Real) and not isinstance(raw, bool):
+        return float(raw)
+    warnings.warn(
+        f"Ignoring invalid {_TRT_ATTN_MASK_NEG_CAP_KEY}={raw!r} ({type(raw).__name__}), "
+        f"using {default}",
+        UserWarning,
+        stacklevel=2,
+    )
+    return default
 
 
 def _sanitize_additive_attention_mask_for_trt(
@@ -157,11 +188,7 @@ class Pi05TensorRTExecutor(Executor):
                                 cache_position=None,
                                 logits_to_keep=None,
                                 adarms_cond=None, **kwargs):
-                    neg_cap = getattr(
-                        self.config,
-                        "trt_attention_mask_neg_cap",
-                        -1e4,
-                    )
+                    neg_cap = _resolve_trt_attention_mask_neg_cap(self.config)
                     attention_mask = _sanitize_additive_attention_mask_for_trt(
                         attention_mask, neg_cap
                     )
@@ -230,11 +257,7 @@ class Pi05TensorRTExecutor(Executor):
                                    cache_position=None,
                                    adarms_cond=None,
                                    **kwargs):
-                    neg_cap = getattr(
-                        self.config,
-                        "trt_attention_mask_neg_cap",
-                        -1e4,
-                    )
+                    neg_cap = _resolve_trt_attention_mask_neg_cap(self.config)
                     attention_mask = _sanitize_additive_attention_mask_for_trt(
                         attention_mask, neg_cap
                     )
