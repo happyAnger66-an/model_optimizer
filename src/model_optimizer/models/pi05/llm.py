@@ -2,6 +2,7 @@ import os
 import time
 import torch
 import onnx
+from typing import Optional
 
 from ..model import Model
 from ..token import get_tokenizer
@@ -18,6 +19,120 @@ from model_optimizer.utils.utils import is_fp4_quantized, set_dynamic_quant, is_
 from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
 
 logger = logging.getLogger(__name__)
+
+
+def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """把 KV heads 扩展到 Q heads 数量（GQA/MQA）。"""
+    if n_rep == 1:
+        return hidden_states
+    bsz, num_kv_heads, slen, head_dim = hidden_states.shape
+    return (
+        hidden_states[:, :, None, :, :]
+        .expand(bsz, num_kv_heads, n_rep, slen, head_dim)
+        .reshape(bsz, num_kv_heads * n_rep, slen, head_dim)
+    )
+
+
+def _gated_residual(x: torch.Tensor, y: torch.Tensor, gate: Optional[torch.Tensor]) -> torch.Tensor:
+    if gate is None:
+        return x + y
+    return x + y * gate
+
+
+def _rotate_half(x: torch.Tensor) -> torch.Tensor:
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def _apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    # cos/sin: [B, S, D] -> broadcast to [B, 1, S, D]
+    cos = cos.unsqueeze(1)
+    sin = sin.unsqueeze(1)
+    q_embed = (q * cos) + (_rotate_half(q) * sin)
+    k_embed = (k * cos) + (_rotate_half(k) * sin)
+    return q_embed, k_embed
+
+
+class GemmaModelNativeOnnxExport(torch.nn.Module):
+    """仅用于 ONNX 导出：以“纯张量数据流”显式导出每层 KV cache，避免依赖 DynamicCache.update 的副作用。
+
+    目标输出与当前 LLM.forward 保持一致：
+    - past_keys:  (num_layers * batch, num_kv_heads, seq_len, head_dim)  (当前下游默认 batch=1)
+    - past_values:同上
+    - last_hidden_state: (batch, seq_len, hidden_size)
+    """
+
+    def __init__(self, gemma_model: torch.nn.Module):
+        super().__init__()
+        self.gemma = gemma_model
+
+    def forward(
+        self,
+        inputs_embeds: torch.Tensor,
+        attention_mask: torch.Tensor,
+        position_ids: torch.Tensor,
+    ):
+        gemma = self.gemma
+        hidden_states = inputs_embeds
+
+        # 与 OpenPI GemmaModel.forward 的 dtype 行为保持一致：若第一层权重是 bf16，则激活转 bf16
+        if len(gemma.layers) > 0 and gemma.layers[0].self_attn.q_proj.weight.dtype == torch.bfloat16:
+            hidden_states = hidden_states.to(torch.bfloat16)
+
+        # 共享 RoPE embedding（cos/sin）
+        cos, sin = gemma.rotary_emb(hidden_states, position_ids)
+
+        present_keys: list[torch.Tensor] = []
+        present_values: list[torch.Tensor] = []
+
+        for layer in gemma.layers[: gemma.config.num_hidden_layers]:
+            residual = hidden_states
+            hidden_states, gate = layer.input_layernorm(hidden_states, None)
+
+            attn = layer.self_attn
+            input_shape = hidden_states.shape[:-1]
+            head_dim = attn.head_dim
+            hidden_shape = (*input_shape, -1, head_dim)
+
+            # [B, heads, S, D]
+            query_states = attn.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+            key_states = attn.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+            value_states = attn.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+
+            # rotary
+            query_states, key_states = _apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+            # 保存每层 present KV（形状 [B, num_kv_heads, S, D]）
+            present_keys.append(key_states)
+            present_values.append(value_states)
+
+            # attention (eager)
+            key_states_rep = _repeat_kv(key_states, attn.num_key_value_groups)
+            value_states_rep = _repeat_kv(value_states, attn.num_key_value_groups)
+
+            attn_weights = torch.matmul(query_states, key_states_rep.transpose(2, 3)) * attn.scaling
+            if attention_mask is not None:
+                causal_mask = attention_mask[:, :, :, : key_states_rep.shape[-2]]
+                attn_weights = attn_weights + causal_mask
+
+            attn_weights = torch.nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+            attn_output = torch.matmul(attn_weights, value_states_rep)  # [B, q_heads, S, D]
+            attn_output = attn_output.transpose(1, 2).contiguous().reshape(*input_shape, -1)
+            attn_output = attn.o_proj(attn_output)
+
+            hidden_states = _gated_residual(residual, attn_output, gate)
+
+            residual = hidden_states
+            hidden_states, gate = layer.post_attention_layernorm(hidden_states, None)
+            hidden_states = layer.mlp(hidden_states)
+            hidden_states = _gated_residual(residual, hidden_states, gate)
+
+        hidden_states, _ = gemma.norm(hidden_states, None)
+
+        past_keys_tensor = torch.cat(present_keys, dim=0).to(torch.bfloat16)
+        past_values_tensor = torch.cat(present_values, dim=0).to(torch.bfloat16)
+        return past_keys_tensor, past_values_tensor, hidden_states
 
 
 class LLM(torch.nn.Module, Model):
@@ -178,8 +293,9 @@ class LLM(torch.nn.Module, Model):
                                      )
     # am: torch.Size([1, 1, 968, 968]) - torch.float32, pi: torch.Size([1, 968])-torch.int64 prefix: torch.Size([1, 968, 2048])-torch.bfloat16
         with torch.inference_mode():
+            export_net = GemmaModelNativeOnnxExport(self.model).eval().cuda()
             torch.onnx.export(
-                self,
+                export_net,
                 # Include position_ids in ONNX export
                 (inputs_embeds, attention_mask, position_ids),
                 f"{output_dir}/llm.onnx",
