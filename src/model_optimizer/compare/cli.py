@@ -48,7 +48,7 @@ def compare_cli(args: Optional[list[str] | None] = None) -> None:
             filter_keys=FILTER_KEYS,
             key1=parsed.key1,
             key2=parsed.key2,
-            return_metrics=bool(parsed.plot_output),
+            return_metrics=True,
         )
         all_mean_diff.append(metrics["l1_mean"])
         all_max_diff.append(metrics["l1_max"])
