@@ -135,6 +135,22 @@ PYTHONPATH=src python scripts/debug/dump_trt_engine_io.py \
   --attention_mask_value=-1e4
 ```
 
+#### 推理集成：`Pi05TensorRTExecutor` 对 `attention_mask` 的默认裁剪
+
+OpenPI 训练/推理仍通过 `third_party/openpi/.../pi0_pytorch.py` 的 `_prepare_attention_masks_4d` 生成加性 mask（`0` / 约 `-2.3819763e38`）。该张量经 `gemma_pytorch.PaliGemmaWithExpertModel.forward` 原样传入 HF Gemma；**PyTorch 路径**下 attention 的 softmax 常在 **float32** 中计算，极端负 mask 一般仍可数值稳定。**TensorRT** 侧则更易在融合核（低精度）里溢出为 NaN。
+
+因此在 **`src/model_optimizer/infer/tensorrt/pi05_executor.py`** 中，在调用 **`llm_engine`** / **`expert_engine`** 之前，对传入引擎的 `attention_mask` 执行：
+
+- `torch.clamp(attention_mask, min=neg_cap)`，默认 **`neg_cap = -1e4`**
+- 与「禁止注意力」的语义一致（softmax 后仍为 0 概率），但避免 TRT 中 `-1e38` 量级导致的崩溃
+
+可通过 executor 的 config（如 `addict.Dict`）设置：
+
+- **`trt_attention_mask_neg_cap`**：浮点数，默认 **`-1e4`**（未设置时 `getattr` 亦为 `-1e4`）
+- 设为 **`None`**：不做裁剪，便于与 PyTorch 或 debug 脚本做 A/B 对照
+
+若你的入口未经过 `Pi05TensorRTExecutor` 而直接调用 `Engine`，应在**同样的边界**对 `attention_mask` 做等价处理。
+
 ---
 
 ## 与 TensorRT-Edge-LLM 的关键差异（为什么它更稳）
@@ -158,6 +174,7 @@ TensorRT-Edge-LLM 在 ONNX 导出上更“函数式”：
   - fp16 ONNX → fp16 build
 - **additive attention_mask 不要用 -1e38 量级**
   - 推荐 `-1e4`
+- **走 `Pi05TensorRTExecutor` 时**：已对 LLM/Expert 引擎输入默认做 `clamp`（见上文「推理集成」）；自定义 TRT 入口需自行对齐
 
 ### 推荐
 - 导出 KV cache 时使用 per-layer 显式输出（`present_key_values.{i}`）
@@ -177,6 +194,8 @@ TensorRT-Edge-LLM 在 ONNX 导出上更“函数式”：
   - `src/model_optimizer/trt_build/build.py`
   - `src/model_optimizer/trt_build/cli.py`
   - `src/model_optimizer/webui/runners/build.py`
+- PI0.5 TensorRT 推理（含 `attention_mask` 默认裁剪）：
+  - `src/model_optimizer/infer/tensorrt/pi05_executor.py`
 - TensorRT-Edge-LLM 参考实现：
   - `third_party/TensorRT-Edge-LLM/tensorrt_edgellm/onnx_export/llm_export.py`
   - `third_party/TensorRT-Edge-LLM/tensorrt_edgellm/llm_models/models/llm_model.py`

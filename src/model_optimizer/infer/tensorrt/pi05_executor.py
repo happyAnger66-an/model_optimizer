@@ -1,3 +1,4 @@
+import numbers
 import os
 import types
 from functools import partial
@@ -24,7 +25,13 @@ def _sanitize_additive_attention_mask_for_trt(
     """
     if attention_mask is None or neg_cap is None:
         return attention_mask
-    return torch.clamp(attention_mask, min=neg_cap)
+    if not isinstance(neg_cap, numbers.Real) or isinstance(neg_cap, bool):
+        raise TypeError(
+            "trt_attention_mask_neg_cap must be a real number or None, "
+            f"got {type(neg_cap).__name__!r}"
+        )
+    # 使用 Tensor.clamp，避免个别环境下 torch.clamp 被异常覆盖；且错误配置 neg_cap 时给出明确类型错误
+    return attention_mask.clamp(min=float(neg_cap))
 
 # def embed_image(self, pixel_values):
 #    self.get_image_features(pixel_values)
