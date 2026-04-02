@@ -104,7 +104,6 @@ def compare_predictions(
     )
 
     metrics = {}
-    all_mean_diff,  all_max_diff = [], []
     for key in pred_tensorrt.keys():
         tensorrt_array = pred_tensorrt[key]
         torch_array = pred_torch[key]
@@ -138,8 +137,6 @@ def compare_predictions(
         l1_dist = torch.abs(flat_tensorrt - flat_torch)
         l1_mean = l1_dist.mean().item()
         l1_max = l1_dist.max().item()
-        all_mean_diff.append(l1_mean)
-        all_max_diff.append(l1_max)
 
         mean_1 = torch_tensor.mean().item()
         mean_2 = tensorrt_tensor.mean().item()
@@ -179,17 +176,4 @@ def compare_predictions(
             f"{min_1:.4f}/{min_2:.4f}"
         )
 
-    avg_mean_diff = np.mean(all_mean_diff)
-    avg_max_diff = np.mean(all_max_diff)
-    print(colored(f"Mean difference: {avg_mean_diff:.4f}", "green"))
-    print(colored(f"Max difference: {avg_max_diff:.4f}", "green"))
-
-    if avg_mean_diff < 0.01:
-        print(colored("✅ Mean difference is less than 0.01 excellent", "green"))
-    elif avg_mean_diff < 0.1:
-        print(colored("✅ Mean difference is less than 0.1 good", "green"))
-    elif avg_mean_diff < 0.5:
-        print(colored("⚠️  accuracy is acceptable (< 0.5)", "yellow"))
-    else:
-        print(colored("❌ accuracy is poor (> 0.5)", "red"))
     return metrics if return_metrics else None
