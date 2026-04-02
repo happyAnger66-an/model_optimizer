@@ -198,7 +198,7 @@ def run_single_trajectory(
             model = policy._model
 
     i = 0
-    for obs in get_input_data(args.input_data_path, 100):
+    for obs in get_input_data(args.input_data_path, args.times):
         if args.save_input_path:
             input_data_list.append(obs)
 
@@ -285,8 +285,10 @@ class ArgsConfig:
     steps: int = 200
     """Maximum number of steps to evaluate (will be capped by trajectory length)."""
 
-    precision: str = "fp16"
+    precision: str = "bf16"
     """Precision to use."""
+
+    times: int = 40
 
     traj_ids: list[int] = field(default_factory=lambda: [0])
     """List of trajectory IDs to evaluate."""

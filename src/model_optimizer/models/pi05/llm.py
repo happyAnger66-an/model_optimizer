@@ -42,14 +42,17 @@ class LLM(torch.nn.Module, Model):
                                    position_ids=position_ids,
                                    use_cache=True)
         past_key_caches = prefix_output.past_key_values
-        past_keys = []
-        past_values = []
-        for i in range(self.config.num_hidden_layers):
-            past_keys.append(past_key_caches[i][0])
-            past_values.append(past_key_caches[i][1])
 
-        past_keys_tensor = torch.cat(past_keys, dim=0).to(torch.bfloat16)
-        past_values_tensor = torch.cat(past_values, dim=0).to(torch.bfloat16)
+        # ONNX 导出时，DynamicCache 的 __getitem__/循环索引容易被 Dynamo 特化成只捕获第 0 层，
+        # 导致最终 past_keys/past_values 只包含第一层。这里避免逐层索引，改为直接拼接底层缓存列表。
+        if isinstance(past_key_caches, DynamicCache):
+            # transformers.cache_utils.DynamicCache: key_cache/value_cache 为按层排列的 list[Tensor]
+            past_keys_tensor = torch.cat(list(past_key_caches.key_cache), dim=0).to(torch.bfloat16)
+            past_values_tensor = torch.cat(list(past_key_caches.value_cache), dim=0).to(torch.bfloat16)
+        else:
+            # 兼容 legacy cache：tuple[num_layers] of (k, v)
+            past_keys_tensor = torch.cat([kv[0] for kv in past_key_caches], dim=0).to(torch.bfloat16)
+            past_values_tensor = torch.cat([kv[1] for kv in past_key_caches], dim=0).to(torch.bfloat16)
 
         return past_keys_tensor, past_values_tensor, prefix_output.last_hidden_state
 
