@@ -42,6 +42,9 @@ def build_cli(args):
     print(f'[cli] build args {args}')
 
     from .build import build_engine
+    from .build import validate_precision_matches_onnx
     from ..config.config import load_settings
     build_cfg = load_settings(args.build_cfg)
+    precision = getattr(build_cfg, "build_cfg", {}).get("precision", "bf16")
+    validate_precision_matches_onnx(args.model_path, precision)
     build_engine(args.model_path, args.export_dir, args.use_cudagraph, **build_cfg.build_cfg)

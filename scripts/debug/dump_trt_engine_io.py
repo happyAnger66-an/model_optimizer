@@ -65,11 +65,24 @@ def _fill_dynamic(shape: tuple[int, ...], dynamic: dict[str, int]) -> tuple[int,
     return tuple(out)
 
 
-def _make_attention_mask(bsz: int, seq: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-    # 这里按常见“加到 logits 上的 mask”构造：上三角为 -inf，下三角为 0
-    # 形状与你当前导出一致：[B,1,S,S]
-    neg_inf = torch.finfo(dtype).min if dtype.is_floating_point else -1e9
-    mask = torch.triu(torch.full((seq, seq), neg_inf, device=device, dtype=dtype), diagonal=1)
+def _make_attention_mask(
+    bsz: int,
+    seq: int,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+    mode: str,
+    mask_value: float,
+) -> torch.Tensor:
+    # 模式说明：
+    # - none: 全 0（不屏蔽）
+    # - causal_float: 上三角为 mask_value（默认 -1e4），下三角为 0；用于“加到 logits 上”的浮点 mask
+    if mode == "none":
+        return torch.zeros((bsz, 1, seq, seq), device=device, dtype=dtype)
+    if mode != "causal_float":
+        raise ValueError(f"Unknown attention_mask mode: {mode}")
+    v = mask_value
+    mask = torch.triu(torch.full((seq, seq), v, device=device, dtype=dtype), diagonal=1)
     return mask.view(1, 1, seq, seq).expand(bsz, 1, seq, seq).contiguous()
 
 
@@ -80,6 +93,8 @@ def _make_inputs_from_signature(
     batch_size: int,
     past_len: int,
     device: str,
+    attention_mask_mode: str,
+    attention_mask_value: float,
 ) -> dict[str, Any]:
     dev = torch.device(device)
     inputs: dict[str, Any] = {}
@@ -103,7 +118,14 @@ def _make_inputs_from_signature(
         if name == "attention_mask":
             bsz = batch_size if (len(shape) > 0 and shape[0] in (-1, batch_size)) else shape[0]
             seq = seq_len
-            inputs[name] = _make_attention_mask(bsz, seq, device=dev, dtype=dtype)
+            inputs[name] = _make_attention_mask(
+                bsz,
+                seq,
+                device=dev,
+                dtype=dtype,
+                mode=attention_mask_mode,
+                mask_value=attention_mask_value,
+            )
             continue
 
         if name == "position_ids":
@@ -130,6 +152,18 @@ def main() -> None:
     ap.add_argument("--batch_size", type=int, default=1)
     ap.add_argument("--seq_len", type=int, default=8)
     ap.add_argument("--past_len", type=int, default=2)
+    ap.add_argument(
+        "--attention_mask_mode",
+        choices=["none", "causal_float"],
+        default="causal_float",
+        help="How to construct attention_mask input (if present).",
+    )
+    ap.add_argument(
+        "--attention_mask_value",
+        type=float,
+        default=-1e4,
+        help="Value used for masked positions when attention_mask_mode=causal_float.",
+    )
     ap.add_argument("--print_values", action="store_true", help="Print first few values")
     args = ap.parse_args()
 
@@ -140,6 +174,8 @@ def main() -> None:
         batch_size=args.batch_size,
         past_len=args.past_len,
         device=args.device,
+        attention_mask_mode=args.attention_mask_mode,
+        attention_mask_value=args.attention_mask_value,
     )
 
     with torch.inference_mode():

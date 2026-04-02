@@ -8,6 +8,8 @@ import gradio as gr
 from . import CommandRunner
 from ..control import get_running_info
 from ..extras.constants import PROGRESS_LOG, RUNNING_LOG
+from ...config.config import load_settings
+from ...trt_build.build import validate_precision_matches_onnx
 
 
 class BuildCommand(CommandRunner):
@@ -53,6 +55,16 @@ class BuildCommand(CommandRunner):
         if error:
             gr.Warning(error)
             yield (error, gr.Slider(visible=False))
+            return
+
+        # Web 侧预检查：精度与 ONNX dtype 不一致时直接提示，避免用户等很久才发现输出塌缩
+        try:
+            cfg_mod = load_settings(str(self.build_cfg))
+            precision = getattr(cfg_mod, "build_cfg", {}).get("precision", "bf16")
+            validate_precision_matches_onnx(str(self.model_path), precision)
+        except Exception as e:
+            gr.Warning(str(e))
+            yield (str(e), gr.Slider(visible=False))
             return
 
         export_file_path = str(self.output_path)

@@ -8,12 +8,65 @@ from collections.abc import Sequence
 import tensorrt as trt
 
 from termcolor import colored
+import onnx
+from onnx import TensorProto
 # Set up logging
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 print_color = "green"
+
+# -----------------------------------------------------------------------------
+# Precision/dtype preflight checks
+# -----------------------------------------------------------------------------
+
+
+def infer_onnx_float_precision(onnx_path: str) -> str:
+    """粗略推断 ONNX 图中主要浮点精度（用于 build_cfg.precision 一致性检查）。"""
+    model = onnx.load(onnx_path, load_external_data=False)
+    float_types: set[int] = set()
+
+    def _collect_from_value_info(v) -> None:
+        try:
+            t = v.type.tensor_type
+            et = int(t.elem_type)
+        except Exception:
+            return
+        if et in (TensorProto.FLOAT, TensorProto.FLOAT16, TensorProto.BFLOAT16):
+            float_types.add(et)
+
+    for v in list(model.graph.input) + list(model.graph.output) + list(model.graph.value_info):
+        _collect_from_value_info(v)
+    for init in model.graph.initializer:
+        et = int(init.data_type)
+        if et in (TensorProto.FLOAT, TensorProto.FLOAT16, TensorProto.BFLOAT16):
+            float_types.add(et)
+
+    if len(float_types) == 0:
+        return "unknown"
+    if len(float_types) > 1:
+        return "mixed"
+    only = next(iter(float_types))
+    if only == TensorProto.BFLOAT16:
+        return "bf16"
+    if only == TensorProto.FLOAT16:
+        return "fp16"
+    return "fp32"
+
+
+def validate_precision_matches_onnx(onnx_path: str, precision: str) -> None:
+    """若 build_cfg.precision 与 ONNX 浮点 dtype 明显不一致，则抛错，避免错误 kernel 导致数值塌缩。"""
+    prec = str(precision).lower().strip()
+    onnx_prec = infer_onnx_float_precision(onnx_path)
+    if onnx_prec in ("unknown", "mixed"):
+        logger.warning("ONNX float precision appears to be %s (precision=%s).", onnx_prec, prec)
+        return
+    if (onnx_prec == "bf16" and prec == "fp16") or (onnx_prec == "fp16" and prec == "bf16"):
+        raise ValueError(
+            f"Precision mismatch: ONNX graph uses {onnx_prec}, but build_cfg.precision is {prec}. "
+            "这会导致 TensorRT 选择不匹配的 kernel，可能出现深层输出塌缩为 0/NaN。请保持一致。"
+        )
 
 
 def _load_trt_plugin_shared_libraries(
@@ -109,6 +162,9 @@ def build_engine(
 
     # Create TensorRT logger
     TRT_LOGGER = trt.Logger(trt.Logger.VERBOSE)
+
+    # 预检查：避免 ONNX dtype 与 build_cfg.precision 不一致导致 TRT kernel 选择错误、深层输出塌缩
+    validate_precision_matches_onnx(onnx_path, precision)
 
     if init_builtin_trt_plugins:
         trt.init_libnvinfer_plugins(TRT_LOGGER, "")
