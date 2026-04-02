@@ -17,6 +17,9 @@ class Stats:
     max: float
     mean: float
     abs_sum: float
+    nan_count: int
+    inf_count: int
+    first_nan_flat: int | None
 
 
 def _tensor_stats(name: str, x: torch.Tensor) -> Stats:
@@ -25,12 +28,28 @@ def _tensor_stats(name: str, x: torch.Tensor) -> Stats:
         # 对 int/bool 也能统计，但用 float 转一下
         if xf.numel() == 0:
             mn = mx = mu = s = 0.0
+            nan_count = 0
+            inf_count = 0
+            first_nan_flat = None
         else:
             xff = xf.float()
             mn = float(xff.min().item())
             mx = float(xff.max().item())
             mu = float(xff.mean().item())
             s = float(xff.abs().sum().item())
+            if xff.is_floating_point():
+                nan_mask = torch.isnan(xff)
+                inf_mask = torch.isinf(xff)
+                nan_count = int(nan_mask.sum().item())
+                inf_count = int(inf_mask.sum().item())
+                if nan_count > 0:
+                    first_nan_flat = int(torch.argmax(nan_mask.flatten()).item())
+                else:
+                    first_nan_flat = None
+            else:
+                nan_count = 0
+                inf_count = 0
+                first_nan_flat = None
         return Stats(
             name=name,
             shape=tuple(int(d) for d in xf.shape),
@@ -40,7 +59,40 @@ def _tensor_stats(name: str, x: torch.Tensor) -> Stats:
             max=mx,
             mean=mu,
             abs_sum=s,
+            nan_count=nan_count,
+            inf_count=inf_count,
+            first_nan_flat=first_nan_flat,
         )
+
+
+def _first_nan_seq_index(x: torch.Tensor) -> int | None:
+    """若张量包含 NaN，尝试返回最早出现 NaN 的 seq 位置索引。
+
+    适配常见形状：
+    - [B, S, ...]           -> seq dim=1
+    - [B, 2, H, S, D]       -> seq dim=3（present_key_values.{i}）
+    - 其它形状则返回 None
+    """
+    if not x.is_floating_point():
+        return None
+    with torch.no_grad():
+        nan_mask = torch.isnan(x)
+        if nan_mask.sum().item() == 0:
+            return None
+        if x.dim() >= 2:
+            if x.dim() == 5 and x.shape[1] == 2:
+                # [B,2,H,S,D]
+                seq_dim = 3
+            else:
+                # assume [B,S,...]
+                seq_dim = 1
+            # reduce all dims except seq
+            reduce_dims = [d for d in range(x.dim()) if d != seq_dim]
+            per_seq = nan_mask.any(dim=reduce_dims)
+            # per_seq shape: [S]
+            idx = int(torch.argmax(per_seq.to(torch.int32)).item())
+            return idx
+        return None
 
 
 def _default_dim(dim_name: str) -> int:
@@ -189,16 +241,21 @@ def main() -> None:
         st = _tensor_stats(name, x)
         print(
             f"{st.name}: shape={st.shape} dtype={st.dtype} device={st.device} "
-            f"min={st.min:.4g} max={st.max:.4g} mean={st.mean:.4g} abs_sum={st.abs_sum:.4g}"
+            f"min={st.min:.4g} max={st.max:.4g} mean={st.mean:.4g} abs_sum={st.abs_sum:.4g} "
+            f"nan={st.nan_count} inf={st.inf_count}"
         )
 
     print("\n=== Outputs ===")
     for name, x in outputs.items():
         st = _tensor_stats(name, x)
+        first_nan_seq = _first_nan_seq_index(x)
         print(
             f"{st.name}: shape={st.shape} dtype={st.dtype} device={st.device} "
-            f"min={st.min:.4g} max={st.max:.4g} mean={st.mean:.4g} abs_sum={st.abs_sum:.4g}"
+            f"min={st.min:.4g} max={st.max:.4g} mean={st.mean:.4g} abs_sum={st.abs_sum:.4g} "
+            f"nan={st.nan_count} inf={st.inf_count}"
         )
+        if first_nan_seq is not None:
+            print(f"  first_nan_seq_index = {first_nan_seq}")
         if args.print_values:
             flat = x.reshape(-1)
             n = min(int(flat.numel()), 16)
