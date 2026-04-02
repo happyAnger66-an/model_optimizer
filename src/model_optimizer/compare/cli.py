@@ -1,4 +1,5 @@
 import argparse
+from collections import defaultdict
 import numpy as np
 
 from termcolor import colored
@@ -40,7 +41,7 @@ def compare_cli(args: Optional[list[str] | None] = None) -> None:
     data2 = load_saved_data(parsed.data_path2)
 
     collected_metrics = []
-    all_mean_diff, all_max_diff = {}, {}
+    all_mean_diff, all_max_diff = defaultdict(list), defaultdict(list)
     for data_1, data_2 in zip(data1, data2):
         metrics = compare_predictions(
             data_1,
