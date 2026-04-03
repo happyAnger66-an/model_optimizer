@@ -3,6 +3,7 @@ import torch
 
 from termcolor import colored
 
+cur_item = 0
 
 def plot_compare_results(
     collected_metrics: list[dict],
@@ -92,7 +93,9 @@ def compare_predictions(
         否则返回 None
     """
     print("\n\n=== Prediction Comparison ===")
-
+    global cur_item
+    print(colored(f"Comparing item {cur_item}", "yellow"))
+    cur_item += 1
     assert pred_tensorrt.keys() == pred_torch.keys(), "Prediction keys do not match"
 
     max_label_width = max(
