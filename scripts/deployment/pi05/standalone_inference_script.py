@@ -135,7 +135,7 @@ def load_input_data(input_data_file: str):
     return result
 
 
-def get_input_data(input_data_file, max_nums=40):
+def get_input_data(input_data_file, max_nums=40, item_id=-1):
     if input_data_file is None:
         for i in range(max_nums):
             obs = make_libero_example()
@@ -143,6 +143,11 @@ def get_input_data(input_data_file, max_nums=40):
             yield obs
     else:
         input_data_list = load_input_data(input_data_file)
+        if item_id >= 0:
+            print(colored(f"only input data item {item_id}", "green"))
+            yield input_data_list[item_id]
+            return
+
         for i in range(min(max_nums, len(input_data_list))):
             print(colored(f"load_input_data {i}", "green"))
             yield input_data_list[i]
