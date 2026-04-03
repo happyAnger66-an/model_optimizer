@@ -31,7 +31,7 @@ class Vit(torch.nn.Module, Model):
 #        logger.info(f'Pi05Vit output: {image_features.shape}')
         return image_features
 
-    def export(self, export_dir, dynamo=True):
+    def export(self, export_dir, dynamo=True, mode=None):
         self.eval().cuda()
 
         pixel_values = torch.randn(

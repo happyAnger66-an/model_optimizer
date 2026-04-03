@@ -140,6 +140,7 @@ class Pi05EmbedPrefix(nn.Module, Model):
         export_dir: str,
         export_dtype: torch.dtype = torch.bfloat16,
         dynamo: bool = False,
+        mode = None
     ):
         """导出 ``embed_prefix.onnx``；输入输出与 ``forward`` 一致。"""
         self.eval().cuda()

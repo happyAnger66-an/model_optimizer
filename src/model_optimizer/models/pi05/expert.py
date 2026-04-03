@@ -60,7 +60,7 @@ class Expert(torch.nn.Module, Model):
         expert_model = cls(config, gemma_expert_model)
         return expert_model
 
-    def export(self, export_dir, export_dtype=torch.bfloat16, dynamo=True):
+    def export(self, export_dir, export_dtype=torch.bfloat16, dynamo=True, mode=None):
         self.eval().cuda()
 
 #        old_dense_forward = self.gemma_expert.norm.dense.forward

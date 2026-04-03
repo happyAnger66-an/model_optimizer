@@ -118,7 +118,7 @@ class Pi05DenoiseStep(nn.Module, Model):
             "Pi05DenoiseStep.val 未实现：需提供 denoise 步校准/对比数据与指标。"
         )
 
-    def export(self, export_dir, export_dtype=torch.bfloat16, dynamo=False):
+    def export(self, export_dir, export_dtype=torch.bfloat16, dynamo=False, mode=None):
         """导出单次 denoise 步 ONNX，输入输出与 ``forward`` 一致。
 
         ``past_keys`` / ``past_values`` 与 LLM 导出一致：``torch.cat(..., dim=0)`` 后为
