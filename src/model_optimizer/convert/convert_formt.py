@@ -94,6 +94,7 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
     parser.add_argument('--export_dir', type=str, required=True)
     parser.add_argument('--simplifier', type=bool, default=True)
     parser.add_argument('--verify_data', type=str, default=None)
+    parser.add_argument('--mode', type=str, default="native_per_layer")
     print(f'[cli] convert_model args {args[1:]}')
     args = parser.parse_args(args[1:])
 
@@ -120,7 +121,7 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
     tracker.advance(step_name="加载模型/构建导出包装")
     model = model_cls.construct_from_name_path(model_name, model_path)
     tracker.advance(step_name="执行导出（生成 ONNX）")
-    export_model_path = model.export(export_dir)
+    export_model_path = model.export(export_dir, mode=args.mode)
     write_running_log(export_dir, f"[export] export_model_path={export_model_path}")
 
     if args.verify_data:

@@ -2,7 +2,7 @@ import os
 import time
 import torch
 import onnx
-from typing import Optional
+from typing import Literal, Optional
 
 from ..model import Model
 from ..token import get_tokenizer
@@ -269,14 +269,36 @@ class LLM(torch.nn.Module, Model):
                         paligemma.get_decoder())
         return llm_model
 
-    def export(self, export_dir, dynamo=True):
+    def export(
+        self,
+        export_dir,
+        dynamo=True,
+        mode: Literal["native_per_layer", "self_forward"] = "native_per_layer",
+    ):
+        """导出 ``llm.onnx``。
+
+        Args:
+            export_dir: 输出目录。
+            dynamo: 是否走 Dynamo ONNX 导出（仅 ``native_per_layer`` 常用 ``True``）。
+            llm_onnx_mode:
+                - ``native_per_layer``：:class:`GemmaModelNativeOnnxExport`，输出
+                  ``last_hidden_state`` + 每层 ``present_key_values.{i}``（推荐 TRT / 避开 DynamicCache 图问题）。
+                - ``self_forward``：直接 ``torch.onnx.export(self, ...)``，与 :meth:`forward` 一致，输出
+                  ``past_keys``, ``past_values``, ``last_hidden_state``（与 :meth:`export_onnx` 同类，但保留 KV；
+                  建议 ``dynamo=False``，与 ``export_onnx`` 一致）。
+        """
         self.eval().cuda()
 
         output_dir = export_dir
         os.makedirs(output_dir, exist_ok=True)
         start = time.time()
         logger.info("Start export onnx ...")
-        print(colored(f"Start LLM export onnx...", "green"))
+        print(
+            colored(
+                f"Start LLM export onnx (mode={mode})...",
+                "green",
+            )
+        )
         inputs_embeds = torch.randn((1, 968, 2048),
                                     dtype=torch.bfloat16,
                                     device="cuda",
@@ -290,33 +312,67 @@ class LLM(torch.nn.Module, Model):
                                      device="cuda",
                                      )
     # am: torch.Size([1, 1, 968, 968]) - torch.float32, pi: torch.Size([1, 968])-torch.int64 prefix: torch.Size([1, 968, 2048])-torch.bfloat16
+        onnx_path = f"{output_dir}/llm.onnx"
         with torch.inference_mode():
-            export_net = GemmaModelNativeOnnxExport(self.model).eval().cuda()
-            num_layers = int(self.config.num_hidden_layers)
-            input_names = ["inputs_embeds", "attention_mask", "position_ids"]
-            output_names = ["last_hidden_state"] + [f"present_key_values.{i}" for i in range(num_layers)]
-            dynamic_axes = {
-                "inputs_embeds": {0: "batch_size", 1: "seq_len"},
-                "attention_mask": {0: "batch_size", 2: "seq_len", 3: "seq_len"},
-                "position_ids": {0: "batch_size", 1: "seq_len"},
-                "last_hidden_state": {0: "batch_size", 1: "seq_len"},
-            }
-            for i in range(num_layers):
-                # [B, 2, Hkv, S, D]
-                dynamic_axes[f"present_key_values.{i}"] = {0: "batch_size", 3: "seq_len"}
-            torch.onnx.export(
-                export_net,
-                # Include position_ids in ONNX export
-                (inputs_embeds, attention_mask, position_ids),
-                f"{output_dir}/llm.onnx",
-                export_params=True,
-                input_names=input_names,
-                output_names=output_names,
-                opset_version=19,
-                dynamo=dynamo,
-                do_constant_folding=True,
-                dynamic_axes=dynamic_axes,
-            )
+            if mode == "native_per_layer":
+                export_net = GemmaModelNativeOnnxExport(self.model).eval().cuda()
+                num_layers = int(self.config.num_hidden_layers)
+                input_names = ["inputs_embeds", "attention_mask", "position_ids"]
+                output_names = ["last_hidden_state"] + [
+                    f"present_key_values.{i}" for i in range(num_layers)
+                ]
+                dynamic_axes = {
+                    "inputs_embeds": {0: "batch_size", 1: "seq_len"},
+                    "attention_mask": {0: "batch_size", 2: "seq_len", 3: "seq_len"},
+                    "position_ids": {0: "batch_size", 1: "seq_len"},
+                    "last_hidden_state": {0: "batch_size", 1: "seq_len"},
+                }
+                for i in range(num_layers):
+                    # [B, 2, Hkv, S, D]
+                    dynamic_axes[f"present_key_values.{i}"] = {
+                        0: "batch_size",
+                        3: "seq_len",
+                    }
+                torch.onnx.export(
+                    export_net,
+                    (inputs_embeds, attention_mask, position_ids),
+                    onnx_path,
+                    export_params=True,
+                    input_names=input_names,
+                    output_names=output_names,
+                    opset_version=19,
+                    dynamo=dynamo,
+                    do_constant_folding=True,
+                    dynamic_axes=dynamic_axes,
+                )
+            elif mode == "self_forward":
+                # 直接导出 LLM 包装模块的 forward，不做 Native 图重写、不做 KV 聚合包装
+                input_names = ["inputs_embeds", "attention_mask", "position_ids"]
+                output_names = ["past_keys", "past_values", "last_hidden_state"]
+                dynamic_axes = {
+                    "inputs_embeds": {0: "batch_size", 1: "seq_len"},
+                    "attention_mask": {0: "batch_size", 2: "seq_len", 3: "seq_len"},
+                    "position_ids": {0: "batch_size", 1: "seq_len"},
+                    "past_keys": {0: "past_keys_dim0", 2: "seq_len"},
+                    "past_values": {0: "past_values_dim0", 2: "seq_len"},
+                    "last_hidden_state": {0: "batch_size", 1: "seq_len"},
+                }
+                torch.onnx.export(
+                    self,
+                    (inputs_embeds, attention_mask, position_ids),
+                    onnx_path,
+                    export_params=True,
+                    input_names=input_names,
+                    output_names=output_names,
+                    opset_version=19,
+                    dynamo=dynamo,
+                    do_constant_folding=True,
+                    dynamic_axes=dynamic_axes,
+                )
+            else:
+                raise ValueError(
+                    f"llm_onnx_mode must be 'native_per_layer' or 'self_forward', got {llm_onnx_mode!r}"
+                )
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
         print(
