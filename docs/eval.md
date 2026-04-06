@@ -24,6 +24,12 @@
 export PYTHONPATH="/path/to/model_optimizer/third_party/openpi/src:${PYTHONPATH}"
 ```
 
+- **model_optimizer（仅 TensorRT）**：`lerobot_eval_compare.py` 在 `--inference-mode tensorrt` 时会 import `model_optimizer.infer.tensorrt.pi05_executor`。请使用可编辑安装 `pip install -e .`，或把仓库的 `src` 加入 `PYTHONPATH`：
+
+```bash
+export PYTHONPATH="/path/to/model_optimizer/src:${PYTHONPATH}"
+```
+
 - **检查点**：目录内需有 `model.safetensors`，且包含 `assets/<asset_id>/` 下的 **归一化统计**（与 `create_trained_policy` 一致）。
 
 ## 基本用法（Libero 配置）
@@ -50,9 +56,46 @@ python scripts/deployment/pi05/lerobot_eval_compare.py \
 | `--num-samples` | 从 `--start-index` 起连续评估的帧数 |
 | `--dataset-root` | 本地 LeRobot 根目录；省略则用 Hub 默认缓存（视 lerobot 版本而定） |
 | `--pytorch-device` | 如 `cuda:0`；省略则自动选择 |
+| `--inference-mode` | `pytorch`（默认）或 `tensorrt` |
+| `--trt-engine-path` / `--vit-engine` / … | TensorRT 目录与各子引擎文件名；见下文「TensorRT 推理」 |
+| `--precision` | `fp16` / `bf16` / `fp32`，仅 TensorRT 路径使用 |
 | `--seed` | NumPy 随机种子 |
 
 输出日志中包含：样本数、平均 MSE、平均 MAE（及标准差）、**逐动作维度的 MAE**。
+
+## TensorRT 推理（与 `standalone_inference_script.py` 对齐）
+
+### `standalone_inference_script.py` 里 TensorRT 在做什么
+
+1. 先用 `policy_config.create_trained_policy` 加载 **完整 PyTorch** `Policy`（含 `PI0Pytorch` 的 `policy._model`）。
+2. 若 `inference_mode == "tensorrt"`，构造 `Pi05TensorRTExecutor(policy, precision)`，并按 CLI 传入的目录与文件名调用 `load_model(addict.Dict({...}))`。
+3. `Pi05TensorRTExecutor._setup_trt_engine` 在 **`policy._model`（即 openpi 的 PI0Pytorch）上原地替换** 若干 `forward` / 方法：例如用 TRT `Engine` 替换 `get_image_features`、`language_model.forward`、`gemma_expert.model.forward`、`denoise_step` 等（取决于你提供了哪些引擎文件名）。
+4. 主循环仍对 **`policy` 调用 `policy.infer(obs)`**（未改为 `executor.infer`）。因为被替换的是同一个 `policy._model` 对象，**实际计算已在 TRT 路径上**。
+
+精度由 `precision`（`fp16` / `bf16` / `fp32`）传给 `Pi05TensorRTExecutor`。
+
+### 在 `lerobot_eval_compare.py` 中使用 TensorRT
+
+增加与 standalone 相同的选项即可，例如：
+
+```bash
+export PYTHONPATH="/path/to/model_optimizer/third_party/openpi/src:/path/to/model_optimizer/src:${PYTHONPATH}"
+
+python scripts/deployment/pi05/lerobot_eval_compare.py \
+  --checkpoint /path/to/checkpoint \
+  --config-name pi05_libero \
+  --inference-mode tensorrt \
+  --trt-engine-path /path/to/trt_engine_directory \
+  --vit-engine your_vit.trt \
+  --llm-engine your_llm.trt \
+  --expert-engine your_expert.trt \
+  --denoise-engine denoise.engine \
+  --precision bf16 \
+  --num-samples 50
+```
+
+- `--trt-engine-path`：引擎文件所在**目录**（与各 `--*-engine` 文件名拼接成完整路径）。
+- 某个子引擎 CLI 留空时，**不替换**该子模块，仍走对应 PyTorch 实现（与 standalone 行为一致）。
 
 ## 如何使用非 Libero 数据
 

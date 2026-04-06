@@ -7,8 +7,12 @@
 （``observation/image`` 等），构造 ``obs`` 调用 ``policy.infer``；标签取 repack 后的 ``actions``
 chunk，与 ``infer`` 输出中经 ``LiberoOutputs`` 截断后的 ``actions``（前 7 维）对齐比较。
 
-依赖：需安装 ``lerobot``，且能将 ``openpi`` 加入 PYTHONPATH（例如
-``export PYTHONPATH=third_party/openpi/src:$PYTHONPATH``）。
+依赖：需安装 ``lerobot``；``openpi`` 需在 PYTHONPATH 中。使用 TensorRT 时还需能 import
+``model_optimizer``（例如 ``pip install -e .`` 或将仓库 ``src`` 加入 PYTHONPATH）。
+
+推理后端 ``--inference-mode``：``pytorch``（默认）或 ``tensorrt``。TensorRT 路径与
+``standalone_inference_script.py`` 相同：``Pi05TensorRTExecutor.load_model`` 会**原地**把
+``policy._model`` 中对应子模块换成引擎，随后仍调用 ``policy.infer``。
 
 示例::
 
@@ -18,6 +22,17 @@ chunk，与 ``infer`` 输出中经 ``LiberoOutputs`` 截断后的 ``actions``（
       --config-name pi05_libero \\
       --num-samples 50 \\
       --dataset-root ~/.cache/huggingface/lerobot/physical-intelligence/libero
+
+TensorRT 示例::
+
+    python scripts/deployment/pi05/lerobot_eval_compare.py \\
+      --checkpoint /path/to/checkpoint \\
+      --inference-mode tensorrt \\
+      --trt-engine-path /path/to/trt_dir \\
+      --vit-engine vit_fp16.trt \\
+      --llm-engine llm_fp16.trt \\
+      --expert-engine expert_fp16.trt \\
+      --denoise-engine denoise.engine
 """
 
 from __future__ import annotations
@@ -25,6 +40,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import tyro
@@ -99,6 +115,46 @@ def _make_lerobot_dataset(
     return dataset
 
 
+def _load_tensorrt_engines(
+    policy,
+    *,
+    engine_path: str,
+    precision: Literal["fp16", "bf16", "fp32"],
+    vit_engine: str,
+    llm_engine: str,
+    expert_engine: str,
+    denoise_engine: str,
+    embed_prefix_engine: str,
+) -> None:
+    """与 ``standalone_inference_script`` 一致：原地 patch ``policy._model`` 后仍用 ``policy.infer``。"""
+    import addict
+    import torch
+
+    from model_optimizer.infer.tensorrt.pi05_executor import Pi05TensorRTExecutor
+
+    if precision == "fp16":
+        prec = torch.float16
+    elif precision == "bf16":
+        prec = torch.bfloat16
+    else:
+        prec = torch.float32
+
+    executor = Pi05TensorRTExecutor(policy, prec)
+    cfg: dict = {"engine_path": engine_path}
+    if vit_engine:
+        cfg["vit_engine"] = vit_engine
+    if expert_engine:
+        cfg["expert_engine"] = expert_engine
+    if llm_engine:
+        cfg["llm_engine"] = llm_engine
+    if denoise_engine:
+        cfg["denoise_engine"] = denoise_engine
+    if embed_prefix_engine:
+        cfg["embed_prefix_engine"] = embed_prefix_engine
+
+    executor.load_model(addict.Dict(cfg))
+
+
 def _align_action_dim(pred: np.ndarray, gt: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     pred = np.asarray(pred, dtype=np.float64)
     gt = np.asarray(gt, dtype=np.float64)
@@ -132,6 +188,30 @@ class Args:
     pytorch_device: str | None = None
     """PyTorch 设备；默认自动选 CUDA。"""
 
+    inference_mode: Literal["pytorch", "tensorrt"] = "pytorch"
+    """``pytorch``：原生 PI0Pytorch；``tensorrt``：加载 TRT 引擎并原地替换子模块（见 ``Pi05TensorRTExecutor``）。"""
+
+    precision: Literal["fp16", "bf16", "fp32"] = "bf16"
+    """TensorRT / 执行器精度；仅 ``inference_mode=tensorrt`` 时使用。"""
+
+    trt_engine_path: str = ""
+    """TRT 引擎所在**目录**（与 standalone 一致；其下再拼各引擎文件名）。"""
+
+    vit_engine: str = ""
+    """ViT 引擎文件名；留空则不替换 ViT。"""
+
+    llm_engine: str = ""
+    """LLM 引擎文件名；留空则不替换 language model。"""
+
+    expert_engine: str = ""
+    """Expert 引擎文件名；留空则不替换 expert。"""
+
+    denoise_engine: str = ""
+    """Denoise 步引擎文件名（如 ``denoise.engine``）；留空则不替换 denoise_step。"""
+
+    embed_prefix_engine: str = ""
+    """embed_prefix 引擎文件名；留空则不替换 embed_prefix。"""
+
     seed: int = 0
     """NumPy 随机种子（若策略含随机采样）。"""
 
@@ -161,6 +241,39 @@ def main(args: Args) -> None:
         args.checkpoint,
         pytorch_device=args.pytorch_device,
     )
+
+    if args.inference_mode == "tensorrt":
+        if not args.trt_engine_path:
+            raise ValueError("inference_mode=tensorrt 时必须设置 --trt-engine-path（引擎目录）。")
+        logging.info(
+            "TensorRT：加载引擎目录 %s（vit=%r llm=%r expert=%r denoise=%r embed_prefix=%r）",
+            args.trt_engine_path,
+            args.vit_engine or "(none)",
+            args.llm_engine or "(none)",
+            args.expert_engine or "(none)",
+            args.denoise_engine or "(none)",
+            args.embed_prefix_engine or "(none)",
+        )
+        _load_tensorrt_engines(
+            policy,
+            engine_path=args.trt_engine_path,
+            precision=args.precision,
+            vit_engine=args.vit_engine,
+            llm_engine=args.llm_engine,
+            expert_engine=args.expert_engine,
+            denoise_engine=args.denoise_engine,
+            embed_prefix_engine=args.embed_prefix_engine,
+        )
+    else:
+        logging.info("推理后端: PyTorch（未加载 TensorRT 引擎）。")
+
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+    except ImportError:
+        pass
 
     n = len(dataset)
     end = min(args.start_index + args.num_samples, n)
@@ -192,6 +305,7 @@ def main(args: Args) -> None:
     mae_std = float(np.std(mae_list))
     per_dim = np.mean(np.stack(per_dim_mae, axis=0), axis=0)
 
+    logging.info("推理模式: %s", args.inference_mode)
     logging.info("样本数: %d (index %d..%d)", len(mse_list), args.start_index, end - 1)
     logging.info("MSE(mean over samples): %.6f", mse_mean)
     logging.info("MAE(mean over samples): %.6f ± %.6f", mae_mean, mae_std)
