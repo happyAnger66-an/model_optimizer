@@ -16,8 +16,9 @@ uv venv /opt/openpi
 source /opt/openpi/bin/activate
 
 # 优先使用 requirements 目录，兼容旧路径
-PI05_REQ="requirements/requirements-pi05.txt"
+#PI05_REQ="requirements/requirements-pi05.txt"
 [[ -f "requirements_pi05.txt" ]] && PI05_REQ="requirements_pi05.txt"
 [[ -f "$PI05_REQ" ]] || { echo "Error: $PI05_REQ not found"; exit 1; }
 
 uv pip install -r "$PI05_REQ" -i https://pypi.tuna.tsinghua.edu.cn/simple
+uv pip install nvidia-modelopt[all]==0.39.0 -i https://pypi.tuna.tsinghua.edu.cn/simple

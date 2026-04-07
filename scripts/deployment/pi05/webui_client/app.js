@@ -9,7 +9,122 @@ const RECONNECT_MS = 3000;
 let manualDisconnect = false;
 let reconnectTimer = null;
 
+const THEME_STORAGE_KEY = "pi05_webui_theme";
+const DEFAULT_WS_FALLBACK = "ws://127.0.0.1:8765/ws";
+
+const PLOTLY_THEME = {
+  light: {
+    axisTitle: "#4b5563",
+    tick: "#6b7280",
+    grid: "#e5e7eb",
+    zero: "#d1d5db",
+    legend: "#374151",
+    font: "#374151",
+    gt: "#2563eb",
+    pred: "#dc2626",
+  },
+  dark: {
+    axisTitle: "#94a3b8",
+    tick: "#cbd5e1",
+    grid: "#334155",
+    zero: "#475569",
+    legend: "#e2e8f0",
+    font: "#e2e8f0",
+    gt: "#60a5fa",
+    pred: "#f87171",
+  },
+};
+
 const el = (id) => document.getElementById(id);
+
+function getPlotlyPalette() {
+  const t = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  return PLOTLY_THEME[t];
+}
+
+function buildPlotlyLayout() {
+  const p = getPlotlyPalette();
+  return {
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(0,0,0,0)",
+    margin: { l: 48, r: 12, t: 8, b: 32 },
+    xaxis: {
+      title: "global_index",
+      color: p.axisTitle,
+      tickfont: { size: 10, color: p.tick },
+      gridcolor: p.grid,
+      zerolinecolor: p.zero,
+    },
+    yaxis: {
+      title: "value",
+      color: p.axisTitle,
+      tickfont: { size: 10, color: p.tick },
+      gridcolor: p.grid,
+      zerolinecolor: p.zero,
+    },
+    legend: { font: { size: 10, color: p.legend }, orientation: "h", y: 1.12 },
+    font: { color: p.font, size: 11 },
+    height: 200,
+  };
+}
+
+function refreshChartsTheme() {
+  for (const d of state.dims) {
+    const layout = buildPlotlyLayout();
+    chartLayouts.set(d, layout);
+    const id = chartDivId(d);
+    if (document.getElementById(id)) {
+      Plotly.react(id, buildTracesForDim(d), layout, {
+        displayModeBar: false,
+        responsive: true,
+      });
+    }
+  }
+}
+
+function applyTheme(mode) {
+  const m = mode === "dark" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", m);
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, m);
+  } catch (e) {
+    /* ignore */
+  }
+  const sel = el("themeSelect");
+  if (sel) sel.value = m;
+  refreshChartsTheme();
+}
+
+function applyThemeFromStorage() {
+  let m = null;
+  try {
+    m = localStorage.getItem(THEME_STORAGE_KEY);
+  } catch (e) {
+    m = null;
+  }
+  if (m !== "dark" && m !== "light") m = "light";
+  document.documentElement.setAttribute("data-theme", m);
+  const sel = el("themeSelect");
+  if (sel) sel.value = m;
+}
+
+async function loadDefaultWsUrl() {
+  const input = el("wsUrl");
+  if (!input) return;
+  try {
+    const r = await fetch("./server_hint.json", { cache: "no-store" });
+    if (r.ok) {
+      const j = await r.json();
+      if (j && typeof j.default_ws_url === "string" && j.default_ws_url.trim()) {
+        input.value = j.default_ws_url.trim();
+        return;
+      }
+    }
+  } catch (e) {
+    /* 本地 file:// 或尚未生成 hint */
+  }
+  if (!input.value.trim()) input.value = DEFAULT_WS_FALLBACK;
+}
 
 /** dim -> Plotly layout object */
 const chartLayouts = new Map();
@@ -150,20 +265,24 @@ function initChart() {
     wrap.appendChild(plotDiv);
     container.appendChild(wrap);
 
+    const p = getPlotlyPalette();
     const traces = [
-      { x: [], y: [], mode: "lines", name: "gt", line: { width: 2 } },
-      { x: [], y: [], mode: "lines", name: "pred", line: { width: 2, dash: "dot" } },
+      {
+        x: [],
+        y: [],
+        mode: "lines",
+        name: "gt",
+        line: { width: 2, color: p.gt },
+      },
+      {
+        x: [],
+        y: [],
+        mode: "lines",
+        name: "pred",
+        line: { width: 2, dash: "dot", color: p.pred },
+      },
     ];
-    const layout = {
-      paper_bgcolor: "rgba(0,0,0,0)",
-      plot_bgcolor: "rgba(0,0,0,0)",
-      margin: { l: 48, r: 12, t: 8, b: 32 },
-      xaxis: { title: "global_index", color: "#9ca3af", tickfont: { size: 10 } },
-      yaxis: { title: "value", color: "#9ca3af", tickfont: { size: 10 } },
-      legend: { font: { size: 10, color: "#e5e7eb" }, orientation: "h", y: 1.12 },
-      font: { color: "#e5e7eb", size: 11 },
-      height: 200,
-    };
+    const layout = buildPlotlyLayout();
     chartLayouts.set(d, layout);
     Plotly.newPlot(chartDivId(d), traces, layout, { displayModeBar: false, responsive: true });
   }
@@ -198,20 +317,21 @@ function pushPoint(event) {
 }
 
 function buildTracesForDim(d) {
+  const p = getPlotlyPalette();
   return [
     {
       x: [...state.x],
       y: [...(state.gt.get(d) || [])],
       mode: "lines",
       name: "gt",
-      line: { width: 2 },
+      line: { width: 2, color: p.gt },
     },
     {
       x: [...state.x],
       y: [...(state.pred.get(d) || [])],
       mode: "lines",
       name: "pred",
-      line: { width: 2, dash: "dot" },
+      line: { width: 2, dash: "dot", color: p.pred },
     },
   ];
 }
@@ -353,11 +473,21 @@ function setup() {
   el("btnDisconnect").addEventListener("click", () => disconnect());
   el("btnApplyDims").addEventListener("click", () => applyDims());
 
+  el("themeSelect").addEventListener("change", () => {
+    applyTheme(el("themeSelect").value);
+  });
+
   el("toggleWrist").addEventListener("change", () => {
     const show = el("toggleWrist").checked;
     el("imgWrist").style.display = show ? "block" : "none";
   });
 }
 
-setup();
+async function bootstrap() {
+  await loadDefaultWsUrl();
+  applyThemeFromStorage();
+  setup();
+}
+
+bootstrap();
 

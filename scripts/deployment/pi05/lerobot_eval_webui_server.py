@@ -481,6 +481,12 @@ class Args:
     host: str = "0.0.0.0"
     port: int = 8765
     path: str = "/ws"
+    client_ws_url: str | None = None
+    """浏览器默认 WebSocket 地址，写入 ``webui_client/server_hint.json``（页面加载时自动填入）。
+
+    例如远端访问时设置为 ``ws://192.168.1.10:8765/ws``。不填时：若 ``host`` 为 ``0.0.0.0`` / ``::`` 则用
+    ``ws://127.0.0.1:{port}{path}``，否则用 ``ws://{host}:{port}{path}``。
+    """
 
     send_wrist: bool = False
     jpeg_quality: int = 85
@@ -490,6 +496,28 @@ class Args:
 
     history_size: int = 0
     """缓存最近 N 条消息，新 client 连接后先回放（0 表示不缓存）。"""
+
+
+def _default_client_ws_url(args: Args) -> str:
+    if args.client_ws_url and str(args.client_ws_url).strip():
+        return str(args.client_ws_url).strip()
+    h = args.host.strip()
+    if h in ("0.0.0.0", "::", ""):
+        h = "127.0.0.1"
+    return f"ws://{h}:{args.port}{args.path}"
+
+
+def _write_webui_server_hint(args: Args) -> str:
+    """将默认 ws URL 写入 ``webui_client/server_hint.json``，供静态页面 fetch。"""
+    url = _default_client_ws_url(args)
+    client_dir = Path(__file__).resolve().parent / "webui_client"
+    client_dir.mkdir(parents=True, exist_ok=True)
+    hint_path = client_dir / "server_hint.json"
+    hint_path.write_text(
+        json.dumps({"default_ws_url": url}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return url
 
 
 async def _run_server(args: Args) -> None:
@@ -582,6 +610,16 @@ async def _run_server(args: Args) -> None:
         finally:
             print(colored("[infer] 线程退出", "cyan"), flush=True)
 
+    hint_url = _write_webui_server_hint(args)
+    print(
+        colored(
+            f"WebUI WebSocket 监听: {args.host}:{args.port}{args.path} · "
+            f"client 默认地址（已写入 webui_client/server_hint.json）: {hint_url}",
+            "green",
+        ),
+        flush=True,
+    )
+
     async with _server.serve(
         handler,
         args.host,
@@ -589,9 +627,7 @@ async def _run_server(args: Args) -> None:
         compression=None,
         max_size=None,
     ) as server:
-        ws_url = f"ws://{args.host}:{args.port}{args.path}"
-        print(colored(f"WebUI WS listening: {ws_url}", "green"))
-        print(colored(f"run_id={run_id}（加载完成后会广播完整 meta）", "green"))
+        print(colored(f"run_id={run_id}（加载完成后会广播完整 meta）", "green"), flush=True)
         threading.Thread(target=infer_worker, daemon=True, name="pi05_infer").start()
         await server.serve_forever()
 

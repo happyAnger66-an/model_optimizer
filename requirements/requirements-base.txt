@@ -2,16 +2,16 @@
 # 适用于: CLI、量化、导出、编译、WebUI
 
 # PyTorch (根据环境选择 CPU/GPU 版本，Docker 基镜像通常已包含)
---extra-index-url https://download.pytorch.org/whl/cu130
-torch>=2.0
-torchvision
-torchaudio
+#--extra-index-url https://download.pytorch.org/whl/cu130
+#torch>=2.0
+#torchvision
+#torchaudio
 
 # 量化与优化
-nvidia-modelopt[all]
+#nvidia-modelopt[all]
 
 # 模型与推理
-transformers>=4.35
+#transformers>=4.35
 safetensors
 
 # ONNX
@@ -25,6 +25,7 @@ ultralytics>=8.0
 
 # WebUI
 gradio>=4.0
+websockets>=11.0
 
 # 工具库
 addict

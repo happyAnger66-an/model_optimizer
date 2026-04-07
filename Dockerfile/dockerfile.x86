@@ -17,4 +17,6 @@ RUN bash install_pi05.sh
 COPY Dockerfile/uninstall_uv.sh /workspace/uninstall_uv.sh
 RUN bash uninstall_uv.sh
 
+# openpi transformers replace
+COPY third_party/openpi/src/openpi/models_pytorch/transformers_replace/* /opt/openpi/lib/python3.12/site-packages/transformers/
 ENV PYTHONPATH=/opt/openpi/lib/python3.12/site-packages/

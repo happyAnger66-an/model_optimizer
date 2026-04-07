@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -11,9 +11,16 @@
     <div class="topbar">
       <div class="title">Pi0.5 LeRobot Eval WebUI</div>
       <div class="conn">
+        <label class="themePick">
+          <span class="kv">主题</span>
+          <select id="themeSelect" class="themeSelect" aria-label="界面主题">
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </label>
         <span id="connStatus" class="badge badge-gray">disconnected</span>
         <span class="kv">ws_url</span>
-        <input id="wsUrl" class="input" value="ws://127.0.0.1:8765/ws" />
+        <input id="wsUrl" class="input" placeholder="ws://127.0.0.1:8765/ws" />
         <button id="btnConnect" class="btn">Connect</button>
         <button id="btnDisconnect" class="btn btn-secondary" disabled>Disconnect</button>
       </div>
@@ -79,7 +86,9 @@
 
     <div class="footer">
       提示：若直接双击打开页面遇到跨域/资源问题，建议在本目录运行
-      <code>python -m http.server 8000</code> 后用浏览器访问。断线后除非点击 Disconnect，否则会每 3s 自动重连。
+      <code>python -m http.server 8000</code> 后用浏览器访问。启动 server 时会生成
+      <code>server_hint.json</code>（默认 WebSocket 地址），页面加载时会自动填入 ws 输入框。断线后除非点击
+      Disconnect，否则会每 3s 自动重连。
     </div>
 
     <script src="./app.js"></script>

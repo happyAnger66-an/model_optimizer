@@ -216,3 +216,6 @@ marimo/_lsp/
 __marimo__/
 *.tar.gz.*
 examples/
+
+# Pi0.5 WebUI：由 lerobot_eval_webui_server 启动时生成的默认 ws 地址
+scripts/deployment/pi05/webui_client/server_hint.json

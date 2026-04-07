@@ -34,14 +34,14 @@ export PYTHONPATH="/path/to/model_optimizer/src:${PYTHONPATH}"
 
 ## 基本用法（Libero 配置）
 
-默认 `--config-name pi05_libero` 对应 `physical-intelligence/libero` 与 `LeRobotLiberoDataConfig`。
+默认 `--config pi05_libero` 对应 `physical-intelligence/libero` 与 `LeRobotLiberoDataConfig`。
 
 ```bash
 export PYTHONPATH="third_party/openpi/src:${PYTHONPATH}"
 
 python scripts/deployment/pi05/lerobot_eval_compare.py \
   --checkpoint /path/to/checkpoint \
-  --config-name pi05_libero \
+  --config pi05_libero \
   --num-samples 100 \
   --start-index 0 \
   --dataset-root ~/.cache/huggingface/lerobot/physical-intelligence/libero
@@ -52,16 +52,28 @@ python scripts/deployment/pi05/lerobot_eval_compare.py \
 | 参数 | 含义 |
 |------|------|
 | `--checkpoint` | 含 `model.safetensors` 与 `assets/` 的检查点路径 |
-| `--config-name` | `openpi.training.config` 里已注册的 `TrainConfig` 名称 |
+| `--config` | `openpi.training.config` 里已注册的 `TrainConfig` 名称 |
 | `--num-samples` | 从 `--start-index` 起连续评估的帧数 |
 | `--dataset-root` | 本地 LeRobot 根目录；省略则用 Hub 默认缓存（视 lerobot 版本而定） |
-| `--pytorch-device` | 如 `cuda:0`；省略则自动选择 |
+| `--device` | 如 `cuda:0`；省略则自动选择 |
 | `--inference-mode` | `pytorch`（默认）或 `tensorrt` |
-| `--trt-engine-path` / `--vit-engine` / … | TensorRT 目录与各子引擎文件名；见下文「TensorRT 推理」 |
+| `--engine-path` / `--vit-engine` / … | TensorRT 目录与各子引擎文件名；见下文「TensorRT 推理」 |
 | `--precision` | `fp16` / `bf16` / `fp32`，仅 TensorRT 路径使用 |
 | `--seed` | NumPy 随机种子 |
 
 输出日志中包含：样本数、平均 MSE、平均 MAE（及标准差）、**逐动作维度的 MAE**。
+
+### 按 episode 保存轨迹对比图（可选）
+
+依赖底层 `LeRobotDataset.hf_dataset` 中的 `episode_index` 列（与全局帧下标对齐）。脚本在 `[start_index, start_index+num_samples)` 内仍对**每一帧**计算误差；若指定 `--trajectory-plot-dir`，会按 `episode_index` 分组，**每个 episode 输出一张 PNG**（每个动作维度一条子图：gt / pred，可选 `observation/state` 与动作维一致时叠加；红点间隔为 `action_horizon`）。
+
+| 参数 | 含义 |
+|------|------|
+| `--trajectory-plot-dir` | 保存目录 |
+| `--max-trajectory-plots` | 最多保存几张图；`0` 表示不限制 |
+| `--plot-episodes` | 只画列出的 episode 编号；留空则画区间内出现的全部 episode |
+
+若无法读取 `episode_index`，会退化为整段评估区间视为 `episode_id=0` 的一张图。
 
 ## TensorRT 推理（与 `standalone_inference_script.py` 对齐）
 
@@ -83,9 +95,9 @@ export PYTHONPATH="/path/to/model_optimizer/third_party/openpi/src:/path/to/mode
 
 python scripts/deployment/pi05/lerobot_eval_compare.py \
   --checkpoint /path/to/checkpoint \
-  --config-name pi05_libero \
+  --config pi05_libero \
   --inference-mode tensorrt \
-  --trt-engine-path /path/to/trt_engine_directory \
+  --engine-path /path/to/trt_engine_directory \
   --vit-engine your_vit.trt \
   --llm-engine your_llm.trt \
   --expert-engine your_expert.trt \
@@ -94,7 +106,7 @@ python scripts/deployment/pi05/lerobot_eval_compare.py \
   --num-samples 50
 ```
 
-- `--trt-engine-path`：引擎文件所在**目录**（与各 `--*-engine` 文件名拼接成完整路径）。
+- `--engine-path`：引擎文件所在**目录**（与各 `--*-engine` 文件名拼接成完整路径）。
 - 某个子引擎 CLI 留空时，**不替换**该子模块，仍走对应 PyTorch 实现（与 standalone 行为一致）。
 
 ## 如何使用非 Libero 数据
@@ -133,7 +145,7 @@ python scripts/deployment/pi05/lerobot_eval_compare.py \
 ```bash
 python scripts/deployment/pi05/lerobot_eval_compare.py \
   --checkpoint /path/to/your_checkpoint \
-  --config-name your_custom_config_name \
+  --config your_custom_config_name \
   --num-samples 50
 ```
 
@@ -144,8 +156,70 @@ python scripts/deployment/pi05/lerobot_eval_compare.py \
 | 路径 | 说明 |
 |------|------|
 | `scripts/deployment/pi05/lerobot_eval_compare.py` | 评估入口 |
+| `scripts/deployment/pi05/lerobot_eval_webui_server.py` | WebUI server（WebSocket 流式推送对齐 step + RGB + prompt） |
 | `scripts/deployment/pi05/standalone_inference_script.py` | 单步推理 / 性能与保存 |
 | `third_party/openpi/src/openpi/training/config.py` | `TrainConfig`、`LeRobotLiberoDataConfig` |
 | `third_party/openpi/src/openpi/policies/libero_policy.py` | `LiberoInputs` / `LiberoOutputs`、`make_libero_example` |
 | `third_party/openpi/src/openpi/policies/policy_config.py` | `create_trained_policy` |
 | `third_party/openpi/src/openpi/training/data_loader.py` | `create_torch_dataset`、`transform_dataset` |
+
+## WebUI（client-server，实时展示对齐推理效果）
+
+`lerobot_eval_compare.py` 生成的是离线 PNG；若你希望像在线推理一样 **实时看到**（prompt + RGB + gt/pred 曲线滚动），可以启动 WebSocket server 并用浏览器订阅。
+
+### 1) 启动 server（WebSocket 流式推送）
+
+```bash
+export PYTHONPATH="third_party/openpi/src:src:${PYTHONPATH}"
+
+python scripts/deployment/pi05/lerobot_eval_webui_server.py \
+  --checkpoint /path/to/checkpoint \
+  --config pi05_libero \
+  --dataset-root ~/.cache/huggingface/lerobot/physical-intelligence/libero \
+  --start-index 0 \
+  --num-samples 500 \
+  --host 0.0.0.0 \
+  --port 8765
+```
+
+**行为说明**：进程启动后会 **立即监听** WebSocket 端口；数据集与策略在 **单线程推理池**（`ThreadPoolExecutor(max_workers=1)`）中加载与执行 `infer`，避免阻塞 asyncio 事件循环。先连上的 client 会收到 `type=meta` 且 `phase=loading` 的提示，加载结束后再广播完整 meta 与 step 流（PyTorch/CUDA 上下文固定在该推理线程中，避免多线程争用 GPU）。
+
+关键参数：
+
+| 参数 | 含义 |
+|------|------|
+| `--send-wrist` | 额外发送 `observation/wrist_image`（默认只发 base） |
+| `--jpeg-quality` | JPEG 质量（默认 85） |
+| `--max-fps` | 限制推送速率（step/s）；`0` 表示不限制 |
+| `--history-size` | 缓存最近 N 条消息，新 client 连接后先回放（`0` 不缓存） |
+| `--client-ws-url` | 浏览器默认 WebSocket 地址，写入 `webui_client/server_hint.json`；例如远端填 `ws://192.168.1.10:8765/ws`。不设且 `--host 0.0.0.0` 时为 `ws://127.0.0.1:{port}{path}` |
+| `--inference-mode tensorrt` + 引擎参数 | 与 `lerobot_eval_compare.py` 一致 |
+
+对齐语义（重要）：
+
+- server **每隔 `action_horizon` 帧**做一次推理，得到 chunk `pred[0..H-1]`。
+- 将每个 `k` 的 `pred[k]` 与 label `gt[k]` 对齐，并映射到连续全局帧 `global_index = idx + k`。
+- 跨 episode 边界的 chunk 会跳过，避免把两段 episode 拼接。
+- 本 run 在 `[start_index, end)` 内全部推完后，server 会再推送一条 **`type=done`**（含 `message` / `phase=finished` 等）；WebUI 会显示“推理已结束”，推理线程退出但 **WebSocket 进程仍可保持连接**。
+
+### 2) 打开 client（浏览器订阅显示）
+
+client 是纯静态页面，路径：
+
+- `scripts/deployment/pi05/webui_client/index.html`
+
+推荐在该目录启动一个静态文件服务器：
+
+```bash
+cd scripts/deployment/pi05/webui_client
+python -m http.server 8000
+```
+
+然后浏览器打开 `http://127.0.0.1:8000/`。页面加载时会尝试读取同目录的 `server_hint.json`（由 server 启动时生成）并自动填入 `ws_url`；也可手动修改。
+
+- 本机示例：`ws://127.0.0.1:8765/ws`
+- 局域网另一台机器打开页面时，请在启动 server 时指定 `--client-ws-url ws://<server_ip>:8765/ws`，或手动在页面填写该地址。
+
+**主题**：页面顶部「主题」可选浅色 / 深色；偏好保存在浏览器 `localStorage`。
+
+页面默认只显示 base RGB；若你在 server 侧开启 `--send-wrist`，client 勾选“显示 wrist”即可显示第二张图。
