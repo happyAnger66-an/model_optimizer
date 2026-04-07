@@ -24,12 +24,13 @@ import logging
 import time
 import uuid
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+import threading
 from pathlib import Path
 from typing import Any, Deque, Literal
 
 import numpy as np
 import tyro
+from termcolor import colored
 
 import openpi.transforms as _transforms
 from openpi.policies import policy_config
@@ -240,6 +241,7 @@ LOADING_META_MSG = _event_to_json(
 
 def _load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
     """在专用推理线程中执行：数据集 + policy + TRT，避免阻塞 asyncio 事件循环。"""
+    print(colored("[infer] get_config + data_config ...", "cyan"), flush=True)
     train_cfg = _config.get_config(args.config)
     data_config = train_cfg.data.create(train_cfg.assets_dirs, train_cfg.model)
     if not data_config.repo_id:
@@ -247,6 +249,7 @@ def _load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
     action_horizon = train_cfg.model.action_horizon
     action_keys = tuple(data_config.action_sequence_keys)
 
+    print(colored(f"[infer] LeRobotDataset(repo={data_config.repo_id!r}) ...", "cyan"), flush=True)
     dataset = _make_lerobot_dataset(
         repo_id=data_config.repo_id,
         action_horizon=action_horizon,
@@ -256,14 +259,25 @@ def _load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
     )
     repack_fn = _build_repack_only(data_config)
 
+    print(colored("[infer] create_trained_policy（可能较慢，磁盘/显存占用会上升）...", "cyan"), flush=True)
     policy = policy_config.create_trained_policy(
         train_cfg,
         args.checkpoint,
         pytorch_device=args.device,
     )
+    try:
+        pd = getattr(policy, "_pytorch_device", None)
+        is_pt = getattr(policy, "_is_pytorch_model", None)
+        print(
+            colored(f"[infer] policy 就绪 is_pytorch={is_pt} device={pd!r}", "cyan"),
+            flush=True,
+        )
+    except Exception:
+        pass
     if args.inference_mode == "tensorrt":
         if not args.engine_path:
             raise ValueError("inference_mode=tensorrt 时必须设置 --engine-path（引擎目录）。")
+        print(colored("[infer] 加载 TensorRT 引擎 ...", "cyan"), flush=True)
         _load_tensorrt_engines(
             policy,
             engine_path=args.engine_path,
@@ -274,6 +288,7 @@ def _load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
             denoise_engine=args.denoise_engine,
             embed_prefix_engine=args.embed_prefix_engine,
         )
+        print(colored("[infer] TensorRT 引擎已就绪", "cyan"), flush=True)
 
     n = len(dataset)
     end = min(args.start_index + args.num_samples, n)
@@ -434,7 +449,8 @@ class WebsocketBroadcaster:
         if not self._clients:
             return
         dead: list[Any] = []
-        for ws in self._clients:
+        # 快照避免与 register/unregister 并发时迭代 set 出错
+        for ws in list(self._clients):
             try:
                 await ws.send(msg)
             except Exception:
@@ -502,48 +518,55 @@ async def _run_server(args: Args) -> None:
         finally:
             await broadcaster.unregister(ws)
 
-    async def infer_pipeline() -> None:
-        """在单线程 ThreadPoolExecutor 中跑加载与 policy.infer，避免阻塞 WebSocket 事件循环。"""
-        loop = asyncio.get_running_loop()
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pi05_infer")
+    loop = asyncio.get_running_loop()
+
+    async def publish(msg: str) -> None:
+        """仅在事件循环线程中调用：入 history 并广播（infer 线程经 run_coroutine_threadsafe 调度）。"""
+        broadcaster.add_history(msg)
+        await broadcaster.broadcast(msg)
+
+    def infer_worker() -> None:
+        """独立线程：同步加载 + infer；每条消息通过 run_coroutine_threadsafe 交给主 loop 发送。"""
+        def _schedule(coro: Any) -> None:
+            fut = asyncio.run_coroutine_threadsafe(coro, loop)
+            fut.result()
+
         try:
-            logging.info("推理线程：开始加载数据集与策略（端口已监听，可先连接 WebSocket）…")
-            bundle = await loop.run_in_executor(executor, _load_infer_bundle, args, run_id)
+            print(colored("[infer] 线程启动，开始加载 bundle…", "cyan"), flush=True)
+            bundle = _load_infer_bundle(args, run_id)
             meta_msg = bundle["meta_msg"]
             meta_ready["msg"] = meta_msg
-            broadcaster.add_history(meta_msg)
-            await broadcaster.broadcast(meta_msg)
+            print(colored("[infer] 加载完成，向主循环投递 meta …", "cyan"), flush=True)
+            _schedule(publish(meta_msg))
 
             start_index = bundle["start_index"]
             end = bundle["end"]
-
             min_step_period = (1.0 / args.max_fps) if args.max_fps and args.max_fps > 0 else 0.0
             last_send_t = 0.0
 
             for idx in range(start_index, end):
-                msgs = await loop.run_in_executor(executor, _process_infer_chunk, bundle, idx)
+                msgs = _process_infer_chunk(bundle, idx)
                 for msg in msgs:
-                    broadcaster.add_history(msg)
-                    await broadcaster.broadcast(msg)
+                    _schedule(publish(msg))
                     if min_step_period > 0:
                         now = time.monotonic()
                         dt = now - last_send_t
                         if dt < min_step_period:
-                            await asyncio.sleep(min_step_period - dt)
+                            time.sleep(min_step_period - dt)
                         last_send_t = time.monotonic()
 
             done_msg = _event_to_json({"type": "done", "run_id": run_id})
-            broadcaster.add_history(done_msg)
-            await broadcaster.broadcast(done_msg)
-            logging.info("推理序列推送完毕 run_id=%s", run_id)
+            _schedule(publish(done_msg))
+            print(colored(f"[infer] 序列推送完毕 run_id={run_id}", "cyan"), flush=True)
         except Exception as exc:  # pragma: no cover
             logging.exception("推理管线失败: %s", exc)
             err_msg = _event_to_json({"type": "error", "run_id": run_id, "message": str(exc)})
-            broadcaster.add_history(err_msg)
-            await broadcaster.broadcast(err_msg)
+            try:
+                _schedule(publish(err_msg))
+            except Exception:
+                pass
         finally:
-            executor.shutdown(wait=True)
-            logging.info("推理线程池已关闭")
+            print(colored("[infer] 线程退出", "cyan"), flush=True)
 
     async with _server.serve(
         handler,
@@ -552,9 +575,10 @@ async def _run_server(args: Args) -> None:
         compression=None,
         max_size=None,
     ) as server:
-        logging.info("WebUI WS listening: ws://%s:%s%s", args.host, args.port, args.path)
-        logging.info("run_id=%s（加载完成后会广播完整 meta）", run_id)
-        asyncio.create_task(infer_pipeline())
+        ws_url = f"ws://{args.host}:{args.port}{args.path}"
+        print(colored(f"WebUI WS listening: {ws_url}", "green"))
+        print(colored(f"run_id={run_id}（加载完成后会广播完整 meta）", "green"))
+        threading.Thread(target=infer_worker, daemon=True, name="pi05_infer").start()
         await server.serve_forever()
 
 
