@@ -33,12 +33,25 @@ TensorRT 示例::
       --llm-engine llm_fp16.trt \\
       --expert-engine expert_fp16.trt \\
       --denoise-engine denoise.engine
+
+轨迹图（按 LeRobot ``episode_index`` 分 episode，每集一张多子图 PNG）：
+**语义与一次推理的 H 步一致**——每隔 ``action_horizon`` 帧做一次 ``infer``，将输出的
+``pred[0..H-1]`` 与同一帧 repack 得到的标签 ``gt[0..H-1]`` 逐行对齐，并映射到全局帧
+``idx+k``（不重叠）；跨 episode 边界的 chunk 会跳过。红点标在每次推理的起点（chunk 首步）。
+
+::
+
+    python scripts/deployment/pi05/lerobot_eval_compare.py ... \\
+      --trajectory-plot-dir ./plots \\
+      --max-trajectory-plots 8 \\
+      --plot-episodes 0 1
 """
 
 from __future__ import annotations
 
 import dataclasses
 import logging
+from collections import defaultdict
 from pathlib import Path
 from typing import Literal
 
@@ -167,6 +180,130 @@ def _align_action_dim(pred: np.ndarray, gt: np.ndarray) -> tuple[np.ndarray, np.
     return pred[..., :d], gt[..., :d]
 
 
+def _unwrap_lerobot_base(dataset) -> object:
+    """剥离 ``TransformedDataset`` 等包装，得到底层 ``LeRobotDataset``。"""
+    d = dataset
+    while hasattr(d, "_dataset"):
+        d = d._dataset
+    return d
+
+
+def _global_episode_id_per_frame(base_ds, n_frames: int) -> np.ndarray:
+    """长度 ``n_frames``：全局下标 ``i`` 对应 ``episode_index``（与 ``dataset[i]`` 对齐）。"""
+    try:
+        hf = getattr(base_ds, "hf_dataset", None)
+    except Exception as exc:  # pragma: no cover
+        logging.warning("读取 hf_dataset 失败: %s；episode 视为全 0。", exc)
+        return np.zeros(n_frames, dtype=np.int64)
+    if hf is not None:
+        cols = getattr(hf, "column_names", []) or []
+        for col in ("episode_index", "episode_idx", "ep_index"):
+            if col in cols:
+                ep = np.asarray(hf[col][:n_frames])
+                if ep.shape[0] != n_frames:
+                    raise RuntimeError(
+                        f"episode 列 {col!r} 长度 {ep.shape[0]} 与 len(dataset)={n_frames} 不一致"
+                    )
+                return ep.astype(np.int64, copy=False)
+    logging.warning(
+        "未在 hf_dataset 中找到 episode_index；轨迹图将把 [start_index, end) 整段当作 episode_id=0。"
+    )
+    return np.zeros(n_frames, dtype=np.int64)
+
+
+def _first_row_state(state, action_dim: int) -> np.ndarray | None:
+    """若存在 ``observation/state`` 且最后一维与 action 维一致则返回首步向量，否则 None。"""
+    if state is None:
+        return None
+    s = np.asarray(state, dtype=np.float64)
+    if s.ndim == 1:
+        row = s
+    else:
+        row = s[0]
+    if row.shape[-1] != action_dim:
+        return None
+    return row
+
+
+def _plot_trajectory_episode(
+    *,
+    gt_action_across_time: np.ndarray,
+    pred_action_across_time: np.ndarray,
+    state_joints_across_time: np.ndarray | None,
+    episode_id: int,
+    action_horizon: int,
+    save_path: Path,
+    index_range: tuple[int, int],
+    inference_mode: str,
+    infer_start_mask: np.ndarray | None = None,
+) -> None:
+    """每条轨迹一张 figure：每动作维度一子图（对齐 Isaac-GR00T ``plot_trajectory_results``）。"""
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as e:
+        raise ImportError("绘制轨迹需要 matplotlib：pip install matplotlib") from e
+
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    t = gt_action_across_time.shape[0]
+    action_dim = gt_action_across_time.shape[1]
+    if t == 0 or action_dim == 0:
+        logging.warning("episode %s 无有效帧，跳过作图", episode_id)
+        return
+
+    indices = list(range(action_dim))
+    fig, axes = plt.subplots(nrows=len(indices), ncols=1, figsize=(8, 4 * len(indices)))
+    if len(indices) == 1:
+        axes = [axes]
+
+    lo, hi = index_range
+    fig.suptitle(
+        f"Episode {episode_id} | global index [{lo}, {hi}] | backend={inference_mode}",
+        fontsize=14,
+        color="blue",
+    )
+
+    for plot_idx, d in enumerate(indices):
+        ax = axes[plot_idx]
+        if (
+            state_joints_across_time is not None
+            and state_joints_across_time.shape == gt_action_across_time.shape
+        ):
+            ax.plot(state_joints_across_time[:, d], label="state")
+        ax.plot(gt_action_across_time[:, d], label="gt action")
+        ax.plot(pred_action_across_time[:, d], label="pred action")
+
+        if infer_start_mask is not None and infer_start_mask.shape[0] == t:
+            starts = np.flatnonzero(infer_start_mask)
+            for si, j in enumerate(starts):
+                ax.plot(
+                    j,
+                    gt_action_across_time[j, d],
+                    "ro",
+                    label="inference step" if si == 0 else "_nolegend_",
+                )
+        else:
+            for j in range(0, t, max(action_horizon, 1)):
+                if j == 0:
+                    ax.plot(
+                        j,
+                        gt_action_across_time[j, d],
+                        "ro",
+                        label="inference step",
+                    )
+                else:
+                    ax.plot(j, gt_action_across_time[j, d], "ro")
+
+        ax.set_title(f"dim {d}")
+        ax.set_xlabel("frame (within episode segment)")
+        ax.legend()
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close()
+
+
 @dataclasses.dataclass
 class Args:
     """LeRobot 上 pi0.5 预测 vs 标签误差评估。"""
@@ -216,6 +353,16 @@ class Args:
     seed: int = 0
     """NumPy 随机种子（若策略含随机采样）。"""
 
+    trajectory_plot_dir: Path | None = None
+    """若设置，按 **episode_index** 分轨迹各保存一张 PNG（每动作维一子图）；目录会自动创建。
+    轨迹按 ``action_horizon`` 步进推理，每行 pred 与同次 infer 的 label 行对齐并铺到连续时间轴。"""
+
+    max_trajectory_plots: int = 32
+    """最多生成多少张轨迹图；``0`` 表示不限制。仅 ``trajectory_plot_dir`` 非空时生效。"""
+
+    plot_episodes: tuple[int, ...] = ()
+    """仅绘制这些 ``episode_index``；为空则绘制评估范围内出现的所有 episode。"""
+
 
 def main(args: Args) -> None:
     """入口由 ``tyro.cli(Args)`` 调用，使 CLI 为顶层 ``--checkpoint`` 等，而非 ``--args.*``。"""
@@ -236,6 +383,9 @@ def main(args: Args) -> None:
         denoise_engine,
         embed_prefix_engine,
         seed,
+        trajectory_plot_dir,
+        max_trajectory_plots,
+        plot_episodes,
     ) = (
         args.checkpoint,
         args.config,
@@ -252,6 +402,9 @@ def main(args: Args) -> None:
         args.denoise_engine,
         args.embed_prefix_engine,
         args.seed,
+        args.trajectory_plot_dir,
+        args.max_trajectory_plots,
+        args.plot_episodes,
     )
 
     np.random.seed(seed)
@@ -316,9 +469,21 @@ def main(args: Args) -> None:
     if start_index >= n:
         raise ValueError(f"start_index={start_index} >= dataset len={n}")
 
+    base_ds = _unwrap_lerobot_base(dataset)
+    ep_per_frame = _global_episode_id_per_frame(base_ds, n)
+
     mse_list: list[float] = []
     mae_list: list[float] = []
     per_dim_mae: list[np.ndarray] = []
+
+    # 轨迹：按 stride=action_horizon 推理，每步 pred[k] 与 gt[k] 对齐到全局帧 idx+k。
+    traj_points: dict[int, list[tuple[int, np.ndarray, np.ndarray, bool, np.ndarray | None]]] = (
+        defaultdict(list)
+    )
+    traj_idx_lo: dict[int, int] = {}
+    traj_idx_hi: dict[int, int] = {}
+
+    episode_allow: set[int] | None = set(plot_episodes) if len(plot_episodes) > 0 else None
 
     for idx in range(start_index, end):
         raw = _tree_to_numpy(dataset[idx])
@@ -335,6 +500,48 @@ def main(args: Args) -> None:
         mse_list.append(float(np.mean(diff**2)))
         mae_list.append(float(np.mean(np.abs(diff))))
         per_dim_mae.append(np.mean(np.abs(diff), axis=tuple(range(diff.ndim - 1))))
+
+        if trajectory_plot_dir is not None:
+            stride_ok = (idx - start_index) % action_horizon == 0
+            chunk_fits = idx + action_horizon <= n and idx + action_horizon <= end
+            if stride_ok and chunk_fits:
+                ep0 = int(ep_per_frame[idx])
+                ep_last = int(ep_per_frame[idx + action_horizon - 1])
+                same_ep = ep0 == ep_last
+                if same_ep and (episode_allow is None or ep0 in episode_allow):
+                    gt_h = gt_a[:action_horizon]
+                    pred_h = pred_a[:action_horizon]
+                    if pred_h.shape[0] < action_horizon or gt_h.shape[0] < action_horizon:
+                        logging.warning(
+                            "index %s: pred/gt 时间维 %s/%s 小于 action_horizon=%s，跳过该段轨迹。",
+                            idx,
+                            pred_h.shape[0],
+                            gt_h.shape[0],
+                            action_horizon,
+                        )
+                    else:
+                        st0 = _first_row_state(
+                            packed.get("observation/state"),
+                            int(gt_h.shape[-1]),
+                        )
+                        ep_id = ep0
+                        for k in range(action_horizon):
+                            g = idx + k
+                            traj_points[ep_id].append(
+                                (
+                                    g,
+                                    np.asarray(gt_h[k], dtype=np.float64),
+                                    np.asarray(pred_h[k], dtype=np.float64),
+                                    k == 0,
+                                    st0,
+                                )
+                            )
+                            traj_idx_lo[ep_id] = (
+                                g if ep_id not in traj_idx_lo else min(traj_idx_lo[ep_id], g)
+                            )
+                            traj_idx_hi[ep_id] = (
+                                g if ep_id not in traj_idx_hi else max(traj_idx_hi[ep_id], g)
+                            )
 
     mse_mean = float(np.mean(mse_list))
     mae_mean = float(np.mean(mae_list))
@@ -357,6 +564,51 @@ def main(args: Args) -> None:
             "green",
         )
     )
+
+    if trajectory_plot_dir is not None:
+        if not traj_points:
+            logging.warning(
+                "已设置 trajectory_plot_dir 但未累积轨迹点（检查 --plot-episodes 是否过窄、"
+                "评估区间是否不足一整段 action_horizon，或 chunk 是否跨 episode）。"
+            )
+        ep_sorted = sorted(traj_points.keys(), key=lambda e: (traj_idx_lo[e], e))
+        n_plotted = 0
+        lim = max_trajectory_plots if max_trajectory_plots > 0 else 10**9
+        for ep_id in ep_sorted:
+            if n_plotted >= lim:
+                logging.info(
+                    "已达 max_trajectory_plots=%s，停止保存更多轨迹图。",
+                    max_trajectory_plots,
+                )
+                break
+            pts = sorted(traj_points[ep_id], key=lambda p: p[0])
+            gts = np.stack([p[1] for p in pts], axis=0)
+            prs = np.stack([p[2] for p in pts], axis=0)
+            infer_mask = np.array([p[3] for p in pts], dtype=bool)
+            st_rows = [p[4] for p in pts]
+            state_arr: np.ndarray | None
+            if st_rows and all(r is not None for r in st_rows):
+                state_arr = np.stack(st_rows, axis=0)  # type: ignore[arg-type]
+                if state_arr.shape != gts.shape:
+                    state_arr = None
+            else:
+                state_arr = None
+            out_png = Path(trajectory_plot_dir) / (
+                f"trajectory_ep{ep_id}_{traj_idx_lo[ep_id]}_{traj_idx_hi[ep_id]}.png"
+            )
+            _plot_trajectory_episode(
+                gt_action_across_time=gts,
+                pred_action_across_time=prs,
+                state_joints_across_time=state_arr,
+                episode_id=ep_id,
+                action_horizon=action_horizon,
+                save_path=out_png,
+                index_range=(traj_idx_lo[ep_id], traj_idx_hi[ep_id]),
+                inference_mode=inference_mode,
+                infer_start_mask=infer_mask,
+            )
+            print(colored(f"轨迹图已保存: {out_png}", "green"))
+            n_plotted += 1
 
 
 if __name__ == "__main__":
