@@ -367,10 +367,11 @@ def _process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     infer_ms = (time.monotonic() - t0) * 1000.0
 
     global model
-    if hasattr(policy, "_policy"):
-        model = policy._policy._model
-    else:
-        model = policy._model
+    if model is None:
+        if hasattr(policy, "_policy"):
+            model = policy._policy._model
+        else:
+            model = policy._model
 
     tr = getattr(model, "time_results", None) if model is not None else None
     if tr:
