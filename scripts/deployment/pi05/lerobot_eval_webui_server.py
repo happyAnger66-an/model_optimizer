@@ -24,6 +24,7 @@ import logging
 import time
 import uuid
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Deque, Literal
 
@@ -228,6 +229,188 @@ def _event_to_json(event: dict[str, Any]) -> str:
     return json.dumps(event, ensure_ascii=False, separators=(",", ":"))
 
 
+LOADING_META_MSG = _event_to_json(
+    {
+        "type": "meta",
+        "phase": "loading",
+        "message": "正在加载数据集与策略（首次连接可能较慢）；加载完成后会再推送完整 meta 与 step 流。",
+    }
+)
+
+
+def _load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
+    """在专用推理线程中执行：数据集 + policy + TRT，避免阻塞 asyncio 事件循环。"""
+    train_cfg = _config.get_config(args.config)
+    data_config = train_cfg.data.create(train_cfg.assets_dirs, train_cfg.model)
+    if not data_config.repo_id:
+        raise ValueError("当前配置未设置 repo_id，无法加载 LeRobot 数据。")
+    action_horizon = train_cfg.model.action_horizon
+    action_keys = tuple(data_config.action_sequence_keys)
+
+    dataset = _make_lerobot_dataset(
+        repo_id=data_config.repo_id,
+        action_horizon=action_horizon,
+        action_sequence_keys=action_keys,
+        prompt_from_task=data_config.prompt_from_task,
+        dataset_root=args.dataset_root,
+    )
+    repack_fn = _build_repack_only(data_config)
+
+    policy = policy_config.create_trained_policy(
+        train_cfg,
+        args.checkpoint,
+        pytorch_device=args.device,
+    )
+    if args.inference_mode == "tensorrt":
+        if not args.engine_path:
+            raise ValueError("inference_mode=tensorrt 时必须设置 --engine-path（引擎目录）。")
+        _load_tensorrt_engines(
+            policy,
+            engine_path=args.engine_path,
+            precision=args.precision,
+            vit_engine=args.vit_engine,
+            llm_engine=args.llm_engine,
+            expert_engine=args.expert_engine,
+            denoise_engine=args.denoise_engine,
+            embed_prefix_engine=args.embed_prefix_engine,
+        )
+
+    n = len(dataset)
+    end = min(args.start_index + args.num_samples, n)
+    if args.start_index >= n:
+        raise ValueError(f"start_index={args.start_index} >= dataset len={n}")
+
+    base_ds = _unwrap_lerobot_base(dataset)
+    ep_per_frame = _global_episode_id_per_frame(base_ds, n)
+
+    meta_msg = _event_to_json(
+        {
+            "type": "meta",
+            "run_id": run_id,
+            "repo_id": data_config.repo_id,
+            "backend": args.inference_mode,
+            "action_horizon": int(action_horizon),
+            "start_index": int(args.start_index),
+            "end_index_exclusive": int(end),
+            "send_wrist": bool(args.send_wrist),
+            "jpeg_quality": int(args.jpeg_quality),
+        }
+    )
+
+    return {
+        "meta_msg": meta_msg,
+        "dataset": dataset,
+        "repack_fn": repack_fn,
+        "policy": policy,
+        "n": n,
+        "end": end,
+        "start_index": int(args.start_index),
+        "action_horizon": int(action_horizon),
+        "ep_per_frame": ep_per_frame,
+        "run_id": run_id,
+        "args": args,
+    }
+
+
+def _process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
+    """在专用推理线程中执行单段 chunk：dataset 取样 + infer + 图像编码；返回 JSON 字符串列表。"""
+    args = bundle["args"]
+    action_horizon = bundle["action_horizon"]
+    n = bundle["n"]
+    end = bundle["end"]
+    start_index = bundle["start_index"]
+    ep_per_frame = bundle["ep_per_frame"]
+    run_id = bundle["run_id"]
+    dataset = bundle["dataset"]
+    repack_fn = bundle["repack_fn"]
+    policy = bundle["policy"]
+
+    stride_ok = (idx - start_index) % action_horizon == 0
+    chunk_fits = idx + action_horizon <= n and idx + action_horizon <= end
+    if not (stride_ok and chunk_fits):
+        return []
+
+    ep0 = int(ep_per_frame[idx])
+    ep_last = int(ep_per_frame[idx + action_horizon - 1])
+    if ep0 != ep_last:
+        return []
+
+    raw = _tree_to_numpy(dataset[idx])
+    packed = repack_fn(dict(raw))
+    if "actions" not in packed:
+        raise KeyError("repack 后缺少 actions，请检查数据配置与数据集列名是否一致。")
+
+    gt = np.asarray(packed["actions"])
+    obs = {k: v for k, v in packed.items() if k != "actions"}
+
+    t0 = time.monotonic()
+    out = policy.infer(obs)
+    infer_ms = (time.monotonic() - t0) * 1000.0
+    pred = np.asarray(out["actions"])
+
+    pred_a, gt_a = _align_action_dim(pred, gt)
+    pred_h = pred_a[:action_horizon]
+    gt_h = gt_a[:action_horizon]
+    if pred_h.shape[0] < action_horizon or gt_h.shape[0] < action_horizon:
+        logging.warning(
+            "index %s: pred/gt 时间维 %s/%s 小于 action_horizon=%s，跳过。",
+            idx,
+            pred_h.shape[0],
+            gt_h.shape[0],
+            action_horizon,
+        )
+        return []
+
+    prompt: str | None = None
+    if "prompt" in packed:
+        try:
+            prompt = str(packed["prompt"])
+        except Exception:
+            prompt = None
+
+    images: dict[str, str] | None = None
+    if "observation/image" in packed:
+        try:
+            base_rgb = _to_hwc_uint8(packed["observation/image"])
+            images = {
+                "base_rgb_jpeg_b64": _encode_jpeg_b64(base_rgb, quality=args.jpeg_quality),
+            }
+            if args.send_wrist and "observation/wrist_image" in packed:
+                wrist_rgb = _to_hwc_uint8(packed["observation/wrist_image"])
+                images["wrist_rgb_jpeg_b64"] = _encode_jpeg_b64(
+                    wrist_rgb, quality=args.jpeg_quality
+                )
+        except Exception as exc:
+            logging.warning("index %s: 图像编码失败（继续只发数值）: %s", idx, exc)
+            images = None
+
+    out_msgs: list[str] = []
+    for k in range(action_horizon):
+        g = idx + k
+        diff = pred_h[k] - gt_h[k]
+        mse = float(np.mean(diff**2))
+        mae = float(np.mean(np.abs(diff)))
+
+        step_images = images if k == 0 else None
+        step_event = StepEvent(
+            type="step",
+            run_id=run_id,
+            episode_id=ep0,
+            global_index=int(g),
+            k_in_chunk=int(k),
+            is_chunk_start=bool(k == 0),
+            action_horizon=int(action_horizon),
+            prompt=prompt if k == 0 else None,
+            gt_action=[float(x) for x in gt_h[k].astype(np.float64).tolist()],
+            pred_action=[float(x) for x in pred_h[k].astype(np.float64).tolist()],
+            metrics={"mse": mse, "mae": mae},
+            images=step_images,
+            server_timing={"infer_ms": float(infer_ms)} if k == 0 else None,
+        )
+        out_msgs.append(_event_to_json(dataclasses.asdict(step_event)))
+    return out_msgs
+
+
 class WebsocketBroadcaster:
     def __init__(self, *, history_size: int) -> None:
         self._clients: set[Any] = set()
@@ -298,65 +481,8 @@ async def _run_server(args: Args) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     run_id = uuid.uuid4().hex[:12]
-
-    train_cfg = _config.get_config(args.config)
-    data_config = train_cfg.data.create(train_cfg.assets_dirs, train_cfg.model)
-    if not data_config.repo_id:
-        raise ValueError("当前配置未设置 repo_id，无法加载 LeRobot 数据。")
-    action_horizon = train_cfg.model.action_horizon
-    action_keys = tuple(data_config.action_sequence_keys)
-
-    dataset = _make_lerobot_dataset(
-        repo_id=data_config.repo_id,
-        action_horizon=action_horizon,
-        action_sequence_keys=action_keys,
-        prompt_from_task=data_config.prompt_from_task,
-        dataset_root=args.dataset_root,
-    )
-    repack_fn = _build_repack_only(data_config)
-
-    policy = policy_config.create_trained_policy(
-        train_cfg,
-        args.checkpoint,
-        pytorch_device=args.device,
-    )
-    if args.inference_mode == "tensorrt":
-        if not args.engine_path:
-            raise ValueError("inference_mode=tensorrt 时必须设置 --engine-path（引擎目录）。")
-        _load_tensorrt_engines(
-            policy,
-            engine_path=args.engine_path,
-            precision=args.precision,
-            vit_engine=args.vit_engine,
-            llm_engine=args.llm_engine,
-            expert_engine=args.expert_engine,
-            denoise_engine=args.denoise_engine,
-            embed_prefix_engine=args.embed_prefix_engine,
-        )
-
-    n = len(dataset)
-    end = min(args.start_index + args.num_samples, n)
-    if args.start_index >= n:
-        raise ValueError(f"start_index={args.start_index} >= dataset len={n}")
-
-    base_ds = _unwrap_lerobot_base(dataset)
-    ep_per_frame = _global_episode_id_per_frame(base_ds, n)
-
     broadcaster = WebsocketBroadcaster(history_size=args.history_size)
-
-    meta = {
-        "type": "meta",
-        "run_id": run_id,
-        "repo_id": data_config.repo_id,
-        "backend": args.inference_mode,
-        "action_horizon": int(action_horizon),
-        "start_index": int(args.start_index),
-        "end_index_exclusive": int(end),
-        "send_wrist": bool(args.send_wrist),
-        "jpeg_quality": int(args.jpeg_quality),
-    }
-    meta_msg = _event_to_json(meta)
-    broadcaster.add_history(meta_msg)
+    meta_ready: dict[str, Any] = {"msg": None}
 
     async def handler(ws):  # websockets passes ServerConnection
         if getattr(ws, "path", None) not in (None, args.path):
@@ -364,14 +490,60 @@ async def _run_server(args: Args) -> None:
             return
         await broadcaster.register(ws)
         try:
-            await ws.send(meta_msg)
-            if args.history_size > 0:
-                await broadcaster.send_history(ws)
+            if meta_ready["msg"] is None:
+                await ws.send(LOADING_META_MSG)
+            else:
+                await ws.send(meta_ready["msg"])
+                if args.history_size > 0:
+                    await broadcaster.send_history(ws)
             async for _ in ws:
                 # 当前只做单向推送；忽略 client 消息（后续可扩展控制命令）
                 pass
         finally:
             await broadcaster.unregister(ws)
+
+    async def infer_pipeline() -> None:
+        """在单线程 ThreadPoolExecutor 中跑加载与 policy.infer，避免阻塞 WebSocket 事件循环。"""
+        loop = asyncio.get_running_loop()
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pi05_infer")
+        try:
+            logging.info("推理线程：开始加载数据集与策略（端口已监听，可先连接 WebSocket）…")
+            bundle = await loop.run_in_executor(executor, _load_infer_bundle, args, run_id)
+            meta_msg = bundle["meta_msg"]
+            meta_ready["msg"] = meta_msg
+            broadcaster.add_history(meta_msg)
+            await broadcaster.broadcast(meta_msg)
+
+            start_index = bundle["start_index"]
+            end = bundle["end"]
+
+            min_step_period = (1.0 / args.max_fps) if args.max_fps and args.max_fps > 0 else 0.0
+            last_send_t = 0.0
+
+            for idx in range(start_index, end):
+                msgs = await loop.run_in_executor(executor, _process_infer_chunk, bundle, idx)
+                for msg in msgs:
+                    broadcaster.add_history(msg)
+                    await broadcaster.broadcast(msg)
+                    if min_step_period > 0:
+                        now = time.monotonic()
+                        dt = now - last_send_t
+                        if dt < min_step_period:
+                            await asyncio.sleep(min_step_period - dt)
+                        last_send_t = time.monotonic()
+
+            done_msg = _event_to_json({"type": "done", "run_id": run_id})
+            broadcaster.add_history(done_msg)
+            await broadcaster.broadcast(done_msg)
+            logging.info("推理序列推送完毕 run_id=%s", run_id)
+        except Exception as exc:  # pragma: no cover
+            logging.exception("推理管线失败: %s", exc)
+            err_msg = _event_to_json({"type": "error", "run_id": run_id, "message": str(exc)})
+            broadcaster.add_history(err_msg)
+            await broadcaster.broadcast(err_msg)
+        finally:
+            executor.shutdown(wait=True)
+            logging.info("推理线程池已关闭")
 
     async with _server.serve(
         handler,
@@ -380,106 +552,10 @@ async def _run_server(args: Args) -> None:
         compression=None,
         max_size=None,
     ) as server:
-        logging.info("WebUI WS server: ws://%s:%s%s", args.host, args.port, args.path)
-        logging.info("run_id=%s | repo_id=%s | backend=%s", run_id, data_config.repo_id, args.inference_mode)
-
-        min_step_period = (1.0 / args.max_fps) if args.max_fps and args.max_fps > 0 else 0.0
-        last_send_t = 0.0
-
-        for idx in range(args.start_index, end):
-            stride_ok = (idx - args.start_index) % action_horizon == 0
-            chunk_fits = idx + action_horizon <= n and idx + action_horizon <= end
-            if not (stride_ok and chunk_fits):
-                continue
-
-            ep0 = int(ep_per_frame[idx])
-            ep_last = int(ep_per_frame[idx + action_horizon - 1])
-            if ep0 != ep_last:
-                continue
-
-            raw = _tree_to_numpy(dataset[idx])
-            packed = repack_fn(dict(raw))
-            if "actions" not in packed:
-                raise KeyError("repack 后缺少 actions，请检查数据配置与数据集列名是否一致。")
-
-            gt = np.asarray(packed["actions"])
-            obs = {k: v for k, v in packed.items() if k != "actions"}
-
-            t0 = time.monotonic()
-            out = policy.infer(obs)
-            infer_ms = (time.monotonic() - t0) * 1000.0
-            pred = np.asarray(out["actions"])
-
-            pred_a, gt_a = _align_action_dim(pred, gt)
-            pred_h = pred_a[:action_horizon]
-            gt_h = gt_a[:action_horizon]
-            if pred_h.shape[0] < action_horizon or gt_h.shape[0] < action_horizon:
-                logging.warning(
-                    "index %s: pred/gt 时间维 %s/%s 小于 action_horizon=%s，跳过。",
-                    idx,
-                    pred_h.shape[0],
-                    gt_h.shape[0],
-                    action_horizon,
-                )
-                continue
-
-            prompt: str | None = None
-            if "prompt" in packed:
-                try:
-                    prompt = str(packed["prompt"])
-                except Exception:
-                    prompt = None
-
-            images: dict[str, str] | None = None
-            if "observation/image" in packed:
-                try:
-                    base_rgb = _to_hwc_uint8(packed["observation/image"])
-                    images = {
-                        "base_rgb_jpeg_b64": _encode_jpeg_b64(base_rgb, quality=args.jpeg_quality),
-                    }
-                    if args.send_wrist and "observation/wrist_image" in packed:
-                        wrist_rgb = _to_hwc_uint8(packed["observation/wrist_image"])
-                        images["wrist_rgb_jpeg_b64"] = _encode_jpeg_b64(
-                            wrist_rgb, quality=args.jpeg_quality
-                        )
-                except Exception as exc:
-                    logging.warning("index %s: 图像编码失败（继续只发数值）: %s", idx, exc)
-                    images = None
-
-            for k in range(action_horizon):
-                g = idx + k
-                diff = pred_h[k] - gt_h[k]
-                mse = float(np.mean(diff**2))
-                mae = float(np.mean(np.abs(diff)))
-
-                step_images = images if k == 0 else None
-                step_event = StepEvent(
-                    type="step",
-                    run_id=run_id,
-                    episode_id=ep0,
-                    global_index=int(g),
-                    k_in_chunk=int(k),
-                    is_chunk_start=bool(k == 0),
-                    action_horizon=int(action_horizon),
-                    prompt=prompt if k == 0 else None,
-                    gt_action=[float(x) for x in gt_h[k].astype(np.float64).tolist()],
-                    pred_action=[float(x) for x in pred_h[k].astype(np.float64).tolist()],
-                    metrics={"mse": mse, "mae": mae},
-                    images=step_images,
-                    server_timing={"infer_ms": float(infer_ms)} if k == 0 else None,
-                )
-                msg = _event_to_json(dataclasses.asdict(step_event))
-                broadcaster.add_history(msg)
-                await broadcaster.broadcast(msg)
-
-                if min_step_period > 0:
-                    now = time.monotonic()
-                    dt = now - last_send_t
-                    if dt < min_step_period:
-                        await asyncio.sleep(min_step_period - dt)
-                    last_send_t = time.monotonic()
-
-        await server.wait_closed()
+        logging.info("WebUI WS listening: ws://%s:%s%s", args.host, args.port, args.path)
+        logging.info("run_id=%s（加载完成后会广播完整 meta）", run_id)
+        asyncio.create_task(infer_pipeline())
+        await server.serve_forever()
 
 
 def main() -> None:

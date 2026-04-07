@@ -181,6 +181,12 @@ function connect() {
     if (!msg || !msg.type) return;
 
     if (msg.type === "meta") {
+      if (msg.phase === "loading") {
+        el("repoId").textContent = "…";
+        el("backend").textContent = "…";
+        el("prompt").textContent = msg.message || "Loading…";
+        return;
+      }
       meta = msg;
       el("runId").textContent = meta.run_id ?? "-";
       el("repoId").textContent = meta.repo_id ?? "-";
