@@ -9,6 +9,9 @@ const RECONNECT_MS = 3000;
 let manualDisconnect = false;
 let reconnectTimer = null;
 
+/** 每次发起新连接自增，用于忽略已被替换或已放弃的旧 WebSocket 的 onopen/onclose */
+let wsConnectGeneration = 0;
+
 const THEME_STORAGE_KEY = "pi05_webui_theme";
 const DEFAULT_WS_FALLBACK = "ws://127.0.0.1:8765/ws";
 
@@ -345,11 +348,24 @@ function connect() {
 function connectInternal() {
   const url = el("wsUrl").value.trim();
   if (!url) return;
-  if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
 
-  ws = new WebSocket(url);
+  wsConnectGeneration += 1;
+  const myGen = wsConnectGeneration;
 
-  ws.onopen = () => {
+  if (ws) {
+    try {
+      ws.close();
+    } catch (e) {
+      /* ignore */
+    }
+    ws = null;
+  }
+
+  const socket = new WebSocket(url);
+  ws = socket;
+
+  socket.onopen = () => {
+    if (myGen !== wsConnectGeneration || ws !== socket) return;
     clearReconnectTimer();
     connected = true;
     setBadge(true);
@@ -358,7 +374,8 @@ function connectInternal() {
     setProgress("WebSocket 已连接，等待服务端 meta / 数据流…");
   };
 
-  ws.onclose = () => {
+  socket.onclose = () => {
+    if (myGen !== wsConnectGeneration) return;
     ws = null;
     connected = false;
     setBadge(false);
@@ -371,11 +388,12 @@ function connectInternal() {
     }
   };
 
-  ws.onerror = () => {
+  socket.onerror = () => {
     // onclose will handle UI 与重连调度
   };
 
-  ws.onmessage = (evt) => {
+  socket.onmessage = (evt) => {
+    if (myGen !== wsConnectGeneration || ws !== socket) return;
     let msg = null;
     try {
       msg = JSON.parse(evt.data);
@@ -440,6 +458,7 @@ function connectInternal() {
 
 function disconnect() {
   manualDisconnect = true;
+  wsConnectGeneration += 1;
   clearReconnectTimer();
   setProgress("正在断开…");
   if (ws) {

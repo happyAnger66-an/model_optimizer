@@ -11,7 +11,7 @@ LeRobot 离线评估 WebUI（client-server）：
 
 - `type="meta"`：连接建立后 server 先发 1 条元数据
 - `type="step"`：按时间顺序持续推送 step
-- `type="done"`：本 run 评估区间内 step 已全部推送，推理线程退出（WebSocket 仍可保持连接）
+- `type="done"`：本 run 评估区间内 step 已全部推送；随后 server 关闭 WebSocket 并 **进程退出**
 - `type="log"`：可选日志事件
 """
 
@@ -360,7 +360,10 @@ def _process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     obs = {k: v for k, v in packed.items() if k != "actions"}
 
     t0 = time.monotonic()
+    t_0 = time.time()
     out = policy.infer(obs)
+    infer_time = time.time() - t_0
+    print(colored(f"[infer] 推理时间: {infer_time:.2f} 秒", "cyan"), flush=True)
     infer_ms = (time.monotonic() - t0) * 1000.0
     pred = np.asarray(out["actions"])
 
@@ -548,6 +551,11 @@ async def _run_server(args: Args) -> None:
             await broadcaster.unregister(ws)
 
     loop = asyncio.get_running_loop()
+    infer_done = asyncio.Event()
+
+    def signal_infer_complete() -> None:
+        """由推理线程在结束时调用，通知主协程关闭 WebSocket 并退出进程。"""
+        loop.call_soon_threadsafe(infer_done.set)
 
     async def publish(msg: str) -> None:
         """仅在事件循环线程中调用：入 history 并广播（infer 线程经 run_coroutine_threadsafe 调度）。"""
@@ -590,8 +598,8 @@ async def _run_server(args: Args) -> None:
                     "phase": "finished",
                     "run_id": run_id,
                     "message": (
-                        "推理序列已全部推送完毕，推理线程将退出；"
-                        "WebSocket 仍可保持连接（重连或重启 server 可再次运行评估）。"
+                        "推理序列已全部推送完毕；本进程即将关闭 WebSocket 并退出。"
+                        "若需再次评估请重新启动本 server。"
                     ),
                     "start_index": int(start_index),
                     "end_index_exclusive": int(end),
@@ -609,6 +617,7 @@ async def _run_server(args: Args) -> None:
                 pass
         finally:
             print(colored("[infer] 线程退出", "cyan"), flush=True)
+            signal_infer_complete()
 
     hint_url = _write_webui_server_hint(args)
     print(
@@ -629,7 +638,12 @@ async def _run_server(args: Args) -> None:
     ) as server:
         print(colored(f"run_id={run_id}（加载完成后会广播完整 meta）", "green"), flush=True)
         threading.Thread(target=infer_worker, daemon=True, name="pi05_infer").start()
-        await server.serve_forever()
+        await infer_done.wait()
+        # 给客户端栈少量时间处理最后一帧（infer 线程内 publish 已 await 完成）
+        await asyncio.sleep(0.25)
+        print(colored("[main] 推理管线已结束，关闭 WebSocket 并退出进程", "green"), flush=True)
+        server.close()
+        await server.wait_closed()
 
 
 def main() -> None:

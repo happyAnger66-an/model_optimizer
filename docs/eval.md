@@ -200,7 +200,7 @@ python scripts/deployment/pi05/lerobot_eval_webui_server.py \
 - server **每隔 `action_horizon` 帧**做一次推理，得到 chunk `pred[0..H-1]`。
 - 将每个 `k` 的 `pred[k]` 与 label `gt[k]` 对齐，并映射到连续全局帧 `global_index = idx + k`。
 - 跨 episode 边界的 chunk 会跳过，避免把两段 episode 拼接。
-- 本 run 在 `[start_index, end)` 内全部推完后，server 会再推送一条 **`type=done`**（含 `message` / `phase=finished` 等）；WebUI 会显示“推理已结束”，推理线程退出但 **WebSocket 进程仍可保持连接**。
+- 本 run 在 `[start_index, end)` 内全部推完后，server 会再推送一条 **`type=done`**（含 `message` / `phase=finished` 等）；WebUI 会显示“推理已结束”。随后 **整个 server 进程会关闭 WebSocket 监听并退出**（需再次评估时请重新启动脚本）。
 
 ### 2) 打开 client（浏览器订阅显示）
 
