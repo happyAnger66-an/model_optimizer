@@ -19,7 +19,7 @@ chunk，与 ``infer`` 输出中经 ``LiberoOutputs`` 截断后的 ``actions``（
     PYTHONPATH=third_party/openpi/src:$PYTHONPATH \\
     python scripts/deployment/pi05/lerobot_eval_compare.py \\
       --checkpoint /path/to/checkpoint \\
-      --config-name pi05_libero \\
+      --config pi05_libero \\
       --num-samples 50 \\
       --dataset-root ~/.cache/huggingface/lerobot/physical-intelligence/libero
 
@@ -28,7 +28,7 @@ TensorRT 示例::
     python scripts/deployment/pi05/lerobot_eval_compare.py \\
       --checkpoint /path/to/checkpoint \\
       --inference-mode tensorrt \\
-      --trt-engine-path /path/to/trt_dir \\
+      --engine-path /path/to/trt_dir \\
       --vit-engine vit_fp16.trt \\
       --llm-engine llm_fp16.trt \\
       --expert-engine expert_fp16.trt \\
@@ -44,6 +44,7 @@ from typing import Literal
 
 import numpy as np
 import tyro
+from termcolor import colored
 
 import openpi.transforms as _transforms
 from openpi.policies import policy_config
@@ -173,8 +174,8 @@ class Args:
     checkpoint: Path
     """含 ``model.safetensors`` 与 ``assets/`` 的检查点目录。"""
 
-    config_name: str = "pi05_libero"
-    """``openpi.training.config`` 中的 TrainConfig 名称。"""
+    config: str = "pi05_libero"
+    """``openpi.training.config`` 中的 TrainConfig 名称（CLI: ``--config``）。"""
 
     num_samples: int = 100
     """评估的帧数（数据集下标 0..num_samples-1）。"""
@@ -185,8 +186,8 @@ class Args:
     dataset_root: Path | None = None
     """本地 LeRobot 数据集根目录；为 None 时使用 hub 默认缓存路径。"""
 
-    pytorch_device: str | None = None
-    """PyTorch 设备；默认自动选 CUDA。"""
+    device: str | None = None
+    """PyTorch 设备；默认自动选 CUDA（CLI: ``--device``）。"""
 
     inference_mode: Literal["pytorch", "tensorrt"] = "pytorch"
     """``pytorch``：原生 PI0Pytorch；``tensorrt``：加载 TRT 引擎并原地替换子模块（见 ``Pi05TensorRTExecutor``）。"""
@@ -194,8 +195,8 @@ class Args:
     precision: Literal["fp16", "bf16", "fp32"] = "bf16"
     """TensorRT / 执行器精度；仅 ``inference_mode=tensorrt`` 时使用。"""
 
-    trt_engine_path: str = ""
-    """TRT 引擎所在**目录**（与 standalone 一致；其下再拼各引擎文件名）。"""
+    engine_path: str = ""
+    """TRT 引擎所在**目录**（CLI: ``--engine-path``；与 ``standalone_inference_script`` 的 ``trt_engine_path`` 一致）。"""
 
     vit_engine: str = ""
     """ViT 引擎文件名；留空则不替换 ViT。"""
@@ -217,10 +218,45 @@ class Args:
 
 
 def main(args: Args) -> None:
+    """入口由 ``tyro.cli(Args)`` 调用，使 CLI 为顶层 ``--checkpoint`` 等，而非 ``--args.*``。"""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    np.random.seed(args.seed)
+    (
+        checkpoint,
+        config,
+        num_samples,
+        start_index,
+        dataset_root,
+        device,
+        inference_mode,
+        precision,
+        engine_path,
+        vit_engine,
+        llm_engine,
+        expert_engine,
+        denoise_engine,
+        embed_prefix_engine,
+        seed,
+    ) = (
+        args.checkpoint,
+        args.config,
+        args.num_samples,
+        args.start_index,
+        args.dataset_root,
+        args.device,
+        args.inference_mode,
+        args.precision,
+        args.engine_path,
+        args.vit_engine,
+        args.llm_engine,
+        args.expert_engine,
+        args.denoise_engine,
+        args.embed_prefix_engine,
+        args.seed,
+    )
 
-    train_cfg = _config.get_config(args.config_name)
+    np.random.seed(seed)
+
+    train_cfg = _config.get_config(config)
     data_config = train_cfg.data.create(train_cfg.assets_dirs, train_cfg.model)
     if not data_config.repo_id:
         raise ValueError("当前配置未设置 repo_id，无法加载 LeRobot 数据。")
@@ -232,37 +268,37 @@ def main(args: Args) -> None:
         action_horizon=action_horizon,
         action_sequence_keys=action_keys,
         prompt_from_task=data_config.prompt_from_task,
-        dataset_root=args.dataset_root,
+        dataset_root=dataset_root,
     )
     repack_fn = _build_repack_only(data_config)
 
     policy = policy_config.create_trained_policy(
         train_cfg,
-        args.checkpoint,
-        pytorch_device=args.pytorch_device,
+        checkpoint,
+        pytorch_device=device,
     )
 
-    if args.inference_mode == "tensorrt":
-        if not args.trt_engine_path:
-            raise ValueError("inference_mode=tensorrt 时必须设置 --trt-engine-path（引擎目录）。")
+    if inference_mode == "tensorrt":
+        if not engine_path:
+            raise ValueError("inference_mode=tensorrt 时必须设置 --engine-path（引擎目录）。")
         logging.info(
             "TensorRT：加载引擎目录 %s（vit=%r llm=%r expert=%r denoise=%r embed_prefix=%r）",
-            args.trt_engine_path,
-            args.vit_engine or "(none)",
-            args.llm_engine or "(none)",
-            args.expert_engine or "(none)",
-            args.denoise_engine or "(none)",
-            args.embed_prefix_engine or "(none)",
+            engine_path,
+            vit_engine or "(none)",
+            llm_engine or "(none)",
+            expert_engine or "(none)",
+            denoise_engine or "(none)",
+            embed_prefix_engine or "(none)",
         )
         _load_tensorrt_engines(
             policy,
-            engine_path=args.trt_engine_path,
-            precision=args.precision,
-            vit_engine=args.vit_engine,
-            llm_engine=args.llm_engine,
-            expert_engine=args.expert_engine,
-            denoise_engine=args.denoise_engine,
-            embed_prefix_engine=args.embed_prefix_engine,
+            engine_path=engine_path,
+            precision=precision,
+            vit_engine=vit_engine,
+            llm_engine=llm_engine,
+            expert_engine=expert_engine,
+            denoise_engine=denoise_engine,
+            embed_prefix_engine=embed_prefix_engine,
         )
     else:
         logging.info("推理后端: PyTorch（未加载 TensorRT 引擎）。")
@@ -276,15 +312,15 @@ def main(args: Args) -> None:
         pass
 
     n = len(dataset)
-    end = min(args.start_index + args.num_samples, n)
-    if args.start_index >= n:
-        raise ValueError(f"start_index={args.start_index} >= dataset len={n}")
+    end = min(start_index + num_samples, n)
+    if start_index >= n:
+        raise ValueError(f"start_index={start_index} >= dataset len={n}")
 
     mse_list: list[float] = []
     mae_list: list[float] = []
     per_dim_mae: list[np.ndarray] = []
 
-    for idx in range(args.start_index, end):
+    for idx in range(start_index, end):
         raw = _tree_to_numpy(dataset[idx])
         packed = repack_fn(dict(raw))
         if "actions" not in packed:
@@ -305,12 +341,26 @@ def main(args: Args) -> None:
     mae_std = float(np.std(mae_list))
     per_dim = np.mean(np.stack(per_dim_mae, axis=0), axis=0)
 
-    logging.info("推理模式: %s", args.inference_mode)
-    logging.info("样本数: %d (index %d..%d)", len(mse_list), args.start_index, end - 1)
-    logging.info("MSE(mean over samples): %.6f", mse_mean)
-    logging.info("MAE(mean over samples): %.6f ± %.6f", mae_mean, mae_std)
-    logging.info("MAE per action dim (mean over samples): %s", np.array2string(per_dim, precision=4))
+    print(colored(f"推理模式: {inference_mode}", "green"))
+    print(
+        colored(
+            f"样本数: {len(mse_list)} (index {start_index}..{end - 1})",
+            "green",
+        )
+    )
+    print(colored(f"MSE(mean over samples): {mse_mean:.6f}", "green"))
+    print(colored(f"MAE(mean over samples): {mae_mean:.6f} ± {mae_std:.6f}", "green"))
+    print(
+        colored(
+            "MAE per action dim (mean over samples): "
+            + np.array2string(per_dim, precision=4),
+            "green",
+        )
+    )
 
 
 if __name__ == "__main__":
-    tyro.cli(main)
+    # 必须 ``tyro.cli(Args)`` 再传入 main：若写 ``tyro.cli(main)`` 且 ``def main(cli: Args)``，
+    # 参数会落在前缀 ``--cli.*`` 下。解析为顶层 ``--checkpoint`` / ``--engine-path`` 等见：
+    # https://brentyi.github.io/tyro/
+    main(tyro.cli(Args))
