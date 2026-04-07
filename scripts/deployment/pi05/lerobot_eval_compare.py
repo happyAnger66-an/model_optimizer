@@ -225,6 +225,20 @@ def _first_row_state(state, action_dim: int) -> np.ndarray | None:
     return row
 
 
+def _to_hwc_uint8(image: np.ndarray) -> np.ndarray:
+    """把常见 LeRobot 图像格式转成可直接 imshow 的 uint8(H,W,C)。"""
+    img = np.asarray(image)
+    if np.issubdtype(img.dtype, np.floating):
+        img = (255.0 * img).clip(0.0, 255.0).astype(np.uint8)
+    elif img.dtype != np.uint8:
+        img = img.astype(np.uint8, copy=False)
+
+    if img.ndim == 3 and img.shape[0] == 3 and img.shape[-1] != 3:
+        # CHW -> HWC
+        img = np.transpose(img, (1, 2, 0))
+    return img
+
+
 def _plot_trajectory_episode(
     *,
     gt_action_across_time: np.ndarray,
@@ -236,10 +250,13 @@ def _plot_trajectory_episode(
     index_range: tuple[int, int],
     inference_mode: str,
     infer_start_mask: np.ndarray | None = None,
+    prompt: str | None = None,
+    rgb_thumbnails: list[tuple[int, np.ndarray]] | None = None,
 ) -> None:
     """每条轨迹一张 figure：每动作维度一子图（对齐 Isaac-GR00T ``plot_trajectory_results``）。"""
     try:
         import matplotlib.pyplot as plt
+        from matplotlib import gridspec
     except ImportError as e:
         raise ImportError("绘制轨迹需要 matplotlib：pip install matplotlib") from e
 
@@ -253,16 +270,34 @@ def _plot_trajectory_episode(
         return
 
     indices = list(range(action_dim))
-    fig, axes = plt.subplots(nrows=len(indices), ncols=1, figsize=(8, 4 * len(indices)))
-    if len(indices) == 1:
-        axes = [axes]
+    thumbs = rgb_thumbnails or []
+    show_thumbs = len(thumbs) > 0
+
+    n_rows = len(indices) + (1 if show_thumbs else 0)
+    fig = plt.figure(figsize=(10, 3.2 * n_rows))
+    gs = gridspec.GridSpec(nrows=n_rows, ncols=1, height_ratios=([1.2] if show_thumbs else []) + [3] * len(indices))
+
+    axes: list = []
+    if show_thumbs:
+        ax_img = fig.add_subplot(gs[0, 0])
+        ax_img.axis("off")
+        n = len(thumbs)
+        inner = gridspec.GridSpecFromSubplotSpec(1, n, subplot_spec=gs[0, 0], wspace=0.05)
+        for j, (gidx, img) in enumerate(thumbs):
+            ax = fig.add_subplot(inner[0, j])
+            ax.imshow(img)
+            ax.set_title(f"idx {gidx}", fontsize=9)
+            ax.axis("off")
+
+    for r in range(len(indices)):
+        ax = fig.add_subplot(gs[r + (1 if show_thumbs else 0), 0])
+        axes.append(ax)
 
     lo, hi = index_range
-    fig.suptitle(
-        f"Episode {episode_id} | global index [{lo}, {hi}] | backend={inference_mode}",
-        fontsize=14,
-        color="blue",
-    )
+    title = f"Episode {episode_id} | global index [{lo}, {hi}] | backend={inference_mode}"
+    if prompt:
+        title = title + f"\nPrompt: {prompt}"
+    fig.suptitle(title, fontsize=12, color="blue")
 
     for plot_idx, d in enumerate(indices):
         ax = axes[plot_idx]
@@ -363,6 +398,12 @@ class Args:
     plot_episodes: tuple[int, ...] = ()
     """仅绘制这些 ``episode_index``；为空则绘制评估范围内出现的所有 episode。"""
 
+    plot_rgb_on_trajectory: bool = False
+    """若为 True，在轨迹图顶部额外显示若干 RGB 缩略图（采样自每次推理 chunk 的起点帧）。"""
+
+    max_rgb_thumbnails: int = 6
+    """每条 episode 轨迹图最多显示多少张 RGB 缩略图（仅在 plot_rgb_on_trajectory=True 时生效）。"""
+
 
 def main(args: Args) -> None:
     """入口由 ``tyro.cli(Args)`` 调用，使 CLI 为顶层 ``--checkpoint`` 等，而非 ``--args.*``。"""
@@ -386,6 +427,8 @@ def main(args: Args) -> None:
         trajectory_plot_dir,
         max_trajectory_plots,
         plot_episodes,
+        plot_rgb_on_trajectory,
+        max_rgb_thumbnails,
     ) = (
         args.checkpoint,
         args.config,
@@ -405,6 +448,8 @@ def main(args: Args) -> None:
         args.trajectory_plot_dir,
         args.max_trajectory_plots,
         args.plot_episodes,
+        args.plot_rgb_on_trajectory,
+        args.max_rgb_thumbnails,
     )
 
     np.random.seed(seed)
@@ -480,6 +525,8 @@ def main(args: Args) -> None:
     traj_points: dict[int, list[tuple[int, np.ndarray, np.ndarray, bool, np.ndarray | None]]] = (
         defaultdict(list)
     )
+    traj_prompt: dict[int, str] = {}
+    traj_rgb_thumbs: dict[int, list[tuple[int, np.ndarray]]] = defaultdict(list)
     traj_idx_lo: dict[int, int] = {}
     traj_idx_hi: dict[int, int] = {}
 
@@ -509,6 +556,11 @@ def main(args: Args) -> None:
                 ep_last = int(ep_per_frame[idx + action_horizon - 1])
                 same_ep = ep0 == ep_last
                 if same_ep and (episode_allow is None or ep0 in episode_allow):
+                    if ep0 not in traj_prompt and "prompt" in packed:
+                        try:
+                            traj_prompt[ep0] = str(packed["prompt"])
+                        except Exception:
+                            pass
                     gt_h = gt_a[:action_horizon]
                     pred_h = pred_a[:action_horizon]
                     if pred_h.shape[0] < action_horizon or gt_h.shape[0] < action_horizon:
@@ -525,6 +577,13 @@ def main(args: Args) -> None:
                             int(gt_h.shape[-1]),
                         )
                         ep_id = ep0
+                        if plot_rgb_on_trajectory and len(traj_rgb_thumbs[ep_id]) < max_rgb_thumbnails:
+                            if "observation/image" in packed:
+                                try:
+                                    img = _to_hwc_uint8(packed["observation/image"])
+                                    traj_rgb_thumbs[ep_id].append((idx, img))
+                                except Exception as exc:
+                                    logging.warning("index %s: 提取 RGB 图像失败: %s", idx, exc)
                         for k in range(action_horizon):
                             g = idx + k
                             traj_points[ep_id].append(
@@ -606,6 +665,8 @@ def main(args: Args) -> None:
                 index_range=(traj_idx_lo[ep_id], traj_idx_hi[ep_id]),
                 inference_mode=inference_mode,
                 infer_start_mask=infer_mask,
+                prompt=traj_prompt.get(ep_id),
+                rgb_thumbnails=traj_rgb_thumbs.get(ep_id),
             )
             print(colored(f"轨迹图已保存: {out_png}", "green"))
             n_plotted += 1
