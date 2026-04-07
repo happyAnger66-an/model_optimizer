@@ -327,7 +327,7 @@ def _load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
         "args": args,
     }
 
-
+model = None
 def _process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     """在专用推理线程中执行单段 chunk：dataset 取样 + infer + 图像编码；返回 JSON 字符串列表。"""
     args = bundle["args"]
@@ -365,6 +365,26 @@ def _process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     infer_time = time.time() - t_0
     print(colored(f"[infer] 推理时间: {infer_time:.2f} 秒", "cyan"), flush=True)
     infer_ms = (time.monotonic() - t0) * 1000.0
+
+    global model
+    if hasattr(policy, "_policy"):
+        model = policy._policy._model
+    else:
+        model = policy._model
+
+    tr = getattr(model, "time_results", None) if model is not None else None
+    if tr:
+        for key, label in (
+            ("suffix", "suffix"),
+            ("action", "action"),
+            ("vit", "embed_prefix"),
+            ("lang_emb", "lang_emb"),
+            ("llm", "llm"),
+        ):
+            if key in tr and tr[key]:
+                print(colored(
+                    f"{label} {np.mean(tr[key])*1000:.2f} ± {np.std(tr[key])*1000:.2f} ms (shared)", "green"))
+
     pred = np.asarray(out["actions"])
 
     pred_a, gt_a = _align_action_dim(pred, gt)
