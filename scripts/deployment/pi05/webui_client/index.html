@@ -35,49 +35,53 @@
         </div>
       </div>
 
-      <div class="card span2">
-        <div class="cardTitle">Prompt</div>
-        <div id="prompt" class="prompt">-</div>
-      </div>
-
-      <div class="card">
+      <div class="card cardRgb">
         <div class="cardTitle">Base RGB</div>
-        <img id="imgBase" class="img" alt="base rgb" />
+        <img id="imgBase" class="img imgLarge" alt="base rgb" />
       </div>
 
-      <div class="card">
+      <div class="card cardRgb">
         <div class="cardTitle">Wrist RGB</div>
-        <div class="sub">
+        <div class="sub subTight">
           <label class="checkbox">
             <input id="toggleWrist" type="checkbox" />
-            显示 wrist（仅当 server 发送）
+            显示 wrist
           </label>
         </div>
-        <img id="imgWrist" class="img" alt="wrist rgb" style="display: none" />
+        <img id="imgWrist" class="img imgLarge" alt="wrist rgb" style="display: none" />
+      </div>
+
+      <div class="card span2 cardProgress">
+        <div class="cardTitle">Server 进度</div>
+        <div id="serverProgress" class="progressPanel">-</div>
+      </div>
+
+      <div class="card span2 cardPrompt">
+        <div class="cardTitle">Prompt（任务指令）</div>
+        <div id="prompt" class="prompt promptCompact">—</div>
       </div>
 
       <div class="card span4">
         <div class="cardTitle">
-          Action 曲线（滚动窗口）
-          <span class="sub">gt vs pred</span>
+          各动作维度
+          <span class="subInline">每维单独子图（gt / pred）</span>
         </div>
         <div class="sub">
           <span class="kv">window</span>
           <input id="windowSize" class="input small" type="number" min="50" max="5000" value="200" />
           <span class="kv">dims</span>
-          <input id="dims" class="input" value="0,1,2" />
+          <input id="dims" class="input dimsInput" value="0,1,2" />
           <button id="btnApplyDims" class="btn btn-secondary">Apply</button>
         </div>
-        <div id="chart" class="chart"></div>
+        <div id="chartsContainer" class="chartsContainer"></div>
       </div>
     </div>
 
     <div class="footer">
       提示：若直接双击打开页面遇到跨域/资源问题，建议在本目录运行
-      <code>python -m http.server 8000</code> 后用浏览器访问。
+      <code>python -m http.server 8000</code> 后用浏览器访问。断线后除非点击 Disconnect，否则会每 3s 自动重连。
     </div>
 
     <script src="./app.js"></script>
   </body>
 </html>
-

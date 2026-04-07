@@ -11,6 +11,7 @@ LeRobot 离线评估 WebUI（client-server）：
 
 - `type="meta"`：连接建立后 server 先发 1 条元数据
 - `type="step"`：按时间顺序持续推送 step
+- `type="done"`：本 run 评估区间内 step 已全部推送，推理线程退出（WebSocket 仍可保持连接）
 - `type="log"`：可选日志事件
 """
 
@@ -555,8 +556,21 @@ async def _run_server(args: Args) -> None:
                             time.sleep(min_step_period - dt)
                         last_send_t = time.monotonic()
 
-            done_msg = _event_to_json({"type": "done", "run_id": run_id})
+            done_msg = _event_to_json(
+                {
+                    "type": "done",
+                    "phase": "finished",
+                    "run_id": run_id,
+                    "message": (
+                        "推理序列已全部推送完毕，推理线程将退出；"
+                        "WebSocket 仍可保持连接（重连或重启 server 可再次运行评估）。"
+                    ),
+                    "start_index": int(start_index),
+                    "end_index_exclusive": int(end),
+                }
+            )
             _schedule(publish(done_msg))
+            print(colored(f"[infer] 已推送 type=done，序列完毕 run_id={run_id}", "green"), flush=True)
             print(colored(f"[infer] 序列推送完毕 run_id={run_id}", "cyan"), flush=True)
         except Exception as exc:  # pragma: no cover
             logging.exception("推理管线失败: %s", exc)

@@ -4,9 +4,15 @@ let ws = null;
 let meta = null;
 let connected = false;
 
+/** 非用户主动断开时，每 RECONNECT_MS 自动重连一次 */
+const RECONNECT_MS = 3000;
+let manualDisconnect = false;
+let reconnectTimer = null;
+
 const el = (id) => document.getElementById(id);
 
-let chartLayout = null;
+/** dim -> Plotly layout object */
+const chartLayouts = new Map();
 
 const state = {
   windowSize: 200,
@@ -15,6 +21,24 @@ const state = {
   gt: new Map(), // dim -> []
   pred: new Map(), // dim -> []
 };
+
+/** 已收到的 ``type=step`` 条数（当前 meta run） */
+let stepReceiveCount = 0;
+
+function setProgress(text) {
+  const n = el("serverProgress");
+  if (n) n.textContent = text;
+}
+
+function updateProgressFromStep(msg) {
+  const H = meta && typeof meta.action_horizon === "number" ? meta.action_horizon : "?";
+  stepReceiveCount += 1;
+  const chunkMark = msg.is_chunk_start ? " [chunk 起点]" : "";
+  setProgress(
+    `推送中${chunkMark} · 累计 step 消息 ${stepReceiveCount} · global_index=${msg.global_index} · ` +
+      `k_in_chunk=${msg.k_in_chunk}/${H} · episode_id=${msg.episode_id}`
+  );
+}
 
 function setBadge(ok) {
   const badge = el("connStatus");
@@ -25,6 +49,38 @@ function setBadge(ok) {
     badge.textContent = "disconnected";
     badge.className = "badge badge-red";
   }
+}
+
+function setBadgeRunFinished() {
+  const badge = el("connStatus");
+  badge.textContent = "connected · 推理已结束";
+  badge.className = "badge badge-amber";
+}
+
+function clearReconnectTimer() {
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
+
+function setBadgeReconnecting() {
+  const badge = el("connStatus");
+  badge.textContent = `reconnecting in ${RECONNECT_MS / 1000}s…`;
+  badge.className = "badge badge-amber";
+  setProgress(`连接已断开，将在 ${RECONNECT_MS / 1000}s 后自动重连…（或点 Connect）`);
+}
+
+function scheduleReconnect() {
+  clearReconnectTimer();
+  if (manualDisconnect) return;
+  const url = el("wsUrl").value.trim();
+  if (!url) return;
+  setBadgeReconnecting();
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (!manualDisconnect) connectInternal();
+  }, RECONNECT_MS);
 }
 
 function resetSeries() {
@@ -71,35 +127,46 @@ function setImage(imgEl, jpegB64) {
   imgEl.src = `data:image/jpeg;base64,${jpegB64}`;
 }
 
+function chartDivId(d) {
+  return `chart-dim-${d}`;
+}
+
 function initChart() {
   resetSeries();
-  const traces = [];
+  chartLayouts.clear();
+  const container = el("chartsContainer");
+  container.innerHTML = "";
+
   for (const d of state.dims) {
-    traces.push({
-      x: [],
-      y: [],
-      mode: "lines",
-      name: `gt[d${d}]`,
-      line: { width: 2 },
-    });
-    traces.push({
-      x: [],
-      y: [],
-      mode: "lines",
-      name: `pred[d${d}]`,
-      line: { width: 2, dash: "dot" },
-    });
+    const wrap = document.createElement("div");
+    wrap.className = "chartDimWrap";
+    const title = document.createElement("div");
+    title.className = "chartDimTitle";
+    title.textContent = `Action dim ${d}`;
+    const plotDiv = document.createElement("div");
+    plotDiv.id = chartDivId(d);
+    plotDiv.className = "chart";
+    wrap.appendChild(title);
+    wrap.appendChild(plotDiv);
+    container.appendChild(wrap);
+
+    const traces = [
+      { x: [], y: [], mode: "lines", name: "gt", line: { width: 2 } },
+      { x: [], y: [], mode: "lines", name: "pred", line: { width: 2, dash: "dot" } },
+    ];
+    const layout = {
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      margin: { l: 48, r: 12, t: 8, b: 32 },
+      xaxis: { title: "global_index", color: "#9ca3af", tickfont: { size: 10 } },
+      yaxis: { title: "value", color: "#9ca3af", tickfont: { size: 10 } },
+      legend: { font: { size: 10, color: "#e5e7eb" }, orientation: "h", y: 1.12 },
+      font: { color: "#e5e7eb", size: 11 },
+      height: 200,
+    };
+    chartLayouts.set(d, layout);
+    Plotly.newPlot(chartDivId(d), traces, layout, { displayModeBar: false, responsive: true });
   }
-  chartLayout = {
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(0,0,0,0)",
-    margin: { l: 50, r: 20, t: 30, b: 40 },
-    xaxis: { title: "global_index", color: "#9ca3af" },
-    yaxis: { title: "action value", color: "#9ca3af" },
-    legend: { font: { color: "#e5e7eb" } },
-    font: { color: "#e5e7eb" },
-  };
-  Plotly.newPlot("chart", traces, chartLayout, { displayModeBar: false, responsive: true });
 }
 
 function pushPoint(event) {
@@ -120,55 +187,72 @@ function pushPoint(event) {
     while (pArr.length > state.windowSize) pArr.shift();
   }
 
-  Plotly.react("chart", buildTraces(), chartLayout, {
-    displayModeBar: false,
-    responsive: true,
-  });
+  for (const d of state.dims) {
+    const layout = chartLayouts.get(d);
+    if (!layout) continue;
+    Plotly.react(chartDivId(d), buildTracesForDim(d), layout, {
+      displayModeBar: false,
+      responsive: true,
+    });
+  }
 }
 
-function buildTraces() {
-  const traces = [];
-  for (const d of state.dims) {
-    traces.push({
+function buildTracesForDim(d) {
+  return [
+    {
       x: [...state.x],
       y: [...(state.gt.get(d) || [])],
       mode: "lines",
-      name: `gt[d${d}]`,
+      name: "gt",
       line: { width: 2 },
-    });
-    traces.push({
+    },
+    {
       x: [...state.x],
       y: [...(state.pred.get(d) || [])],
       mode: "lines",
-      name: `pred[d${d}]`,
+      name: "pred",
       line: { width: 2, dash: "dot" },
-    });
-  }
-  return traces;
+    },
+  ];
 }
 
 function connect() {
+  manualDisconnect = false;
+  clearReconnectTimer();
+  connectInternal();
+}
+
+function connectInternal() {
   const url = el("wsUrl").value.trim();
   if (!url) return;
+  if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
 
   ws = new WebSocket(url);
 
   ws.onopen = () => {
+    clearReconnectTimer();
     connected = true;
     setBadge(true);
     el("btnConnect").disabled = true;
     el("btnDisconnect").disabled = false;
+    setProgress("WebSocket 已连接，等待服务端 meta / 数据流…");
   };
 
   ws.onclose = () => {
+    ws = null;
     connected = false;
     setBadge(false);
     el("btnConnect").disabled = false;
     el("btnDisconnect").disabled = true;
+    if (manualDisconnect) {
+      setProgress("已断开（手动 Disconnect）。");
+    } else {
+      scheduleReconnect();
+    }
   };
 
   ws.onerror = () => {
-    // onclose will handle UI
+    // onclose will handle UI 与重连调度
   };
 
   ws.onmessage = (evt) => {
@@ -184,18 +268,40 @@ function connect() {
       if (msg.phase === "loading") {
         el("repoId").textContent = "…";
         el("backend").textContent = "…";
-        el("prompt").textContent = msg.message || "Loading…";
+        el("prompt").textContent = "—";
+        setProgress(msg.message || "服务端：正在加载数据集与策略…");
         return;
       }
       meta = msg;
+      stepReceiveCount = 0;
       el("runId").textContent = meta.run_id ?? "-";
       el("repoId").textContent = meta.repo_id ?? "-";
       el("backend").textContent = meta.backend ?? "-";
+      {
+        const lo = meta.start_index ?? "?";
+        const hi = meta.end_index_exclusive ?? "?";
+        const H = meta.action_horizon ?? "?";
+        setProgress(
+          `服务端就绪 · run_id=${meta.run_id ?? "-"} · 评估下标 [${lo}, ${hi}) · action_horizon=${H} · 等待 step 流…`
+        );
+      }
+      return;
+    }
+
+    if (msg.type === "done") {
+      setProgress(msg.message || `推理已结束 run_id=${msg.run_id ?? "-"}`);
+      if (connected) setBadgeRunFinished();
+      return;
+    }
+
+    if (msg.type === "error") {
+      setProgress(`错误：${msg.message || "服务器推理管线异常"}`);
       return;
     }
 
     if (msg.type === "step") {
       updateTop(msg);
+      updateProgressFromStep(msg);
       if (msg.prompt) el("prompt").textContent = msg.prompt;
 
       if (msg.images) {
@@ -213,8 +319,21 @@ function connect() {
 }
 
 function disconnect() {
-  if (ws) ws.close();
+  manualDisconnect = true;
+  clearReconnectTimer();
+  setProgress("正在断开…");
+  if (ws) {
+    try {
+      ws.close();
+    } catch (e) {
+      /* ignore */
+    }
+  }
   ws = null;
+  connected = false;
+  setBadge(false);
+  el("btnConnect").disabled = false;
+  el("btnDisconnect").disabled = true;
 }
 
 function applyDims() {
