@@ -133,7 +133,7 @@ async function loadDefaultWsUrl() {
 const chartLayouts = new Map();
 
 const state = {
-  windowSize: 200,
+  windowSize: 120,
   dims: [0, 1, 2, 3, 4, 5],
   x: [],
   gt: new Map(), // dim -> []
@@ -173,6 +173,21 @@ function setBadgeRunFinished() {
   const badge = el("connStatus");
   badge.textContent = "connected · 推理已结束";
   badge.className = "badge badge-amber";
+}
+
+/** 根据服务端暂停状态更新按钮；未连接时两项均禁用 */
+function setInferPauseButtons(serverPaused) {
+  const bp = el("btnPauseInfer");
+  const br = el("btnResumeInfer");
+  if (!bp || !br) return;
+  const live = connected && ws && ws.readyState === WebSocket.OPEN;
+  if (!live) {
+    bp.disabled = true;
+    br.disabled = true;
+    return;
+  }
+  bp.disabled = serverPaused;
+  br.disabled = !serverPaused;
 }
 
 function clearReconnectTimer() {
@@ -384,6 +399,7 @@ function connectInternal() {
     el("btnConnect").disabled = true;
     el("btnDisconnect").disabled = false;
     setProgress("WebSocket 已连接，等待服务端 meta / 数据流…");
+    setInferPauseButtons(false);
   };
 
   socket.onclose = () => {
@@ -393,6 +409,7 @@ function connectInternal() {
     setBadge(false);
     el("btnConnect").disabled = false;
     el("btnDisconnect").disabled = true;
+    setInferPauseButtons(false);
     if (manualDisconnect) {
       setProgress("已断开（手动 Disconnect）。");
     } else {
@@ -413,6 +430,13 @@ function connectInternal() {
       return;
     }
     if (!msg || !msg.type) return;
+
+    if (msg.type === "control_ack") {
+      if (typeof msg.paused === "boolean") {
+        setInferPauseButtons(msg.paused);
+      }
+      return;
+    }
 
     if (msg.type === "meta") {
       if (msg.phase === "loading") {
@@ -441,11 +465,15 @@ function connectInternal() {
     if (msg.type === "done") {
       setProgress(msg.message || `推理已结束 run_id=${msg.run_id ?? "-"}`);
       if (connected) setBadgeRunFinished();
+      el("btnPauseInfer").disabled = true;
+      el("btnResumeInfer").disabled = true;
       return;
     }
 
     if (msg.type === "error") {
       setProgress(`错误：${msg.message || "服务器推理管线异常"}`);
+      el("btnPauseInfer").disabled = true;
+      el("btnResumeInfer").disabled = true;
       return;
     }
 
@@ -485,6 +513,7 @@ function disconnect() {
   setBadge(false);
   el("btnConnect").disabled = false;
   el("btnDisconnect").disabled = true;
+  setInferPauseButtons(false);
 }
 
 async function applyDims() {
@@ -502,6 +531,14 @@ async function setup() {
 
   el("btnConnect").addEventListener("click", () => connect());
   el("btnDisconnect").addEventListener("click", () => disconnect());
+  el("btnPauseInfer").addEventListener("click", () => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "control", action: "pause" }));
+  });
+  el("btnResumeInfer").addEventListener("click", () => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "control", action: "resume" }));
+  });
   el("btnApplyDims").addEventListener("click", () => void applyDims());
 
   el("themeSelect").addEventListener("change", () => {

@@ -23,6 +23,10 @@
         <input id="wsUrl" class="input" placeholder="ws://127.0.0.1:8765/ws" />
         <button id="btnConnect" class="btn">Connect</button>
         <button id="btnDisconnect" class="btn btn-secondary" disabled>Disconnect</button>
+        <button id="btnPauseInfer" class="btn btn-secondary" type="button" disabled title="暂停服务端推理（下一数据块前生效）">
+          暂停推理
+        </button>
+        <button id="btnResumeInfer" class="btn btn-secondary" type="button" disabled title="继续服务端推理">继续推理</button>
       </div>
     </div>
 
@@ -75,7 +79,7 @@
         </div>
         <div class="sub">
           <span class="kv">window</span>
-          <input id="windowSize" class="input small" type="number" min="50" max="5000" value="200" />
+          <input id="windowSize" class="input small" type="number" min="50" max="5000" value="120" />
           <span class="kv">dims</span>
           <input id="dims" class="input dimsInput" value="0,1,2,3,4,5" />
           <button id="btnApplyDims" class="btn btn-secondary">Apply</button>

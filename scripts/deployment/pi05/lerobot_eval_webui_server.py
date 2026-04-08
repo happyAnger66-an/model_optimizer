@@ -13,6 +13,7 @@ LeRobot 离线评估 WebUI（client-server）：
 - `type="step"`：按时间顺序持续推送 step
 - `type="done"`：本 run 评估区间内 step 已全部推送；随后 server 关闭 WebSocket 并 **进程退出**
 - `type="log"`：可选日志事件
+- `type="control"`（client→server）：``{"type":"control","action":"pause"|"resume"}``，在**下一个 chunk 推理前**暂停/继续；server 回复 ``type=control_ack``
 """
 
 from __future__ import annotations
@@ -210,6 +211,46 @@ def _load_tensorrt_engines(
     executor.load_model(addict.Dict(cfg))
 
 
+def _unwrap_pytorch_pi05_model(policy: Any) -> Any | None:
+    """与 standalone_inference_script / perf 统计一致：取底层 Pi0.5 torch 模块供 calib hook 使用。"""
+    inner = getattr(policy, "_policy", None)
+    if inner is not None:
+        m = getattr(inner, "_model", None)
+        if m is not None:
+            return m
+    return getattr(policy, "_model", None)
+
+
+def _start_pi05_calib_collectors(policy: Any, save_dir: Path) -> list[Any]:
+    from model_optimizer.calibrate.collector.pi05 import (
+        Pi05ExpertCalibCollector,
+        Pi05LLMCalibCollector,
+        Pi05VitCalibCollector,
+    )
+
+    torch_model = _unwrap_pytorch_pi05_model(policy)
+    if torch_model is None:
+        raise RuntimeError("无法从 policy 解析 _model（无 _policy._model / _model），无法挂 Pi0.5 calib。")
+    save_str = str(save_dir.expanduser().resolve())
+    collectors: list[Any] = [
+        Pi05LLMCalibCollector(torch_model, save_str),
+        Pi05ExpertCalibCollector(torch_model, save_str),
+        Pi05VitCalibCollector(torch_model, save_str),
+    ]
+    print(colored(f"[infer] Pi0.5 calib 收集已启用 → {save_str}", "green"), flush=True)
+    return collectors
+
+
+def _stop_pi05_calib_collectors(collectors: list[Any] | None) -> None:
+    if not collectors:
+        return
+    for c in collectors:
+        try:
+            c.stop_collect()
+        except Exception:  # pragma: no cover
+            logging.exception("calib stop_collect 失败: %s", type(c).__name__)
+
+
 @dataclasses.dataclass(frozen=True)
 class StepEvent:
     type: Literal["step"]
@@ -299,19 +340,34 @@ def _load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
     base_ds = _unwrap_lerobot_base(dataset)
     ep_per_frame = _global_episode_id_per_frame(base_ds, n)
 
-    meta_msg = _event_to_json(
-        {
-            "type": "meta",
-            "run_id": run_id,
-            "repo_id": data_config.repo_id,
-            "backend": args.inference_mode,
-            "action_horizon": int(action_horizon),
-            "start_index": int(args.start_index),
-            "end_index_exclusive": int(end),
-            "send_wrist": bool(args.send_wrist),
-            "jpeg_quality": int(args.jpeg_quality),
-        }
-    )
+    calib_collectors: list[Any] | None = None
+    if args.calib_save_path is not None:
+        if args.inference_mode != "pytorch":
+            logging.warning(
+                "已忽略 --calib-save-path：Pi0.5 calib 仅支持 inference_mode=pytorch（当前为 %s）。",
+                args.inference_mode,
+            )
+        else:
+            try:
+                calib_collectors = _start_pi05_calib_collectors(policy, Path(args.calib_save_path))
+            except Exception as exc:  # pragma: no cover
+                logging.warning("启动 calib 收集失败，将继续评估但不保存 calib: %s", exc, exc_info=True)
+
+    meta_payload: dict[str, Any] = {
+        "type": "meta",
+        "run_id": run_id,
+        "repo_id": data_config.repo_id,
+        "backend": args.inference_mode,
+        "action_horizon": int(action_horizon),
+        "start_index": int(args.start_index),
+        "end_index_exclusive": int(end),
+        "send_wrist": bool(args.send_wrist),
+        "jpeg_quality": int(args.jpeg_quality),
+    }
+    if args.calib_save_path is not None and calib_collectors is not None:
+        meta_payload["calib_save_path"] = str(Path(args.calib_save_path).expanduser().resolve())
+
+    meta_msg = _event_to_json(meta_payload)
 
     return {
         "meta_msg": meta_msg,
@@ -325,6 +381,7 @@ def _load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
         "ep_per_frame": ep_per_frame,
         "run_id": run_id,
         "args": args,
+        "calib_collectors": calib_collectors,
     }
 
 model = None
@@ -521,6 +578,12 @@ class Args:
     history_size: int = 0
     """缓存最近 N 条消息，新 client 连接后先回放（0 表示不缓存）。"""
 
+    calib_save_path: Path | None = None
+    """Pi0.5 校准数据输出目录（与 ``standalone_inference_script.py --calib-save-path`` 相同）。
+
+    仅在 ``inference_mode=pytorch`` 时生效：对每次 ``policy.infer`` 挂 LLM / Expert / ViT 的 forward hook，
+    评估结束（或异常退出线程）时写入 ``pi05_llm_calib_datas.pt`` 等文件。TensorRT 模式不支持。"""
+
 
 def _default_client_ws_url(args: Args) -> str:
     if args.client_ws_url and str(args.client_ws_url).strip():
@@ -552,6 +615,8 @@ async def _run_server(args: Args) -> None:
     run_id = uuid.uuid4().hex[:12]
     broadcaster = WebsocketBroadcaster(history_size=args.history_size)
     meta_ready: dict[str, Any] = {"msg": None}
+    # set 表示 client 请求暂停：推理线程在每个 chunk 的 infer 前 spin-wait
+    infer_paused = threading.Event()
 
     async def handler(ws):  # websockets passes ServerConnection
         if getattr(ws, "path", None) not in (None, args.path):
@@ -565,9 +630,29 @@ async def _run_server(args: Args) -> None:
                 await ws.send(meta_ready["msg"])
                 if args.history_size > 0:
                     await broadcaster.send_history(ws)
-            async for _ in ws:
-                # 当前只做单向推送；忽略 client 消息（后续可扩展控制命令）
-                pass
+            await ws.send(
+                _event_to_json({"type": "control_ack", "action": "sync", "paused": infer_paused.is_set()})
+            )
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(msg, dict) or msg.get("type") != "control":
+                    continue
+                act = msg.get("action")
+                if act == "pause":
+                    infer_paused.set()
+                    print(colored("[infer] 收到 pause：下一 chunk 前将阻塞推理", "yellow"), flush=True)
+                    await ws.send(
+                        _event_to_json({"type": "control_ack", "action": "pause", "paused": True})
+                    )
+                elif act == "resume":
+                    infer_paused.clear()
+                    print(colored("[infer] 收到 resume：继续推理", "green"), flush=True)
+                    await ws.send(
+                        _event_to_json({"type": "control_ack", "action": "resume", "paused": False})
+                    )
         finally:
             await broadcaster.unregister(ws)
 
@@ -589,6 +674,7 @@ async def _run_server(args: Args) -> None:
             fut = asyncio.run_coroutine_threadsafe(coro, loop)
             fut.result()
 
+        bundle: dict[str, Any] | None = None
         try:
             print(colored("[infer] 线程启动，开始加载 bundle…", "cyan"), flush=True)
             bundle = _load_infer_bundle(args, run_id)
@@ -603,6 +689,8 @@ async def _run_server(args: Args) -> None:
             last_send_t = 0.0
 
             for idx in range(start_index, end):
+                while infer_paused.is_set():
+                    time.sleep(0.05)
                 msgs = _process_infer_chunk(bundle, idx)
                 for msg in msgs:
                     _schedule(publish(msg))
@@ -637,6 +725,7 @@ async def _run_server(args: Args) -> None:
             except Exception:
                 pass
         finally:
+            _stop_pi05_calib_collectors(bundle.get("calib_collectors") if bundle else None)
             print(colored("[infer] 线程退出", "cyan"), flush=True)
             signal_infer_complete()
 
