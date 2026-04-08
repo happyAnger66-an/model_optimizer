@@ -137,3 +137,52 @@ class RunningErrorStats:
     def p99_abs_value(self) -> float | None:
         return self.p99_abs.value() if self.p99_abs is not None else None
 
+
+@dataclass
+class RunningPerDimRelStats:
+    """按动作维度累计相对误差统计。"""
+
+    rel_sum: list[float] | None = None
+    rel_count: list[int] | None = None
+    p99_rel: list[P2Quantile] | None = None
+
+    def ensure_dim(self, dim: int) -> None:
+        d = int(dim)
+        if d <= 0:
+            raise ValueError("dim must be > 0")
+        if self.rel_sum is not None and len(self.rel_sum) == d:
+            return
+        self.rel_sum = [0.0 for _ in range(d)]
+        self.rel_count = [0 for _ in range(d)]
+        self.p99_rel = [P2Quantile(0.99) for _ in range(d)]
+
+    def update_rel_vec(self, rel_err_vec) -> None:
+        if self.rel_sum is None or self.rel_count is None or self.p99_rel is None:
+            self.ensure_dim(len(rel_err_vec))
+        assert self.rel_sum is not None and self.rel_count is not None and self.p99_rel is not None
+        if len(rel_err_vec) != len(self.rel_sum):
+            # 若 action dim 变化，重置为新维度（通常不应发生）
+            self.ensure_dim(len(rel_err_vec))
+        for i, v in enumerate(rel_err_vec):
+            fv = float(v)
+            self.rel_sum[i] += fv
+            self.rel_count[i] += 1
+            self.p99_rel[i].update(fv)
+
+    def mean_rel(self) -> list[float] | None:
+        if self.rel_sum is None or self.rel_count is None:
+            return None
+        out: list[float] = []
+        for s, c in zip(self.rel_sum, self.rel_count):
+            out.append(float(s / float(c)) if c > 0 else float("nan"))
+        return out
+
+    def p99_rel_value(self) -> list[float] | None:
+        if self.p99_rel is None:
+            return None
+        out: list[float] = []
+        for q in self.p99_rel:
+            v = q.value()
+            out.append(float(v) if v is not None else float("nan"))
+        return out
+

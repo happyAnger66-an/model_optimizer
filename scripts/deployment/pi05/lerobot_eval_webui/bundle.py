@@ -20,7 +20,7 @@ from .dataset import (
 )
 from .gpu_stats import effective_gpu_index
 from .protocol import event_to_json
-from .running_stats import RunningErrorStats
+from .running_stats import RunningErrorStats, RunningPerDimRelStats
 from .tensorrt_backend import load_tensorrt_engines
 
 
@@ -130,4 +130,5 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
         "args": args,
         "calib_collectors": calib_collectors,
         "running_err_stats": RunningErrorStats(),
+        "running_per_dim_rel": RunningPerDimRelStats(),
     }

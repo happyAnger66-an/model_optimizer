@@ -527,6 +527,11 @@ function clearClientDisplay() {
   el("meanRelErr").textContent = "-";
   el("p99AbsErr").textContent = "-";
   resetHzEstimators();
+  // reset per-dim titles
+  for (const d of state.dims) {
+    const t = document.getElementById(`dimTitle-${d}`);
+    if (t) t.textContent = `Action dim ${d} · rel_mean - · rel_p99 -`;
+  }
   if (meta) {
     el("repoId").textContent = meta.repo_id ?? "-";
     el("backend").textContent = meta.backend ?? "-";
@@ -583,7 +588,8 @@ async function initChart() {
     wrap.className = "chartDimWrap";
     const title = document.createElement("div");
     title.className = "chartDimTitle";
-    title.textContent = `Action dim ${d}`;
+    title.id = `dimTitle-${d}`;
+    title.textContent = `Action dim ${d} · rel_mean - · rel_p99 -`;
     const plotDiv = document.createElement("div");
     plotDiv.id = chartDivId(d);
     plotDiv.className = "chart";
@@ -603,6 +609,24 @@ async function initChart() {
     await raf();
   }
   applyChartsCols();
+}
+
+function updatePerDimRelStatsFromStep(event) {
+  const met = event.metrics;
+  if (!met || typeof met !== "object") return;
+  const means = met.rel_dim_mean;
+  const p99s = met.rel_dim_p99;
+  if (!Array.isArray(means) || !Array.isArray(p99s)) return;
+
+  for (const d of state.dims) {
+    const t = document.getElementById(`dimTitle-${d}`);
+    if (!t) continue;
+    const m = typeof means[d] === "number" ? means[d] : null;
+    const p = typeof p99s[d] === "number" ? p99s[d] : null;
+    const ms = m === null ? "-" : m.toFixed(4);
+    const ps = p === null ? "-" : p.toFixed(4);
+    t.textContent = `Action dim ${d} · rel_mean ${ms} · rel_p99 ${ps}`;
+  }
 }
 
 function pushPoint(event) {
@@ -886,6 +910,7 @@ function connectInternal() {
       }
 
       pushPoint(msg);
+      updatePerDimRelStatsFromStep(msg);
     }
   };
 }
