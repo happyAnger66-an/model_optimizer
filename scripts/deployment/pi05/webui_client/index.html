@@ -184,7 +184,7 @@
       <div class="card span4">
         <div class="cardTitle">
           误差曲线
-          <span class="subInline">MAE / MSE 随 global_index，与下方 window 同步滚动</span>
+          <span class="subInline">MAE / MSE：与下方 dims 一致，每维一条线；与 window 同步滚动</span>
         </div>
         <div id="metricsChartsContainer" class="metricsChartsRow"></div>
       </div>
@@ -192,7 +192,7 @@
       <div class="card span4">
         <div class="cardTitle">
           各动作维度
-          <span class="subInline">每维单独子图（gt / pred）</span>
+          <span class="subInline">每维单独子图（gt / pred；勾选可隐藏曲线）</span>
         </div>
         <div class="sub">
           <span class="kv">window</span>
@@ -211,6 +211,16 @@
           <span class="kv">dims</span>
           <input id="dims" class="input dimsInput" value="0,1,2,3,4,5" />
           <button id="btnApplyDims" class="btn btn-secondary">Apply</button>
+        </div>
+        <div class="sub dimTraceTogglesRow" aria-label="各 dim 子图曲线显示">
+          <span class="kv">显示曲线</span>
+          <label class="checkbox"
+            ><input type="checkbox" id="dimShowGt" checked /> gt</label
+          >
+          <label class="checkbox"
+            ><input type="checkbox" id="dimShowPredPt" checked /> pred_pt</label
+          >
+          <label class="checkbox" id="dimShowPredTrtWrap"><input type="checkbox" id="dimShowPredTrt" checked /> pred_trt</label>
         </div>
         <div id="chartsContainer" class="chartsContainer"></div>
       </div>

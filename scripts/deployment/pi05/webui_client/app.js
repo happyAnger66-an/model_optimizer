@@ -56,7 +56,27 @@ const PLOTLY_THEME = {
   },
 };
 
+/** 误差曲线各 dim 折线颜色（与动作子图 dim 顺序一致） */
+const METRIC_DIM_COLORS = [
+  "#2563eb",
+  "#dc2626",
+  "#059669",
+  "#d97706",
+  "#7c3aed",
+  "#db2777",
+  "#0ea5e9",
+  "#ca8a04",
+  "#16a34a",
+  "#4f46e5",
+  "#ea580c",
+  "#0d9488",
+];
+
 const el = (id) => document.getElementById(id);
+
+function metricDimLineColor(i) {
+  return METRIC_DIM_COLORS[i % METRIC_DIM_COLORS.length];
+}
 
 /** 各 dim 子图标题（compare 详细指标见「按维累计对比」表） */
 function dimChartTitlePlaceholder(d) {
@@ -100,6 +120,7 @@ function setCompareLayoutVisible(on) {
   if (!on) resetCompareScalarTable();
   else refreshCompareDimTable();
   updateMetricChartWrapTitles();
+  setDimTraceToggleUi();
 }
 
 /** 按维累计表：直接显示服务端 JSON 中的原始数值（不做 %/科学计数转换） */
@@ -202,12 +223,13 @@ function getPlotlyPalette() {
   return PLOTLY_THEME[t];
 }
 
-function buildMetricsLayout(yAxisTitle) {
+function buildMetricsLayout(yAxisTitle, options) {
+  const showLegend = options?.showLegend === true;
   const p = getPlotlyPalette();
-  return {
+  const layout = {
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(0,0,0,0)",
-    margin: { l: 52, r: 12, t: 8, b: 32 },
+    margin: showLegend ? { l: 52, r: 88, t: 8, b: 32 } : { l: 52, r: 12, t: 8, b: 32 },
     xaxis: {
       title: "global_index",
       color: p.axisTitle,
@@ -222,10 +244,27 @@ function buildMetricsLayout(yAxisTitle) {
       gridcolor: p.grid,
       zerolinecolor: p.zero,
     },
-    showlegend: false,
+    showlegend: showLegend,
     font: { color: p.font, size: 11 },
-    height: 200,
+    height: showLegend ? 260 : 200,
   };
+  if (showLegend) {
+    layout.legend = {
+      font: { size: 9, color: p.legend },
+      orientation: "v",
+      x: 1.02,
+      y: 1,
+      xref: "paper",
+      yref: "paper",
+      xanchor: "left",
+      yanchor: "top",
+    };
+  }
+  return layout;
+}
+
+function metricsChartLayout(def) {
+  return buildMetricsLayout(metricsChartYAxisTitle(def), { showLegend: state.dims.length > 1 });
 }
 
 /** 误差曲线图 y 轴标题：compare 时仅画 PT−TRT */
@@ -238,9 +277,10 @@ function updateMetricChartWrapTitles() {
   for (const def of METRIC_CHART_DEFS) {
     const t = el(`metricTitle-${def.id}`);
     if (!t) continue;
-    t.textContent = compareMode
+    const base = compareMode
       ? `PT−TRT ${def.cardTitle} vs global_index`
       : `${def.cardTitle} vs global_index`;
+    t.textContent = state.dims.length > 1 ? `${base}（各 dim 一条线）` : base;
   }
 }
 
@@ -288,7 +328,6 @@ function refreshChartsTheme() {
 }
 
 function refreshMetricsChartsTheme() {
-  const p = getPlotlyPalette();
   for (const def of METRIC_CHART_DEFS) {
     const div = document.getElementById(def.id);
     if (!div) continue;
@@ -297,32 +336,9 @@ function refreshMetricsChartsTheme() {
     } catch (e) {
       /* ignore */
     }
-    const layout = buildMetricsLayout(metricsChartYAxisTitle(def));
+    const layout = metricsChartLayout(def);
     metricsLayouts.set(def.id, layout);
-    const sk = def.seriesKey;
-    let traces;
-    if (!compareMode) {
-      traces = [
-        {
-          x: [...state.x],
-          y: [...state[sk]],
-          mode: "lines",
-          name: def.traceName,
-          line: { width: 2, color: p[def.colorKey] },
-        },
-      ];
-    } else {
-      const sPair = sk === "mae" ? "mae_pt_trt" : "mse_pt_trt";
-      traces = [
-        {
-          x: [...state.x],
-          y: [...state[sPair]],
-          mode: "lines",
-          name: `PT−TRT ${sk}`,
-          line: { width: 2, color: p.comparePair },
-        },
-      ];
-    }
+    const traces = buildMetricTracesFromState(def);
     Plotly.newPlot(div, traces, layout, { displayModeBar: false, responsive: true });
   }
 }
@@ -418,10 +434,11 @@ const state = {
   windowSize: 120,
   dims: [0, 1, 2, 3, 4, 5],
   x: [],
-  mae: [],
-  mse: [],
-  mae_pt_trt: [],
-  mse_pt_trt: [],
+  /** 误差曲线：与 state.dims 对齐，每 dim 一条序列 */
+  maePerDim: new Map(),
+  msePerDim: new Map(),
+  maePtTrtPerDim: new Map(),
+  msePtTrtPerDim: new Map(),
   gt: new Map(), // dim -> []
   pred: new Map(), // dim -> []
   pred_trt: new Map(), // dim -> [] compare_mode
@@ -563,10 +580,10 @@ function scheduleReconnect() {
 
 function resetSeries() {
   state.x = [];
-  state.mae = [];
-  state.mse = [];
-  state.mae_pt_trt = [];
-  state.mse_pt_trt = [];
+  state.maePerDim = new Map();
+  state.msePerDim = new Map();
+  state.maePtTrtPerDim = new Map();
+  state.msePtTrtPerDim = new Map();
   state.gt = new Map();
   state.pred = new Map();
   state.pred_trt = new Map();
@@ -574,6 +591,10 @@ function resetSeries() {
     state.gt.set(d, []);
     state.pred.set(d, []);
     state.pred_trt.set(d, []);
+    state.maePerDim.set(d, []);
+    state.msePerDim.set(d, []);
+    state.maePtTrtPerDim.set(d, []);
+    state.msePtTrtPerDim.set(d, []);
   }
 }
 
@@ -636,6 +657,41 @@ function chartDivId(d) {
   return `chart-dim-${d}`;
 }
 
+/** 与各 dim 子图 trace 顺序一致：gt、pred_pt、[pred_trt] */
+function getDimTraceVisibility() {
+  const gt = el("dimShowGt")?.checked !== false;
+  const predPt = el("dimShowPredPt")?.checked !== false;
+  if (!compareMode) return [gt, predPt];
+  const predTrt = el("dimShowPredTrt")?.checked !== false;
+  return [gt, predPt, predTrt];
+}
+
+function applyVisibilityToDimTraces(traces) {
+  const vis = getDimTraceVisibility();
+  for (let i = 0; i < traces.length; i++) {
+    traces[i].visible = i < vis.length ? vis[i] !== false : true;
+  }
+}
+
+/** 非 compare 时隐藏 pred_trt 勾选（该 trace 不存在） */
+function setDimTraceToggleUi() {
+  const wrap = el("dimShowPredTrtWrap");
+  if (wrap) wrap.style.display = compareMode ? "" : "none";
+}
+
+function restyleAllDimChartsVisibility() {
+  const vis = getDimTraceVisibility();
+  for (const d of state.dims) {
+    const gd = document.getElementById(chartDivId(d));
+    if (!gd || !gd.data || gd.data.length !== vis.length) continue;
+    try {
+      Plotly.restyle(gd, { visible: vis });
+    } catch (e) {
+      /* ignore */
+    }
+  }
+}
+
 /** 与子图初始状态一致的空曲线（gt / pred_pt / 可选 pred_trt） */
 function traceTemplatesEmpty() {
   const p = getPlotlyPalette();
@@ -652,6 +708,30 @@ function traceTemplatesEmpty() {
       line: { width: 2, dash: "dash", color: p.predTrt },
     });
   }
+  applyVisibilityToDimTraces(traces);
+  return traces;
+}
+
+function buildMetricTracesFromState(def) {
+  const xArr = [...state.x];
+  const sk = def.seriesKey;
+  const traces = [];
+  for (let i = 0; i < state.dims.length; i++) {
+    const d = state.dims[i];
+    let yArr;
+    if (!compareMode) {
+      yArr = sk === "mae" ? [...(state.maePerDim.get(d) || [])] : [...(state.msePerDim.get(d) || [])];
+    } else {
+      yArr = sk === "mae" ? [...(state.maePtTrtPerDim.get(d) || [])] : [...(state.msePtTrtPerDim.get(d) || [])];
+    }
+    traces.push({
+      x: xArr,
+      y: yArr,
+      mode: "lines",
+      name: `dim ${d}`,
+      line: { width: 1.5, color: metricDimLineColor(i) },
+    });
+  }
   return traces;
 }
 
@@ -659,28 +739,18 @@ function traceTemplatesEmpty() {
  * 强制 purge + newPlot，避免 Plotly.react 多次合并后出现多余 trace（例如 3 条线）。
  */
 function emptyMetricTraces(def) {
-  const p = getPlotlyPalette();
-  const c1 = p[def.colorKey];
-  if (!compareMode) {
-    return [
-      {
-        x: [],
-        y: [],
-        mode: "lines",
-        name: def.traceName,
-        line: { width: 2, color: c1 },
-      },
-    ];
-  }
-  return [
-    {
+  const traces = [];
+  for (let i = 0; i < state.dims.length; i++) {
+    const d = state.dims[i];
+    traces.push({
       x: [],
       y: [],
       mode: "lines",
-      name: `PT−TRT ${def.seriesKey}`,
-      line: { width: 2, color: p.comparePair },
-    },
-  ];
+      name: `dim ${d}`,
+      line: { width: 1.5, color: metricDimLineColor(i) },
+    });
+  }
+  return traces;
 }
 
 function purgeAndNewPlotMetricsChartsSync() {
@@ -692,7 +762,7 @@ function purgeAndNewPlotMetricsChartsSync() {
     } catch (e) {
       /* ignore */
     }
-    const layout = buildMetricsLayout(metricsChartYAxisTitle(def));
+    const layout = metricsChartLayout(def);
     metricsLayouts.set(def.id, layout);
     Plotly.newPlot(div, emptyMetricTraces(def), layout, { displayModeBar: false, responsive: true });
   }
@@ -779,7 +849,7 @@ async function initMetricsChartsInContainer() {
     wrap.appendChild(title);
     wrap.appendChild(plotDiv);
     mcont.appendChild(wrap);
-    const layout = buildMetricsLayout(metricsChartYAxisTitle(def));
+    const layout = metricsChartLayout(def);
     metricsLayouts.set(def.id, layout);
     jobs.push([def.id, emptyMetricTraces(def), layout]);
   }
@@ -825,6 +895,7 @@ async function initChart() {
     Plotly.newPlot(id, traces, layout, { displayModeBar: false, responsive: true });
     await raf();
   }
+  setDimTraceToggleUi();
   applyChartsCols();
   refreshCompareDimTable();
 }
@@ -986,28 +1057,40 @@ function pushPoint(event) {
   }
 
   const met = event.metrics;
-  let maeV = null;
-  let mseV = null;
-  let maePtTrtV = null;
-  let msePtTrtV = null;
   if (met && typeof met === "object") {
-    if (typeof met.mae === "number") maeV = met.mae;
-    if (typeof met.mse === "number") mseV = met.mse;
-    if (compareMode) {
-      if (typeof met.mae_pt_trt === "number") maePtTrtV = met.mae_pt_trt;
-      if (typeof met.mse_pt_trt === "number") msePtTrtV = met.mse_pt_trt;
+    if (!compareMode) {
+      const ma = met.mae_per_dim;
+      const ms = met.mse_per_dim;
+      const fallbackMae = typeof met.mae === "number" ? met.mae : null;
+      const fallbackMse = typeof met.mse === "number" ? met.mse : null;
+      for (const d of state.dims) {
+        const maeP = state.maePerDim.get(d);
+        const mseP = state.msePerDim.get(d);
+        if (!maeP || !mseP) continue;
+        const maeVal = Array.isArray(ma) && typeof ma[d] === "number" ? ma[d] : fallbackMae;
+        const mseVal = Array.isArray(ms) && typeof ms[d] === "number" ? ms[d] : fallbackMse;
+        maeP.push(maeVal);
+        mseP.push(mseVal);
+        while (maeP.length > state.windowSize) maeP.shift();
+        while (mseP.length > state.windowSize) mseP.shift();
+      }
+    } else {
+      const ma = met.mae_pt_trt_per_dim;
+      const ms = met.mse_pt_trt_per_dim;
+      const fallbackMae = typeof met.mae_pt_trt === "number" ? met.mae_pt_trt : null;
+      const fallbackMse = typeof met.mse_pt_trt === "number" ? met.mse_pt_trt : null;
+      for (const d of state.dims) {
+        const maeP = state.maePtTrtPerDim.get(d);
+        const mseP = state.msePtTrtPerDim.get(d);
+        if (!maeP || !mseP) continue;
+        const maeVal = Array.isArray(ma) && typeof ma[d] === "number" ? ma[d] : fallbackMae;
+        const mseVal = Array.isArray(ms) && typeof ms[d] === "number" ? ms[d] : fallbackMse;
+        maeP.push(maeVal);
+        mseP.push(mseVal);
+        while (maeP.length > state.windowSize) maeP.shift();
+        while (mseP.length > state.windowSize) mseP.shift();
+      }
     }
-  }
-  if (!compareMode) {
-    state.mae.push(maeV);
-    state.mse.push(mseV);
-    while (state.mae.length > state.windowSize) state.mae.shift();
-    while (state.mse.length > state.windowSize) state.mse.shift();
-  } else {
-    state.mae_pt_trt.push(maePtTrtV);
-    state.mse_pt_trt.push(msePtTrtV);
-    while (state.mae_pt_trt.length > state.windowSize) state.mae_pt_trt.shift();
-    while (state.mse_pt_trt.length > state.windowSize) state.mse_pt_trt.shift();
   }
 
   const xArr = [...state.x];
@@ -1026,11 +1109,14 @@ function pushPoint(event) {
         Plotly.newPlot(gd, buildTracesForDim(d), layout, { displayModeBar: false, responsive: true });
         continue;
       }
+      const visDim = getDimTraceVisibility();
       if (compareMode) {
         const tArr = state.pred_trt.get(d) || [];
         Plotly.restyle(gd, { x: [xArr, xArr, xArr], y: [[...gArr], [...pArr], [...tArr]] }, [0, 1, 2]);
+        Plotly.restyle(gd, { visible: visDim });
       } else {
         Plotly.restyle(gd, { x: [xArr, xArr], y: [[...gArr], [...pArr]] }, [0, 1]);
+        Plotly.restyle(gd, { visible: visDim });
       }
     } catch (e) {
       const layout = chartLayouts.get(d) || buildPlotlyLayout();
@@ -1039,72 +1125,33 @@ function pushPoint(event) {
     }
   }
 
-  const maeArr = [...state.mae];
-  const mseArr = [...state.mse];
-  const maePtTrtArr = [...state.mae_pt_trt];
-  const msePtTrtArr = [...state.mse_pt_trt];
-
+  const needTracesMet = state.dims.length;
   for (const def of METRIC_CHART_DEFS) {
     const gd = document.getElementById(def.id);
     if (!gd) continue;
     const sk = def.seriesKey;
-    const yArr = sk === "mae" ? maeArr : mseArr;
-    const yPair = sk === "mae" ? maePtTrtArr : msePtTrtArr;
-    const layoutFallback = () => metricsLayouts.get(def.id) || buildMetricsLayout(metricsChartYAxisTitle(def));
-    try {
-      if (compareMode) {
-        if (!gd.data || gd.data.length < 1) {
-          const layout = layoutFallback();
-          metricsLayouts.set(def.id, layout);
-          const p = getPlotlyPalette();
-          Plotly.newPlot(
-            gd,
-            [
-              {
-                x: xArr,
-                y: yPair,
-                mode: "lines",
-                name: `PT−TRT ${sk}`,
-                line: { width: 2, color: p.comparePair },
-              },
-            ],
-            layout,
-            { displayModeBar: false, responsive: true }
-          );
-          continue;
-        }
-        Plotly.restyle(gd, { x: [xArr], y: [yPair] }, [0]);
-      } else {
-        if (!gd.data || gd.data.length < 1) {
-          const layout = layoutFallback();
-          metricsLayouts.set(def.id, layout);
-          const p = getPlotlyPalette();
-          Plotly.newPlot(
-            gd,
-            [
-              {
-                x: xArr,
-                y: yArr,
-                mode: "lines",
-                name: def.traceName,
-                line: { width: 2, color: p[def.colorKey] },
-              },
-            ],
-            layout,
-            { displayModeBar: false, responsive: true }
-          );
-          continue;
-        }
-        Plotly.restyle(gd, { x: [xArr], y: [yArr] }, [0]);
+    const yPayload = state.dims.map((d) => {
+      if (!compareMode) {
+        const arr = sk === "mae" ? state.maePerDim.get(d) : state.msePerDim.get(d);
+        return [...(arr || [])];
       }
+      const arr = sk === "mae" ? state.maePtTrtPerDim.get(d) : state.msePtTrtPerDim.get(d);
+      return [...(arr || [])];
+    });
+    const layoutFallback = () => metricsLayouts.get(def.id) || metricsChartLayout(def);
+    try {
+      if (!gd.data || gd.data.length !== needTracesMet) {
+        const layout = layoutFallback();
+        metricsLayouts.set(def.id, layout);
+        Plotly.newPlot(gd, buildMetricTracesFromState(def), layout, { displayModeBar: false, responsive: true });
+        continue;
+      }
+      const xPay = state.dims.map(() => xArr);
+      Plotly.restyle(gd, { x: xPay, y: yPayload }, state.dims.map((_, i) => i));
     } catch (e) {
       const layout = layoutFallback();
       metricsLayouts.set(def.id, layout);
-      const p = getPlotlyPalette();
-      const traces = !compareMode
-        ? [{ x: xArr, y: yArr, mode: "lines", name: def.traceName, line: { width: 2, color: p[def.colorKey] } }]
-        : [{ x: xArr, y: yPair, mode: "lines", name: `PT−TRT ${sk}`, line: { width: 2, color: p.comparePair } }];
-      Plotly.newPlot(gd, traces, layout, { displayModeBar: false, responsive: true });
+      Plotly.newPlot(gd, buildMetricTracesFromState(def), layout, { displayModeBar: false, responsive: true });
     }
   }
 }
@@ -1136,6 +1183,7 @@ function buildTracesForDim(d) {
       line: { width: 2, dash: "dash", color: p.predTrt },
     });
   }
+  applyVisibilityToDimTraces(traces);
   return traces;
 }
 
@@ -1275,6 +1323,7 @@ function connectInternal() {
           if (t) t.textContent = dimChartTitlePlaceholder(d);
         }
         updateMetricChartWrapTitles();
+        setDimTraceToggleUi();
         refreshCompareDimTable();
       });
       return;
@@ -1369,6 +1418,11 @@ async function setup() {
   el("btnDownloadStats").addEventListener("click", () => downloadDimStatsCsv());
 
   el("chartsCols").addEventListener("change", () => applyChartsCols());
+
+  for (const id of ["dimShowGt", "dimShowPredPt", "dimShowPredTrt"]) {
+    const inp = el(id);
+    if (inp) inp.addEventListener("change", () => restyleAllDimChartsVisibility());
+  }
 
   el("themeSelect").addEventListener("change", () => {
     applyTheme(el("themeSelect").value);

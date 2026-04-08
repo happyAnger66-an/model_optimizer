@@ -161,6 +161,7 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     for k in range(action_horizon):
         g = idx + k
         diff_pt = pred_h[k] - gt_h[k]
+        dpt_flat = np.ravel(diff_pt.astype(np.float64))
         mse_pt = float(np.mean(diff_pt**2))
         mae_pt = float(np.mean(np.abs(diff_pt)))
         abs_diff = np.abs(diff_pt).astype(np.float64, copy=False)
@@ -173,6 +174,8 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
             "mae": mae_pt,
             "mse_pt": mse_pt,
             "mae_pt": mae_pt,
+            "mae_per_dim": [float(np.abs(dpt_flat[i])) for i in range(int(dpt_flat.size))],
+            "mse_per_dim": [float(dpt_flat[i] * dpt_flat[i]) for i in range(int(dpt_flat.size))],
         }
         pred_trt_list: list[float] | None = None
         timing: dict[str, float] | None = None
@@ -196,6 +199,13 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
             metrics["mae_trt"] = mae_trt
             metrics["mse_pt_trt"] = float(np.mean(diff_pair**2))
             metrics["mae_pt_trt"] = float(np.mean(np.abs(diff_pair)))
+            dpair_flat = np.ravel(diff_pair.astype(np.float64))
+            metrics["mae_pt_trt_per_dim"] = [
+                float(np.abs(dpair_flat[i])) for i in range(int(dpair_flat.size))
+            ]
+            metrics["mse_pt_trt_per_dim"] = [
+                float(dpair_flat[i] * dpair_flat[i]) for i in range(int(dpair_flat.size))
+            ]
             pred_trt_list = [float(x) for x in row_trt.astype(np.float64).tolist()]
             if pair_mse_per_dim is not None:
                 pair_mse_per_dim.update(np.ravel(diff_pair).astype(np.float64))
