@@ -16,7 +16,11 @@ class Args:
     dataset_root: Path | None = None
     device: str | None = None
 
+    # 单后端：pytorch / tensorrt；compare_mode=True 时忽略此项（固定 PyTorch + TensorRT 双路）
     inference_mode: Literal["pytorch", "tensorrt"] = "pytorch"
+    # 双路对比：需 --engine-path 与各 *_engine（同 tensorrt 模式）
+    compare_mode: bool = False
+
     precision: Literal["fp16", "bf16", "fp32"] = "bf16"
     engine_path: str = ""
     vit_engine: str = ""

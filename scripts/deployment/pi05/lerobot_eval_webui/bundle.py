@@ -50,6 +50,7 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
         args.checkpoint,
         pytorch_device=args.device,
     )
+    policy_trt: Any | None = None
     try:
         pd = getattr(policy, "_pytorch_device", None)
         is_pt = getattr(policy, "_is_pytorch_model", None)
@@ -59,7 +60,28 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
         )
     except Exception:
         pass
-    if args.inference_mode == "tensorrt":
+
+    if args.compare_mode:
+        if not args.engine_path:
+            raise ValueError("compare_mode=True 时必须设置 --engine-path（TensorRT 引擎目录）。")
+        print(colored("[infer] compare_mode：加载第二套 policy 并挂 TensorRT …", "cyan"), flush=True)
+        policy_trt = policy_config.create_trained_policy(
+            train_cfg,
+            args.checkpoint,
+            pytorch_device=args.device,
+        )
+        load_tensorrt_engines(
+            policy_trt,
+            engine_path=args.engine_path,
+            precision=args.precision,
+            vit_engine=args.vit_engine,
+            llm_engine=args.llm_engine,
+            expert_engine=args.expert_engine,
+            denoise_engine=args.denoise_engine,
+            embed_prefix_engine=args.embed_prefix_engine,
+        )
+        print(colored("[infer] compare_mode：PyTorch + TensorRT 双策略已就绪", "cyan"), flush=True)
+    elif args.inference_mode == "tensorrt":
         if not args.engine_path:
             raise ValueError("inference_mode=tensorrt 时必须设置 --engine-path（引擎目录）。")
         print(colored("[infer] 加载 TensorRT 引擎 ...", "cyan"), flush=True)
@@ -85,9 +107,10 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
 
     calib_collectors: list[Any] | None = None
     if args.calib_save_path is not None:
-        if args.inference_mode != "pytorch":
+        calib_ok = args.inference_mode == "pytorch" or args.compare_mode
+        if not calib_ok:
             logging.warning(
-                "已忽略 --calib-save-path：Pi0.5 calib 仅支持 inference_mode=pytorch（当前为 %s）。",
+                "已忽略 --calib-save-path：Pi0.5 calib 仅支持 inference_mode=pytorch 或 compare_mode（当前为 %s）。",
                 args.inference_mode,
             )
         else:
@@ -96,11 +119,13 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
             except Exception as exc:  # pragma: no cover
                 logging.warning("启动 calib 收集失败，将继续评估但不保存 calib: %s", exc, exc_info=True)
 
+    backend = "pytorch+tensorrt" if args.compare_mode else args.inference_mode
     meta_payload: dict[str, Any] = {
         "type": "meta",
         "run_id": run_id,
         "repo_id": data_config.repo_id,
-        "backend": args.inference_mode,
+        "backend": backend,
+        "compare_mode": bool(args.compare_mode),
         "action_horizon": int(action_horizon),
         "start_index": int(args.start_index),
         "end_index_exclusive": int(end),
@@ -123,6 +148,7 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
         "dataset": dataset,
         "repack_fn": repack_fn,
         "policy": policy,
+        "policy_trt": policy_trt,
         "n": n,
         "end": end,
         "start_index": int(args.start_index),

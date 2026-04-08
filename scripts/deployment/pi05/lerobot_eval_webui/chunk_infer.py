@@ -33,6 +33,7 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     dataset = bundle["dataset"]
     repack_fn = bundle["repack_fn"]
     policy = bundle["policy"]
+    policy_trt: Any | None = bundle.get("policy_trt")
     running_stats: RunningErrorStats = bundle["running_err_stats"]
     per_dim_mse_pct: RunningPerDimMsePctStats = bundle["running_per_dim_mse_pct"]
     per_dim_rel_p99: RunningPerDimRelP99Stats = bundle["running_per_dim_rel_p99"]
@@ -55,9 +56,34 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     gt = np.asarray(packed["actions"])
     obs = {k: v for k, v in packed.items() if k != "actions"}
 
-    t0 = time.monotonic()
-    out = policy.infer(obs)
-    infer_ms = (time.monotonic() - t0) * 1000.0
+    infer_ms_pt: float
+    infer_ms_trt: float | None = None
+    pred_h: np.ndarray
+    gt_h: np.ndarray
+    pred_h_trt: np.ndarray | None = None
+
+    if policy_trt is not None:
+        t0 = time.monotonic()
+        out_pt = policy.infer(obs)
+        infer_ms_pt = (time.monotonic() - t0) * 1000.0
+        t0 = time.monotonic()
+        out_trt = policy_trt.infer(obs)
+        infer_ms_trt = (time.monotonic() - t0) * 1000.0
+        pred_pt = np.asarray(out_pt["actions"])
+        pred_trt_raw = np.asarray(out_trt["actions"])
+        pred_a_pt, gt_a = align_action_dim(pred_pt, gt)
+        pred_a_trt, _gt_a2 = align_action_dim(pred_trt_raw, gt)
+        pred_h = pred_a_pt[:action_horizon]
+        pred_h_trt = pred_a_trt[:action_horizon]
+        gt_h = gt_a[:action_horizon]
+    else:
+        t0 = time.monotonic()
+        out = policy.infer(obs)
+        infer_ms_pt = (time.monotonic() - t0) * 1000.0
+        pred = np.asarray(out["actions"])
+        pred_a, gt_a = align_action_dim(pred, gt)
+        pred_h = pred_a[:action_horizon]
+        gt_h = gt_a[:action_horizon]
 
     if _perf_model is None:
         if hasattr(policy, "_policy"):
@@ -82,17 +108,20 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
                     )
                 )
 
-    pred = np.asarray(out["actions"])
-
-    pred_a, gt_a = align_action_dim(pred, gt)
-    pred_h = pred_a[:action_horizon]
-    gt_h = gt_a[:action_horizon]
     if pred_h.shape[0] < action_horizon or gt_h.shape[0] < action_horizon:
         logging.warning(
             "index %s: pred/gt 时间维 %s/%s 小于 action_horizon=%s，跳过。",
             idx,
             pred_h.shape[0],
             gt_h.shape[0],
+            action_horizon,
+        )
+        return []
+    if pred_h_trt is not None and pred_h_trt.shape[0] < action_horizon:
+        logging.warning(
+            "index %s: pred_trt 时间维 %s 小于 action_horizon=%s，跳过。",
+            idx,
+            pred_h_trt.shape[0],
             action_horizon,
         )
         return []
@@ -123,23 +152,56 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     out_msgs: list[str] = []
     for k in range(action_horizon):
         g = idx + k
-        diff = pred_h[k] - gt_h[k]
-        mse = float(np.mean(diff**2))
-        mae = float(np.mean(np.abs(diff)))
-        abs_diff = np.abs(diff).astype(np.float64, copy=False)
+        diff_pt = pred_h[k] - gt_h[k]
+        mse_pt = float(np.mean(diff_pt**2))
+        mae_pt = float(np.mean(np.abs(diff_pt)))
+        abs_diff = np.abs(diff_pt).astype(np.float64, copy=False)
         abs_gt = np.abs(gt_h[k]).astype(np.float64, copy=False)
         denom = np.maximum(abs_gt, float(args.rel_eps))
         rel_err = (abs_diff / denom).astype(np.float64, copy=False)
 
-        # 全局累计（server 端流式统计，跨 step 累加）
+        metrics: dict[str, Any] = {
+            "mse": mse_pt,
+            "mae": mae_pt,
+            "mse_pt": mse_pt,
+            "mae_pt": mae_pt,
+        }
+        pred_trt_list: list[float] | None = None
+        timing: dict[str, float] | None = None
+        if k == 0:
+            if infer_ms_trt is not None:
+                timing = {
+                    "infer_ms_pt": float(infer_ms_pt),
+                    "infer_ms_trt": float(infer_ms_trt),
+                    "infer_ms": float(infer_ms_pt + infer_ms_trt),
+                }
+            else:
+                timing = {"infer_ms": float(infer_ms_pt)}
+
+        if pred_h_trt is not None:
+            row_trt = pred_h_trt[k]
+            diff_trt = row_trt - gt_h[k]
+            diff_pair = pred_h[k] - row_trt
+            mse_trt = float(np.mean(diff_trt**2))
+            mae_trt = float(np.mean(np.abs(diff_trt)))
+            metrics["mse_trt"] = mse_trt
+            metrics["mae_trt"] = mae_trt
+            metrics["mse_pt_trt"] = float(np.mean(diff_pair**2))
+            metrics["mae_pt_trt"] = float(np.mean(np.abs(diff_pair)))
+            pred_trt_list = [float(x) for x in row_trt.astype(np.float64).tolist()]
+
+        # 全局累计（server 端流式统计，跨 step 累加）— 与单后端一致，仅统计 PyTorch 相对 GT
         running_stats.update_abs_and_rel(
             abs_err_values=np.ravel(abs_diff),
             rel_err_values=np.ravel(rel_err),
         )
-        per_dim_mse_pct.update(np.ravel(diff).astype(np.float64), np.ravel(gt_h[k]).astype(np.float64))
+        per_dim_mse_pct.update(np.ravel(diff_pt).astype(np.float64), np.ravel(gt_h[k]).astype(np.float64))
         dim_mse_pct_mean = per_dim_mse_pct.mse_pct_mean()
         per_dim_rel_p99.update(np.ravel(rel_err))
         dim_rel_p99 = per_dim_rel_p99.rel_p99()
+
+        metrics["mse_pct_dim_mean"] = dim_mse_pct_mean
+        metrics["rel_p99_dim"] = dim_rel_p99
 
         step_images = images if k == 0 else None
         step_event = StepEvent(
@@ -153,16 +215,10 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
             prompt=prompt if k == 0 else None,
             gt_action=[float(x) for x in gt_h[k].astype(np.float64).tolist()],
             pred_action=[float(x) for x in pred_h[k].astype(np.float64).tolist()],
-            metrics={
-                "mse": mse,
-                "mae": mae,
-                # 量化口径：每个动作维度的累计 MSE 百分比（mean(diff^2)/mean(gt^2)）
-                "mse_pct_dim_mean": dim_mse_pct_mean,
-                # 相对误差：每个动作维度累计 p99（最差 1%）
-                "rel_p99_dim": dim_rel_p99,
-            },
+            metrics=metrics,
             images=step_images,
-            server_timing={"infer_ms": float(infer_ms)} if k == 0 else None,
+            server_timing=timing,
+            pred_action_trt=pred_trt_list,
         )
         out_msgs.append(event_to_json(dataclasses.asdict(step_event)))
     return out_msgs

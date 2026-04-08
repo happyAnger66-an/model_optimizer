@@ -3,6 +3,8 @@
 let ws = null;
 let meta = null;
 let connected = false;
+/** 由服务端 meta.compare_mode 设置：误差曲线为 PT / TRT / 两路差 三路 */
+let compareMode = false;
 let latestDimMsePctMean = null; // number[] | null
 let latestDimRelP99 = null; // number[] | null
 
@@ -30,6 +32,9 @@ const PLOTLY_THEME = {
     pred: "#dc2626",
     maeLine: "#059669",
     mseLine: "#d97706",
+    predTrt: "#9333ea",
+    comparePair: "#64748b",
+    compareMseTrt: "#a855f7",
   },
   dark: {
     axisTitle: "#94a3b8",
@@ -42,6 +47,9 @@ const PLOTLY_THEME = {
     pred: "#f87171",
     maeLine: "#34d399",
     mseLine: "#fbbf24",
+    predTrt: "#c084fc",
+    comparePair: "#94a3b8",
+    compareMseTrt: "#e879f9",
   },
 };
 
@@ -91,9 +99,12 @@ function buildMetricsLayout(yAxisTitle) {
       gridcolor: p.grid,
       zerolinecolor: p.zero,
     },
-    showlegend: false,
+    showlegend: compareMode,
+    legend: compareMode
+      ? { font: { size: 9, color: p.legend }, orientation: "h", y: 1.2, x: 0 }
+      : undefined,
     font: { color: p.font, size: 11 },
-    height: 200,
+    height: compareMode ? 220 : 200,
   };
 }
 
@@ -152,17 +163,47 @@ function refreshMetricsChartsTheme() {
     }
     const layout = buildMetricsLayout(def.yLabel);
     metricsLayouts.set(def.id, layout);
-    const ys = state[def.seriesKey];
-    const trace = [
-      {
-        x: [...state.x],
-        y: [...ys],
-        mode: "lines",
-        name: def.traceName,
-        line: { width: 2, color: p[def.colorKey] },
-      },
-    ];
-    Plotly.newPlot(div, trace, layout, { displayModeBar: false, responsive: true });
+    const sk = def.seriesKey;
+    let traces;
+    if (!compareMode) {
+      traces = [
+        {
+          x: [...state.x],
+          y: [...state[sk]],
+          mode: "lines",
+          name: def.traceName,
+          line: { width: 2, color: p[def.colorKey] },
+        },
+      ];
+    } else {
+      const c2 = sk === "mae" ? p.predTrt : p.compareMseTrt;
+      const s2 = sk === "mae" ? "mae_trt" : "mse_trt";
+      const s3 = sk === "mae" ? "mae_pt_trt" : "mse_pt_trt";
+      traces = [
+        {
+          x: [...state.x],
+          y: [...state[sk]],
+          mode: "lines",
+          name: `${sk}_pt`,
+          line: { width: 2, color: p[def.colorKey] },
+        },
+        {
+          x: [...state.x],
+          y: [...state[s2]],
+          mode: "lines",
+          name: `${sk}_trt`,
+          line: { width: 2, color: c2 },
+        },
+        {
+          x: [...state.x],
+          y: [...state[s3]],
+          mode: "lines",
+          name: `${sk}_pt_trt`,
+          line: { width: 2, dash: "dot", color: p.comparePair },
+        },
+      ];
+    }
+    Plotly.newPlot(div, traces, layout, { displayModeBar: false, responsive: true });
   }
 }
 
@@ -259,8 +300,13 @@ const state = {
   x: [],
   mae: [],
   mse: [],
+  mae_trt: [],
+  mse_trt: [],
+  mae_pt_trt: [],
+  mse_pt_trt: [],
   gt: new Map(), // dim -> []
   pred: new Map(), // dim -> []
+  pred_trt: new Map(), // dim -> [] compare_mode
 };
 
 /** 已收到的 ``type=step`` 条数（当前 meta run） */
@@ -401,11 +447,17 @@ function resetSeries() {
   state.x = [];
   state.mae = [];
   state.mse = [];
+  state.mae_trt = [];
+  state.mse_trt = [];
+  state.mae_pt_trt = [];
+  state.mse_pt_trt = [];
   state.gt = new Map();
   state.pred = new Map();
+  state.pred_trt = new Map();
   for (const d of state.dims) {
     state.gt.set(d, []);
     state.pred.set(d, []);
+    state.pred_trt.set(d, []);
   }
 }
 
@@ -429,12 +481,24 @@ function updateTop(event) {
   el("episodeId").textContent = event.episode_id ?? "-";
   el("globalIndex").textContent = event.global_index ?? "-";
   el("kInChunk").textContent = event.k_in_chunk ?? "-";
-  if (event.server_timing && typeof event.server_timing.infer_ms === "number") {
-    el("inferMs").textContent = event.server_timing.infer_ms.toFixed(2);
+  if (event.server_timing) {
+    const st = event.server_timing;
+    if (typeof st.infer_ms === "number") el("inferMs").textContent = st.infer_ms.toFixed(2);
+    if (compareMode) {
+      if (typeof st.infer_ms_pt === "number") el("inferMsPt").textContent = st.infer_ms_pt.toFixed(2);
+      if (typeof st.infer_ms_trt === "number") el("inferMsTrt").textContent = st.infer_ms_trt.toFixed(2);
+    }
   }
   if (event.metrics) {
-    if (typeof event.metrics.mae === "number") el("mae").textContent = event.metrics.mae.toFixed(6);
-    if (typeof event.metrics.mse === "number") el("mse").textContent = event.metrics.mse.toFixed(6);
+    const m = event.metrics;
+    if (typeof m.mae === "number") el("mae").textContent = m.mae.toFixed(6);
+    if (typeof m.mse === "number") el("mse").textContent = m.mse.toFixed(6);
+    if (compareMode) {
+      if (typeof m.mae_trt === "number") el("maeTrt").textContent = m.mae_trt.toFixed(6);
+      if (typeof m.mse_trt === "number") el("mseTrt").textContent = m.mse_trt.toFixed(6);
+      if (typeof m.mae_pt_trt === "number") el("maePtTrt").textContent = m.mae_pt_trt.toFixed(6);
+      if (typeof m.mse_pt_trt === "number") el("msePtTrt").textContent = m.mse_pt_trt.toFixed(6);
+    }
   }
 }
 
@@ -447,27 +511,52 @@ function chartDivId(d) {
   return `chart-dim-${d}`;
 }
 
-/** 与子图初始状态一致的两条空曲线（gt / pred） */
+/** 与子图初始状态一致的空曲线（gt / pred_pt / 可选 pred_trt） */
 function traceTemplatesEmpty() {
   const p = getPlotlyPalette();
-  return [
+  const traces = [
     { x: [], y: [], mode: "lines", name: "gt", line: { width: 2, color: p.gt } },
-    { x: [], y: [], mode: "lines", name: "pred", line: { width: 2, dash: "dot", color: p.pred } },
+    { x: [], y: [], mode: "lines", name: "pred_pt", line: { width: 2, dash: "dot", color: p.pred } },
   ];
+  if (compareMode) {
+    traces.push({
+      x: [],
+      y: [],
+      mode: "lines",
+      name: "pred_trt",
+      line: { width: 2, dash: "dash", color: p.predTrt },
+    });
+  }
+  return traces;
 }
 
 /**
  * 强制 purge + newPlot，避免 Plotly.react 多次合并后出现多余 trace（例如 3 条线）。
  */
-function emptyMetricTrace(def) {
+function emptyMetricTraces(def) {
   const p = getPlotlyPalette();
+  const c1 = p[def.colorKey];
+  if (!compareMode) {
+    return [
+      {
+        x: [],
+        y: [],
+        mode: "lines",
+        name: def.traceName,
+        line: { width: 2, color: c1 },
+      },
+    ];
+  }
+  const c2 = def.seriesKey === "mae" ? p.predTrt : p.compareMseTrt;
   return [
+    { x: [], y: [], mode: "lines", name: `${def.seriesKey}_pt`, line: { width: 2, color: c1 } },
+    { x: [], y: [], mode: "lines", name: `${def.seriesKey}_trt`, line: { width: 2, color: c2 } },
     {
       x: [],
       y: [],
       mode: "lines",
-      name: def.traceName,
-      line: { width: 2, color: p[def.colorKey] },
+      name: `${def.seriesKey}_pt_trt`,
+      line: { width: 2, dash: "dot", color: p.comparePair },
     },
   ];
 }
@@ -483,7 +572,7 @@ function purgeAndNewPlotMetricsChartsSync() {
     }
     const layout = buildMetricsLayout(def.yLabel);
     metricsLayouts.set(def.id, layout);
-    Plotly.newPlot(div, emptyMetricTrace(def), layout, { displayModeBar: false, responsive: true });
+    Plotly.newPlot(div, emptyMetricTraces(def), layout, { displayModeBar: false, responsive: true });
   }
 }
 
@@ -521,9 +610,15 @@ function clearClientDisplay() {
   el("globalIndex").textContent = "-";
   el("kInChunk").textContent = "-";
   el("inferMs").textContent = "-";
+  el("inferMsPt").textContent = "-";
+  el("inferMsTrt").textContent = "-";
   el("gpuUtil").textContent = "-";
   el("mae").textContent = "-";
   el("mse").textContent = "-";
+  el("maeTrt").textContent = "-";
+  el("mseTrt").textContent = "-";
+  el("maePtTrt").textContent = "-";
+  el("msePtTrt").textContent = "-";
   resetHzEstimators();
   // reset per-dim titles
   for (const d of state.dims) {
@@ -563,7 +658,7 @@ async function initMetricsChartsInContainer() {
     mcont.appendChild(wrap);
     const layout = buildMetricsLayout(def.yLabel);
     metricsLayouts.set(def.id, layout);
-    jobs.push([def.id, emptyMetricTrace(def), layout]);
+    jobs.push([def.id, emptyMetricTraces(def), layout]);
   }
   await raf();
   for (const [id, traces, layout] of jobs) {
@@ -678,6 +773,7 @@ function pushPoint(event) {
 
   const gtAction = event.gt_action || [];
   const predAction = event.pred_action || [];
+  const predTrtAction = event.pred_action_trt || [];
 
   for (const d of state.dims) {
     const gArr = state.gt.get(d);
@@ -687,21 +783,49 @@ function pushPoint(event) {
     pArr.push(predAction[d] ?? null);
     while (gArr.length > state.windowSize) gArr.shift();
     while (pArr.length > state.windowSize) pArr.shift();
+    if (compareMode) {
+      const tArr = state.pred_trt.get(d);
+      if (tArr) {
+        tArr.push(predTrtAction[d] ?? null);
+        while (tArr.length > state.windowSize) tArr.shift();
+      }
+    }
   }
 
   const met = event.metrics;
   let maeV = null;
   let mseV = null;
+  let maeTrtV = null;
+  let mseTrtV = null;
+  let maePtTrtV = null;
+  let msePtTrtV = null;
   if (met && typeof met === "object") {
     if (typeof met.mae === "number") maeV = met.mae;
     if (typeof met.mse === "number") mseV = met.mse;
+    if (compareMode) {
+      if (typeof met.mae_trt === "number") maeTrtV = met.mae_trt;
+      if (typeof met.mse_trt === "number") mseTrtV = met.mse_trt;
+      if (typeof met.mae_pt_trt === "number") maePtTrtV = met.mae_pt_trt;
+      if (typeof met.mse_pt_trt === "number") msePtTrtV = met.mse_pt_trt;
+    }
   }
   state.mae.push(maeV);
   state.mse.push(mseV);
   while (state.mae.length > state.windowSize) state.mae.shift();
   while (state.mse.length > state.windowSize) state.mse.shift();
+  if (compareMode) {
+    state.mae_trt.push(maeTrtV);
+    state.mse_trt.push(mseTrtV);
+    state.mae_pt_trt.push(maePtTrtV);
+    state.mse_pt_trt.push(msePtTrtV);
+    while (state.mae_trt.length > state.windowSize) state.mae_trt.shift();
+    while (state.mse_trt.length > state.windowSize) state.mse_trt.shift();
+    while (state.mae_pt_trt.length > state.windowSize) state.mae_pt_trt.shift();
+    while (state.mse_pt_trt.length > state.windowSize) state.mse_pt_trt.shift();
+  }
 
   const xArr = [...state.x];
+  const needTracesDim = compareMode ? 3 : 2;
   for (const d of state.dims) {
     const id = chartDivId(d);
     const gd = document.getElementById(id);
@@ -710,13 +834,18 @@ function pushPoint(event) {
     const pArr = state.pred.get(d);
     if (!gArr || !pArr) continue;
     try {
-      if (!gd.data || gd.data.length < 2) {
+      if (!gd.data || gd.data.length < needTracesDim) {
         const layout = chartLayouts.get(d) || buildPlotlyLayout();
         chartLayouts.set(d, layout);
         Plotly.newPlot(gd, buildTracesForDim(d), layout, { displayModeBar: false, responsive: true });
         continue;
       }
-      Plotly.restyle(gd, { x: [xArr, xArr], y: [[...gArr], [...pArr]] }, [0, 1]);
+      if (compareMode) {
+        const tArr = state.pred_trt.get(d) || [];
+        Plotly.restyle(gd, { x: [xArr, xArr, xArr], y: [[...gArr], [...pArr], [...tArr]] }, [0, 1, 2]);
+      } else {
+        Plotly.restyle(gd, { x: [xArr, xArr], y: [[...gArr], [...pArr]] }, [0, 1]);
+      }
     } catch (e) {
       const layout = chartLayouts.get(d) || buildPlotlyLayout();
       chartLayouts.set(d, layout);
@@ -726,57 +855,102 @@ function pushPoint(event) {
 
   const maeArr = [...state.mae];
   const mseArr = [...state.mse];
+  const maeTrtArr = [...state.mae_trt];
+  const mseTrtArr = [...state.mse_trt];
+  const maePtTrtArr = [...state.mae_pt_trt];
+  const msePtTrtArr = [...state.mse_pt_trt];
+
   for (const def of METRIC_CHART_DEFS) {
     const gd = document.getElementById(def.id);
     if (!gd) continue;
-    const yArr = def.seriesKey === "mae" ? maeArr : mseArr;
+    const sk = def.seriesKey;
+    const yArr = sk === "mae" ? maeArr : mseArr;
+    const yTrt = sk === "mae" ? maeTrtArr : mseTrtArr;
+    const yPair = sk === "mae" ? maePtTrtArr : msePtTrtArr;
+    const needTracesMet = compareMode ? 3 : 1;
     try {
-      if (!gd.data || gd.data.length < 1) {
+      if (!gd.data || gd.data.length < needTracesMet) {
         const layout = metricsLayouts.get(def.id) || buildMetricsLayout(def.yLabel);
         metricsLayouts.set(def.id, layout);
         const p = getPlotlyPalette();
-        Plotly.newPlot(
-          gd,
-          [
+        let traces;
+        if (!compareMode) {
+          traces = [
             {
-              x: [...state.x],
+              x: xArr,
               y: yArr,
               mode: "lines",
               name: def.traceName,
               line: { width: 2, color: p[def.colorKey] },
             },
-          ],
-          layout,
-          { displayModeBar: false, responsive: true }
-        );
+          ];
+        } else {
+          const c2 = sk === "mae" ? p.predTrt : p.compareMseTrt;
+          traces = [
+            { x: xArr, y: yArr, mode: "lines", name: `${sk}_pt`, line: { width: 2, color: p[def.colorKey] } },
+            { x: xArr, y: yTrt, mode: "lines", name: `${sk}_trt`, line: { width: 2, color: c2 } },
+            {
+              x: xArr,
+              y: yPair,
+              mode: "lines",
+              name: `${sk}_pt_trt`,
+              line: { width: 2, dash: "dot", color: p.comparePair },
+            },
+          ];
+        }
+        Plotly.newPlot(gd, traces, layout, { displayModeBar: false, responsive: true });
         continue;
       }
-      Plotly.restyle(gd, { x: [xArr], y: [yArr] }, [0]);
+      if (compareMode) {
+        Plotly.restyle(gd, { x: [xArr, xArr, xArr], y: [yArr, yTrt, yPair] }, [0, 1, 2]);
+      } else {
+        Plotly.restyle(gd, { x: [xArr], y: [yArr] }, [0]);
+      }
     } catch (e) {
       const layout = metricsLayouts.get(def.id) || buildMetricsLayout(def.yLabel);
       metricsLayouts.set(def.id, layout);
       const p = getPlotlyPalette();
-      Plotly.newPlot(
-        gd,
-        [
-          {
-            x: [...state.x],
-            y: yArr,
-            mode: "lines",
-            name: def.traceName,
-            line: { width: 2, color: p[def.colorKey] },
-          },
-        ],
-        layout,
-        { displayModeBar: false, responsive: true }
-      );
+      const traces = !compareMode
+        ? [
+            {
+              x: xArr,
+              y: yArr,
+              mode: "lines",
+              name: def.traceName,
+              line: { width: 2, color: p[def.colorKey] },
+            },
+          ]
+        : [
+            {
+              x: xArr,
+              y: yArr,
+              mode: "lines",
+              name: `${sk}_pt`,
+              line: { width: 2, color: p[def.colorKey] },
+            },
+            {
+              x: xArr,
+              y: yTrt,
+              mode: "lines",
+              name: `${sk}_trt`,
+              line: { width: 2, color: sk === "mae" ? p.predTrt : p.compareMseTrt },
+            },
+            {
+              x: xArr,
+              y: yPair,
+              mode: "lines",
+              name: `${sk}_pt_trt`,
+              line: { width: 2, dash: "dot", color: p.comparePair },
+            },
+          ];
+      Plotly.newPlot(gd, traces, layout, { displayModeBar: false, responsive: true });
     }
   }
 }
 
 function buildTracesForDim(d) {
   const p = getPlotlyPalette();
-  return [
+  const traces = [
     {
       x: [...state.x],
       y: [...(state.gt.get(d) || [])],
@@ -788,10 +962,20 @@ function buildTracesForDim(d) {
       x: [...state.x],
       y: [...(state.pred.get(d) || [])],
       mode: "lines",
-      name: "pred",
+      name: "pred_pt",
       line: { width: 2, dash: "dot", color: p.pred },
     },
   ];
+  if (compareMode) {
+    traces.push({
+      x: [...state.x],
+      y: [...(state.pred_trt.get(d) || [])],
+      mode: "lines",
+      name: "pred_trt",
+      line: { width: 2, dash: "dash", color: p.predTrt },
+    });
+  }
+  return traces;
 }
 
 function connect() {
@@ -892,6 +1076,9 @@ function connectInternal() {
         return;
       }
       meta = msg;
+      compareMode = Boolean(meta.compare_mode);
+      const cmb = el("compareMetricsBlock");
+      if (cmb) cmb.hidden = !compareMode;
       stepReceiveCount = 0;
       resetSeries();
       resetHzEstimators();
