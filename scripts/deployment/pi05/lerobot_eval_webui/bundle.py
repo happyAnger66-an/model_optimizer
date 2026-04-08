@@ -18,7 +18,9 @@ from .dataset import (
     make_lerobot_dataset,
     unwrap_lerobot_base,
 )
+from .gpu_stats import effective_gpu_index
 from .protocol import event_to_json
+from .running_stats import RunningErrorStats
 from .tensorrt_backend import load_tensorrt_engines
 
 
@@ -108,6 +110,10 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
     if args.calib_save_path is not None and calib_collectors is not None:
         meta_payload["calib_save_path"] = str(Path(args.calib_save_path).expanduser().resolve())
 
+    if args.gpu_stats_interval_sec and args.gpu_stats_interval_sec > 0:
+        meta_payload["gpu_stats_interval_sec"] = float(args.gpu_stats_interval_sec)
+        meta_payload["gpu_device_index"] = int(effective_gpu_index(args))
+
     meta_msg = event_to_json(meta_payload)
 
     return {
@@ -123,4 +129,5 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
         "run_id": run_id,
         "args": args,
         "calib_collectors": calib_collectors,
+        "running_err_stats": RunningErrorStats(),
     }

@@ -36,3 +36,7 @@ class WebsocketBroadcaster:
                 dead.append(ws)
         for ws in dead:
             await self.unregister(ws)
+
+    def snapshot_clients(self) -> list[Any]:
+        """返回当前连接快照，供退出时主动关闭连接。"""
+        return list(self._clients)

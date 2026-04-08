@@ -193,6 +193,7 @@ python scripts/deployment/pi05/lerobot_eval_webui_server.py \
 | `--max-fps` | 限制推送速率（step/s）；`0` 表示不限制 |
 | `--history-size` | 缓存最近 N 条消息，新 client 连接后先回放（`0` 不缓存） |
 | `--client-ws-url` | 浏览器默认 WebSocket 地址，写入 `webui_client/server_hint.json`；例如远端填 `ws://192.168.1.10:8765/ws`。不设且 `--host 0.0.0.0` 时为 `ws://127.0.0.1:{port}{path}` |
+| `--calib-save-path` | Pi0.5 校准数据目录；仅 `inference_mode=pytorch` 时生效，与 `standalone_inference_script.py` 相同，在每次 `infer` 上挂 LLM/Expert/ViT hook，结束时写入 `pi05_*_calib_datas.pt` |
 | `--inference-mode tensorrt` + 引擎参数 | 与 `lerobot_eval_compare.py` 一致 |
 
 对齐语义（重要）：
@@ -221,5 +222,7 @@ python -m http.server 8000
 - 局域网另一台机器打开页面时，请在启动 server 时指定 `--client-ws-url ws://<server_ip>:8765/ws`，或手动在页面填写该地址。
 
 **主题**：页面顶部「主题」可选浅色 / 深色；偏好保存在浏览器 `localStorage`。
+
+**暂停推理**：连接后可用「暂停推理 / 继续推理」向 server 发送 `{"type":"control","action":"pause"|"resume"}`；server 在**下一个 chunk 的 `infer` 之前**阻塞或继续（便于排查问题）。连接成功后会收到 `type=control_ack` 同步当前暂停状态。
 
 页面默认只显示 base RGB；若你在 server 侧开启 `--send-wrist`，client 勾选“显示 wrist”即可显示第二张图。

@@ -50,3 +50,9 @@ class Args:
     仅在 ``inference_mode=pytorch`` 时生效：对每次 ``policy.infer`` 挂 LLM / Expert / ViT 的 forward hook，
     评估结束（或异常退出线程）时在目录下写入各子模块的 ``*_calib_manifest.json`` 与 ``*_calib_shards/`` 分片；
     量化时 ``--calibrate_data`` 传该目录即可流式加载。若仍存在旧的 ``*_calib_datas.pt`` 也会兼容。TensorRT 模式不支持。"""
+
+    gpu_stats_interval_sec: float = 1.0
+    """周期向 client 推送 ``type=gpu_stats``（需本机 ``nvidia-smi``）。``0`` 表示关闭。"""
+
+    gpu_device_index: int | None = None
+    """``nvidia-smi -i`` 使用的 GPU 下标。``None`` 时从 ``--device`` 解析 ``cuda:N``，否则为 ``0``。"""

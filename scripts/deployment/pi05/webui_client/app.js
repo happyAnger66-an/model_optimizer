@@ -433,6 +433,10 @@ function updateTop(event) {
   if (event.metrics) {
     if (typeof event.metrics.mae === "number") el("mae").textContent = event.metrics.mae.toFixed(6);
     if (typeof event.metrics.mse === "number") el("mse").textContent = event.metrics.mse.toFixed(6);
+    if (typeof event.metrics.mean_rel_err === "number")
+      el("meanRelErr").textContent = event.metrics.mean_rel_err.toFixed(6);
+    if (typeof event.metrics.p99_abs_err === "number")
+      el("p99AbsErr").textContent = event.metrics.p99_abs_err.toFixed(6);
   }
 }
 
@@ -517,8 +521,11 @@ function clearClientDisplay() {
   el("globalIndex").textContent = "-";
   el("kInChunk").textContent = "-";
   el("inferMs").textContent = "-";
+  el("gpuUtil").textContent = "-";
   el("mae").textContent = "-";
   el("mse").textContent = "-";
+  el("meanRelErr").textContent = "-";
+  el("p99AbsErr").textContent = "-";
   resetHzEstimators();
   if (meta) {
     el("repoId").textContent = meta.repo_id ?? "-";
@@ -796,10 +803,22 @@ function connectInternal() {
       return;
     }
 
+    if (msg.type === "gpu_stats") {
+      const gu =
+        typeof msg.gpu_util_pct === "number" ? msg.gpu_util_pct.toFixed(0) : "?";
+      const mu =
+        typeof msg.mem_util_pct === "number" ? msg.mem_util_pct.toFixed(0) : "?";
+      const di =
+        typeof msg.device_index === "number" ? `[${msg.device_index}] ` : "";
+      el("gpuUtil").textContent = `${di}${gu}% · mem ${mu}%`;
+      return;
+    }
+
     if (msg.type === "meta") {
       if (msg.phase === "loading") {
         el("repoId").textContent = "…";
         el("backend").textContent = "…";
+        el("gpuUtil").textContent = "-";
         el("prompt").textContent = "—";
         setProgress(msg.message || "服务端：正在加载数据集与策略…");
         setInferLoadingSub("服务端正在加载数据集与策略，请稍候…");
@@ -813,6 +832,10 @@ function connectInternal() {
       el("runId").textContent = meta.run_id ?? "-";
       el("repoId").textContent = meta.repo_id ?? "-";
       el("backend").textContent = meta.backend ?? "-";
+      el("gpuUtil").textContent =
+        typeof meta.gpu_stats_interval_sec === "number" && meta.gpu_stats_interval_sec > 0
+          ? "…"
+          : "—";
       {
         const lo = meta.start_index ?? "?";
         const hi = meta.end_index_exclusive ?? "?";

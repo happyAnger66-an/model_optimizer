@@ -1,0 +1,139 @@
+"""在线累计统计（用于 WebUI 推送）。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+class P2Quantile:
+    """P² (P-square) 在线分位数估计器（Jain & Chlamtac, 1985）。
+
+    - 常量内存、单次更新 O(1)
+    - 适用于长流式数据的近似分位数
+    - 本实现用于 p99（q=0.99）一类指标
+    """
+
+    def __init__(self, q: float) -> None:
+        if not (0.0 < q < 1.0):
+            raise ValueError("q must be in (0,1)")
+        self.q = float(q)
+        self._init: list[float] = []
+        self._n = [0, 0, 0, 0, 0]  # marker positions
+        self._np = [0.0, 0.0, 0.0, 0.0, 0.0]  # desired positions
+        self._dn = [0.0, 0.0, 0.0, 0.0, 0.0]  # increments
+        self._qv = [0.0, 0.0, 0.0, 0.0, 0.0]  # marker heights (values)
+
+    def _bootstrap(self) -> None:
+        self._init.sort()
+        self._qv = self._init[:5]
+        # positions are 1-indexed in paper; we keep 1-indexed too
+        self._n = [1, 2, 3, 4, 5]
+        q = self.q
+        self._np = [1.0, 1.0 + 2.0 * q, 1.0 + 4.0 * q, 3.0 + 2.0 * q, 5.0]
+        self._dn = [0.0, q / 2.0, q, (1.0 + q) / 2.0, 1.0]
+
+    def update(self, x: float) -> None:
+        v = float(x)
+        if len(self._init) < 5:
+            self._init.append(v)
+            if len(self._init) == 5:
+                self._bootstrap()
+            return
+
+        # find k: the cell in which x falls
+        if v < self._qv[0]:
+            self._qv[0] = v
+            k = 0
+        elif v < self._qv[1]:
+            k = 0
+        elif v < self._qv[2]:
+            k = 1
+        elif v < self._qv[3]:
+            k = 2
+        elif v < self._qv[4]:
+            k = 3
+        else:
+            self._qv[4] = v
+            k = 3
+
+        # increment positions of markers k+1..5
+        for i in range(k + 1, 5):
+            self._n[i] += 1
+        # update desired positions
+        for i in range(5):
+            self._np[i] += self._dn[i]
+
+        # adjust heights of markers 2..4 if necessary
+        for i in (1, 2, 3):
+            d = self._np[i] - float(self._n[i])
+            if (d >= 1.0 and self._n[i + 1] - self._n[i] > 1) or (
+                d <= -1.0 and self._n[i - 1] - self._n[i] < -1
+            ):
+                di = 1 if d > 0 else -1
+                # parabolic prediction
+                qi = self._qv[i]
+                q_im1 = self._qv[i - 1]
+                q_ip1 = self._qv[i + 1]
+                n_i = float(self._n[i])
+                n_im1 = float(self._n[i - 1])
+                n_ip1 = float(self._n[i + 1])
+
+                num = di * (
+                    (n_i - n_im1 + di) * (q_ip1 - qi) / (n_ip1 - n_i)
+                    + (n_ip1 - n_i - di) * (qi - q_im1) / (n_i - n_im1)
+                )
+                den = (n_ip1 - n_im1)
+                q_new = qi + (num / den)
+
+                # if parabolic goes out of bounds, use linear
+                if q_im1 < q_new < q_ip1:
+                    self._qv[i] = q_new
+                else:
+                    self._qv[i] = qi + di * (self._qv[i + di] - qi) / (
+                        float(self._n[i + di]) - n_i
+                    )
+                self._n[i] += di
+
+    def value(self) -> float | None:
+        if len(self._init) == 0:
+            return None
+        if len(self._init) < 5:
+            # exact quantile on small set
+            xs = sorted(self._init)
+            if len(xs) == 1:
+                return xs[0]
+            # nearest-rank
+            k = int(round(self.q * (len(xs) - 1)))
+            k = max(0, min(len(xs) - 1, k))
+            return xs[k]
+        return float(self._qv[2])  # marker 3 tracks desired quantile
+
+
+@dataclass
+class RunningErrorStats:
+    """累计误差统计：对所有 step 的所有动作维度展开后的流进行统计。"""
+
+    rel_sum: float = 0.0
+    rel_count: int = 0
+    p99_abs: P2Quantile | None = None
+
+    def __post_init__(self) -> None:
+        if self.p99_abs is None:
+            self.p99_abs = P2Quantile(0.99)
+
+    def update_abs_and_rel(self, *, abs_err_values, rel_err_values) -> None:
+        # abs_err_values / rel_err_values: iterable[float]
+        for v in abs_err_values:
+            self.p99_abs.update(float(v))
+        for v in rel_err_values:
+            self.rel_sum += float(v)
+            self.rel_count += 1
+
+    def mean_rel(self) -> float | None:
+        if self.rel_count <= 0:
+            return None
+        return float(self.rel_sum / float(self.rel_count))
+
+    def p99_abs_value(self) -> float | None:
+        return self.p99_abs.value() if self.p99_abs is not None else None
+
