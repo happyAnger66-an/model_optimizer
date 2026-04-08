@@ -39,12 +39,16 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     repack_fn = bundle["repack_fn"]
     policy = bundle["policy"]
     policy_trt: Any | None = bundle.get("policy_trt")
+    policy_ptq: Any | None = bundle.get("policy_ptq")
     running_stats: RunningErrorStats = bundle["running_err_stats"]
     per_dim_mse_pct: RunningPerDimMsePctStats = bundle["running_per_dim_mse_pct"]
     per_dim_rel_p99: RunningPerDimRelP99Stats = bundle["running_per_dim_rel_p99"]
     per_dim_mse_pct_trt: RunningPerDimMsePctStats | None = bundle.get("running_per_dim_mse_pct_trt")
     per_dim_rel_p99_trt: RunningPerDimRelP99Stats | None = bundle.get("running_per_dim_rel_p99_trt")
     pair_mse_per_dim: RunningPerDimPairMseStats | None = bundle.get("running_pt_trt_mse_per_dim")
+    per_dim_mse_pct_ptq: RunningPerDimMsePctStats | None = bundle.get("running_per_dim_mse_pct_ptq")
+    per_dim_rel_p99_ptq: RunningPerDimRelP99Stats | None = bundle.get("running_per_dim_rel_p99_ptq")
+    pair_mse_pt_ptq: RunningPerDimPairMseStats | None = bundle.get("running_pt_ptq_mse_per_dim")
 
     stride_ok = (idx - start_index) % action_horizon == 0
     chunk_fits = idx + action_horizon <= n and idx + action_horizon <= end
@@ -65,10 +69,11 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     obs = {k: v for k, v in packed.items() if k != "actions"}
 
     infer_ms_pt: float
-    infer_ms_trt: float | None = None
+    infer_ms_second: float | None = None
     pred_h: np.ndarray
     gt_h: np.ndarray
     pred_h_trt: np.ndarray | None = None
+    pred_h_ptq: np.ndarray | None = None
 
     if policy_trt is not None:
         t0 = time.monotonic()
@@ -76,13 +81,27 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
         infer_ms_pt = (time.monotonic() - t0) * 1000.0
         t0 = time.monotonic()
         out_trt = policy_trt.infer(obs)
-        infer_ms_trt = (time.monotonic() - t0) * 1000.0
+        infer_ms_second = (time.monotonic() - t0) * 1000.0
         pred_pt = np.asarray(out_pt["actions"])
         pred_trt_raw = np.asarray(out_trt["actions"])
         pred_a_pt, gt_a = align_action_dim(pred_pt, gt)
         pred_a_trt, _gt_a2 = align_action_dim(pred_trt_raw, gt)
         pred_h = pred_a_pt[:action_horizon]
         pred_h_trt = pred_a_trt[:action_horizon]
+        gt_h = gt_a[:action_horizon]
+    elif policy_ptq is not None:
+        t0 = time.monotonic()
+        out_pt = policy.infer(obs)
+        infer_ms_pt = (time.monotonic() - t0) * 1000.0
+        t0 = time.monotonic()
+        out_ptq = policy_ptq.infer(obs)
+        infer_ms_second = (time.monotonic() - t0) * 1000.0
+        pred_pt = np.asarray(out_pt["actions"])
+        pred_ptq_raw = np.asarray(out_ptq["actions"])
+        pred_a_pt, gt_a = align_action_dim(pred_pt, gt)
+        pred_a_ptq, _gt_a2 = align_action_dim(pred_ptq_raw, gt)
+        pred_h = pred_a_pt[:action_horizon]
+        pred_h_ptq = pred_a_ptq[:action_horizon]
         gt_h = gt_a[:action_horizon]
     else:
         t0 = time.monotonic()
@@ -133,6 +152,14 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
             action_horizon,
         )
         return []
+    if pred_h_ptq is not None and pred_h_ptq.shape[0] < action_horizon:
+        logging.warning(
+            "index %s: pred_ptq 时间维 %s 小于 action_horizon=%s，跳过。",
+            idx,
+            pred_h_ptq.shape[0],
+            action_horizon,
+        )
+        return []
 
     prompt: str | None = None
     if "prompt" in packed:
@@ -178,13 +205,15 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
             "mse_per_dim": [float(dpt_flat[i] * dpt_flat[i]) for i in range(int(dpt_flat.size))],
         }
         pred_trt_list: list[float] | None = None
+        pred_ptq_list: list[float] | None = None
         timing: dict[str, float] | None = None
         if k == 0:
-            if infer_ms_trt is not None:
+            if infer_ms_second is not None:
                 timing = {
                     "infer_ms_pt": float(infer_ms_pt),
-                    "infer_ms_trt": float(infer_ms_trt),
-                    "infer_ms": float(infer_ms_pt + infer_ms_trt),
+                    "infer_ms_trt": float(infer_ms_second),
+                    "infer_ms_ptq": float(infer_ms_second),
+                    "infer_ms": float(infer_ms_pt + infer_ms_second),
                 }
             else:
                 timing = {"infer_ms": float(infer_ms_pt)}
@@ -210,6 +239,28 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
             if pair_mse_per_dim is not None:
                 pair_mse_per_dim.update(np.ravel(diff_pair).astype(np.float64))
                 metrics["mse_pt_trt_dim_mean"] = pair_mse_per_dim.mean_mse_per_dim()
+
+        if pred_h_ptq is not None:
+            row_ptq = pred_h_ptq[k]
+            diff_ptq = row_ptq - gt_h[k]
+            diff_pair_q = pred_h[k] - row_ptq
+            mse_ptq_v = float(np.mean(diff_ptq**2))
+            mae_ptq_v = float(np.mean(np.abs(diff_ptq)))
+            metrics["mse_ptq"] = mse_ptq_v
+            metrics["mae_ptq"] = mae_ptq_v
+            metrics["mse_pt_ptq"] = float(np.mean(diff_pair_q**2))
+            metrics["mae_pt_ptq"] = float(np.mean(np.abs(diff_pair_q)))
+            dpair_q = np.ravel(diff_pair_q.astype(np.float64))
+            metrics["mae_pt_ptq_per_dim"] = [
+                float(np.abs(dpair_q[i])) for i in range(int(dpair_q.size))
+            ]
+            metrics["mse_pt_ptq_per_dim"] = [
+                float(dpair_q[i] * dpair_q[i]) for i in range(int(dpair_q.size))
+            ]
+            pred_ptq_list = [float(x) for x in row_ptq.astype(np.float64).tolist()]
+            if pair_mse_pt_ptq is not None:
+                pair_mse_pt_ptq.update(np.ravel(diff_pair_q).astype(np.float64))
+                metrics["mse_pt_ptq_dim_mean"] = pair_mse_pt_ptq.mean_mse_per_dim()
 
         # 全局累计（server 端流式统计，跨 step 累加）— 与单后端一致，仅统计 PyTorch 相对 GT
         running_stats.update_abs_and_rel(
@@ -238,6 +289,20 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
             metrics["mse_pct_dim_mean_trt"] = per_dim_mse_pct_trt.mse_pct_mean()
             metrics["rel_p99_dim_trt"] = per_dim_rel_p99_trt.rel_p99()
 
+        if (
+            pred_h_ptq is not None
+            and per_dim_mse_pct_ptq is not None
+            and per_dim_rel_p99_ptq is not None
+        ):
+            abs_diff_ptq = np.abs(diff_ptq).astype(np.float64, copy=False)
+            rel_err_ptq = (abs_diff_ptq / denom).astype(np.float64, copy=False)
+            per_dim_mse_pct_ptq.update(
+                np.ravel(diff_ptq).astype(np.float64), np.ravel(gt_h[k]).astype(np.float64)
+            )
+            per_dim_rel_p99_ptq.update(np.ravel(rel_err_ptq))
+            metrics["mse_pct_dim_mean_ptq"] = per_dim_mse_pct_ptq.mse_pct_mean()
+            metrics["rel_p99_dim_ptq"] = per_dim_rel_p99_ptq.rel_p99()
+
         step_images = images if k == 0 else None
         step_event = StepEvent(
             type="step",
@@ -254,6 +319,7 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
             images=step_images,
             server_timing=timing,
             pred_action_trt=pred_trt_list,
+            pred_action_ptq=pred_ptq_list,
         )
         out_msgs.append(event_to_json(dataclasses.asdict(step_event)))
     return out_msgs

@@ -15,6 +15,8 @@ LeRobot 离线评估 WebUI（client-server）：
 - ``type="log"``：可选日志事件
 - ``type="control"``（client→server）：``{"type":"control","action":"pause"|"resume"}``，在**下一个 chunk 推理前**暂停/继续；server 回复 ``type=control_ack``
 
+可选 **PTQ 对比**（``--ptq-compare``）：双路 PyTorch（浮点 vs 选择性 PTQ），协议字段见 ``docs/quantize_ptq_compare.md``。
+
 实现已拆分为 ``lerobot_eval_webui`` 包（同目录下），本文件仅作兼容入口。
 """
 

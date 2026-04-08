@@ -18,8 +18,21 @@ class Args:
 
     # 单后端：pytorch / tensorrt；compare_mode=True 时忽略此项（固定 PyTorch + TensorRT 双路）
     inference_mode: Literal["pytorch", "tensorrt"] = "pytorch"
-    # 双路对比：需 --engine-path 与各 *_engine（同 tensorrt 模式）
+    # 双路对比：需 --engine-path 与各 *_engine（同 tensorrt 模式）；与 ptq_compare 互斥
     compare_mode: bool = False
+
+    # PyTorch 浮点 vs 同权重复本上的选择性 PTQ（fake quant）；与 compare_mode 互斥
+    ptq_compare: bool = False
+    ptq_quant_cfg: Path | None = None
+    """ModelOpt 量化 JSON（可含 ``quant_mode``，与 ``normalize_quant_cfg`` 一致）。"""
+    ptq_calib_dir: Path | None = None
+    """与 ``open_pi05_calib_for_quantize`` 一致：含 ``pi05_{vit,llm,expert}_calib_*`` 的目录。"""
+    ptq_parts: tuple[Literal["vit", "llm", "expert"], ...] = dataclasses.field(default_factory=tuple)
+    """要量化的子系统，例如 ``--ptq-parts llm expert``。"""
+    ptq_layer_report_path: Path | None = None
+    """可选：将各 QuantLinear 输出相对 FP 的误差写入该 JSON 路径。"""
+    ptq_layer_report_samples: int = 32
+    """layer report 使用的连续样本数（自 start_index 起）。"""
 
     precision: Literal["fp16", "bf16", "fp32"] = "bf16"
     engine_path: str = ""
@@ -51,7 +64,7 @@ class Args:
     calib_save_path: Path | None = None
     """Pi0.5 校准数据输出目录（与 ``standalone_inference_script.py --calib-save-path`` 相同）。
 
-    仅在 ``inference_mode=pytorch`` 时生效：对每次 ``policy.infer`` 挂 LLM / Expert / ViT 的 forward hook，
+    仅在 ``inference_mode=pytorch``、``compare_mode`` 或 ``ptq_compare`` 时生效：对每次 ``policy.infer`` 挂 LLM / Expert / ViT 的 forward hook，
     评估结束（或异常退出线程）时在目录下写入各子模块的 ``*_calib_manifest.json`` 与 ``*_calib_shards/`` 分片；
     量化时 ``--calibrate_data`` 传该目录即可流式加载。若仍存在旧的 ``*_calib_datas.pt`` 也会兼容。TensorRT 模式不支持。"""
 

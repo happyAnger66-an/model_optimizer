@@ -3,8 +3,13 @@
 let ws = null;
 let meta = null;
 let connected = false;
-/** 由服务端 meta.compare_mode 设置：误差曲线仅 PT−TRT（与 GT 的对比见 Run 区表格） */
+/** 由服务端 meta.compare_mode 设置：双路之一为 TensorRT */
 let compareMode = false;
+/** 由服务端 meta.ptq_compare 设置：双路之二为 PyTorch PTQ（与 compare_mode 互斥） */
+let ptqCompareMode = false;
+function dualPredMode() {
+  return compareMode || ptqCompareMode;
+}
 let latestDimMsePctMean = null; // number[] | null
 let latestDimRelP99 = null; // number[] | null
 let latestDimMsePctMeanTrt = null; // number[] | null，仅 compare_mode
@@ -81,7 +86,7 @@ function metricDimLineColor(i) {
 /** 各 dim 子图标题（compare 详细指标见「按维累计对比」表） */
 function dimChartTitlePlaceholder(d) {
   const di = Number(d);
-  if (compareMode) {
+  if (dualPredMode()) {
     return `Action dim ${di}`;
   }
   return `Action dim ${di} · mse_pct_mean - · rel_p99 -`;
@@ -133,7 +138,7 @@ function fmtCompareDimRawCell(v) {
 function refreshCompareDimTable() {
   const tbody = el("compareDimTableBody");
   const card = el("compareDimTableCard");
-  if (!tbody || !card || !compareMode) return;
+  if (!tbody || !card || !dualPredMode()) return;
 
   const arr = latestDimMsePctMean;
   const p99 = latestDimRelP99;
@@ -267,9 +272,10 @@ function metricsChartLayout(def) {
   return buildMetricsLayout(metricsChartYAxisTitle(def), { showLegend: state.dims.length > 1 });
 }
 
-/** 误差曲线图 y 轴标题：compare 时仅画 PT−TRT */
+/** 误差曲线图 y 轴标题：双路时画 PT−第二路（TRT 或 PTQ） */
 function metricsChartYAxisTitle(def) {
-  if (!compareMode) return def.yLabel;
+  if (!dualPredMode()) return def.yLabel;
+  if (ptqCompareMode) return `PT−PTQ ${def.yLabel}`;
   return `PT−TRT ${def.yLabel}`;
 }
 
@@ -277,8 +283,9 @@ function updateMetricChartWrapTitles() {
   for (const def of METRIC_CHART_DEFS) {
     const t = el(`metricTitle-${def.id}`);
     if (!t) continue;
-    const base = compareMode
-      ? `PT−TRT ${def.cardTitle} vs global_index`
+    const pairLabel = ptqCompareMode ? "PT−PTQ" : "PT−TRT";
+    const base = dualPredMode()
+      ? `${pairLabel} ${def.cardTitle} vs global_index`
       : `${def.cardTitle} vs global_index`;
     t.textContent = state.dims.length > 1 ? `${base}（各 dim 一条线）` : base;
   }
@@ -621,7 +628,7 @@ function updateTop(event) {
   if (event.server_timing) {
     const st = event.server_timing;
     if (typeof st.infer_ms === "number") el("inferMs").textContent = st.infer_ms.toFixed(2);
-    if (compareMode) {
+    if (dualPredMode()) {
       const ipt = el("cmpInferPt");
       const itr = el("cmpInferTrt");
       if (ipt && typeof st.infer_ms_pt === "number") ipt.textContent = st.infer_ms_pt.toFixed(2);
@@ -634,13 +641,20 @@ function updateTop(event) {
       const n = el(id);
       if (n && typeof v === "number") n.textContent = v.toFixed(6);
     };
-    if (compareMode) {
+    if (dualPredMode()) {
       setNum("cmpMaePt", m.mae);
       setNum("cmpMsePt", m.mse);
-      setNum("cmpMaeTrt", m.mae_trt);
-      setNum("cmpMseTrt", m.mse_trt);
-      setNum("cmpMaePair", m.mae_pt_trt);
-      setNum("cmpMsePair", m.mse_pt_trt);
+      if (compareMode) {
+        setNum("cmpMaeTrt", m.mae_trt);
+        setNum("cmpMseTrt", m.mse_trt);
+        setNum("cmpMaePair", m.mae_pt_trt);
+        setNum("cmpMsePair", m.mse_pt_trt);
+      } else {
+        setNum("cmpMaeTrt", m.mae_ptq);
+        setNum("cmpMseTrt", m.mse_ptq);
+        setNum("cmpMaePair", m.mae_pt_ptq);
+        setNum("cmpMsePair", m.mse_pt_ptq);
+      }
     } else {
       if (typeof m.mae === "number") el("mae").textContent = m.mae.toFixed(6);
       if (typeof m.mse === "number") el("mse").textContent = m.mse.toFixed(6);
@@ -661,7 +675,7 @@ function chartDivId(d) {
 function getDimTraceVisibility() {
   const gt = el("dimShowGt")?.checked !== false;
   const predPt = el("dimShowPredPt")?.checked !== false;
-  if (!compareMode) return [gt, predPt];
+  if (!dualPredMode()) return [gt, predPt];
   const predTrt = el("dimShowPredTrt")?.checked !== false;
   return [gt, predPt, predTrt];
 }
@@ -676,7 +690,7 @@ function applyVisibilityToDimTraces(traces) {
 /** 非 compare 时隐藏 pred_trt 勾选（该 trace 不存在） */
 function setDimTraceToggleUi() {
   const wrap = el("dimShowPredTrtWrap");
-  if (wrap) wrap.style.display = compareMode ? "" : "none";
+  if (wrap) wrap.style.display = dualPredMode() ? "" : "none";
 }
 
 function restyleAllDimChartsVisibility() {
@@ -763,7 +777,7 @@ function traceTemplatesEmpty() {
     { x: [], y: [], mode: "lines", name: "gt", line: { width: 2, color: p.gt } },
     { x: [], y: [], mode: "lines", name: "pred_pt", line: { width: 2, dash: "dot", color: p.pred } },
   ];
-  if (compareMode) {
+  if (dualPredMode()) {
     traces.push({
       x: [],
       y: [],
@@ -783,7 +797,7 @@ function buildMetricTracesFromState(def) {
   for (let i = 0; i < state.dims.length; i++) {
     const d = state.dims[i];
     let yArr;
-    if (!compareMode) {
+    if (!dualPredMode()) {
       yArr = sk === "mae" ? [...(state.maePerDim.get(d) || [])] : [...(state.msePerDim.get(d) || [])];
     } else {
       yArr = sk === "mae" ? [...(state.maePtTrtPerDim.get(d) || [])] : [...(state.msePtTrtPerDim.get(d) || [])];
@@ -975,12 +989,18 @@ function updatePerDimMsePctFromStep(event) {
   const arrTrt = met.mse_pct_dim_mean_trt;
   const p99Trt = met.rel_p99_dim_trt;
   const pairDm = met.mse_pt_trt_dim_mean;
+  const arrPtq = met.mse_pct_dim_mean_ptq;
+  const p99Ptq = met.rel_p99_dim_ptq;
+  const pairPpq = met.mse_pt_ptq_dim_mean;
   if (
     !Array.isArray(arr) &&
     !Array.isArray(p99) &&
     !Array.isArray(arrTrt) &&
     !Array.isArray(p99Trt) &&
-    !Array.isArray(pairDm)
+    !Array.isArray(pairDm) &&
+    !Array.isArray(arrPtq) &&
+    !Array.isArray(p99Ptq) &&
+    !Array.isArray(pairPpq)
   ) {
     return;
   }
@@ -990,12 +1010,16 @@ function updatePerDimMsePctFromStep(event) {
     if (Array.isArray(arrTrt)) latestDimMsePctMeanTrt = arrTrt;
     if (Array.isArray(p99Trt)) latestDimRelP99Trt = p99Trt;
     if (Array.isArray(pairDm)) latestDimMsePtTrtDimMean = pairDm;
+  } else if (ptqCompareMode) {
+    if (Array.isArray(arrPtq)) latestDimMsePctMeanTrt = arrPtq;
+    if (Array.isArray(p99Ptq)) latestDimRelP99Trt = p99Ptq;
+    if (Array.isArray(pairPpq)) latestDimMsePtTrtDimMean = pairPpq;
   }
 
   for (const d of state.dims) {
     const t = document.getElementById(`dimTitle-${d}`);
     if (!t) continue;
-    if (compareMode) {
+    if (dualPredMode()) {
       t.textContent = `Action dim ${d}`;
     } else {
       const v = Array.isArray(arr) && typeof arr[d] === "number" ? arr[d] : null;
@@ -1005,7 +1029,7 @@ function updatePerDimMsePctFromStep(event) {
       t.textContent = `Action dim ${d} · mse_pct_mean ${sPt} · rel_p99 ${rsPt}`;
     }
   }
-  if (compareMode) refreshCompareDimTable();
+  if (dualPredMode()) refreshCompareDimTable();
 }
 
 function csvEscape(v) {
@@ -1039,7 +1063,7 @@ function downloadDimStatsCsv() {
     return;
   }
   let rows;
-  if (compareMode) {
+  if (compareMode || ptqCompareMode) {
     rows = [
       [
         "dim",
@@ -1091,8 +1115,8 @@ function downloadDimStatsCsv() {
   const ts = new Date().toISOString().replaceAll(":", "-");
   downloadCsv(`pi05_webui_dim_stats_${rid}_${ts}.csv`, rows);
   setProgress(
-    compareMode
-      ? "已下载：各 dim 的 PT/TRT mse_pct、rel_p99 及 PT-TRT mse（CSV）。"
+    compareMode || ptqCompareMode
+      ? "已下载：各 dim 的双路 mse_pct、rel_p99 及两路预测 mse（CSV）。"
       : "已下载：各 action dim mse_pct_mean / rel_p99（CSV）。"
   );
 }
@@ -1105,6 +1129,8 @@ function pushPoint(event) {
   const gtAction = event.gt_action || [];
   const predAction = event.pred_action || [];
   const predTrtAction = event.pred_action_trt || [];
+  const predPtqAction = event.pred_action_ptq || [];
+  const predSecond = ptqCompareMode ? predPtqAction : predTrtAction;
 
   for (const d of state.dims) {
     const gArr = state.gt.get(d);
@@ -1114,10 +1140,10 @@ function pushPoint(event) {
     pArr.push(predAction[d] ?? null);
     while (gArr.length > state.windowSize) gArr.shift();
     while (pArr.length > state.windowSize) pArr.shift();
-    if (compareMode) {
+    if (dualPredMode()) {
       const tArr = state.pred_trt.get(d);
       if (tArr) {
-        tArr.push(predTrtAction[d] ?? null);
+        tArr.push(predSecond[d] ?? null);
         while (tArr.length > state.windowSize) tArr.shift();
       }
     }
@@ -1125,7 +1151,7 @@ function pushPoint(event) {
 
   const met = event.metrics;
   if (met && typeof met === "object") {
-    if (!compareMode) {
+    if (!dualPredMode()) {
       const ma = met.mae_per_dim;
       const ms = met.mse_per_dim;
       const fallbackMae = typeof met.mae === "number" ? met.mae : null;
@@ -1141,7 +1167,7 @@ function pushPoint(event) {
         while (maeP.length > state.windowSize) maeP.shift();
         while (mseP.length > state.windowSize) mseP.shift();
       }
-    } else {
+    } else if (compareMode) {
       const ma = met.mae_pt_trt_per_dim;
       const ms = met.mse_pt_trt_per_dim;
       const fallbackMae = typeof met.mae_pt_trt === "number" ? met.mae_pt_trt : null;
@@ -1157,11 +1183,27 @@ function pushPoint(event) {
         while (maeP.length > state.windowSize) maeP.shift();
         while (mseP.length > state.windowSize) mseP.shift();
       }
+    } else {
+      const ma = met.mae_pt_ptq_per_dim;
+      const ms = met.mse_pt_ptq_per_dim;
+      const fallbackMae = typeof met.mae_pt_ptq === "number" ? met.mae_pt_ptq : null;
+      const fallbackMse = typeof met.mse_pt_ptq === "number" ? met.mse_pt_ptq : null;
+      for (const d of state.dims) {
+        const maeP = state.maePtTrtPerDim.get(d);
+        const mseP = state.msePtTrtPerDim.get(d);
+        if (!maeP || !mseP) continue;
+        const maeVal = Array.isArray(ma) && typeof ma[d] === "number" ? ma[d] : fallbackMae;
+        const mseVal = Array.isArray(ms) && typeof ms[d] === "number" ? ms[d] : fallbackMse;
+        maeP.push(maeVal);
+        mseP.push(mseVal);
+        while (maeP.length > state.windowSize) maeP.shift();
+        while (mseP.length > state.windowSize) mseP.shift();
+      }
     }
   }
 
   const xArr = [...state.x];
-  const needTracesDim = compareMode ? 3 : 2;
+  const needTracesDim = dualPredMode() ? 3 : 2;
   for (const d of state.dims) {
     const id = chartDivId(d);
     const gd = document.getElementById(id);
@@ -1177,7 +1219,7 @@ function pushPoint(event) {
         continue;
       }
       const visDim = getDimTraceVisibility();
-      if (compareMode) {
+      if (dualPredMode()) {
         const tArr = state.pred_trt.get(d) || [];
         Plotly.restyle(gd, { x: [xArr, xArr, xArr], y: [[...gArr], [...pArr], [...tArr]] }, [0, 1, 2]);
         Plotly.restyle(gd, { visible: visDim });
@@ -1198,7 +1240,7 @@ function pushPoint(event) {
     if (!gd) continue;
     const sk = def.seriesKey;
     const yPayload = state.dims.map((d) => {
-      if (!compareMode) {
+      if (!dualPredMode()) {
         const arr = sk === "mae" ? state.maePerDim.get(d) : state.msePerDim.get(d);
         return [...(arr || [])];
       }
@@ -1242,7 +1284,7 @@ function buildTracesForDim(d) {
       line: { width: 2, dash: "dot", color: p.pred },
     },
   ];
-  if (compareMode) {
+  if (dualPredMode()) {
     traces.push({
       x: [...state.x],
       y: [...(state.pred_trt.get(d) || [])],
@@ -1345,6 +1387,8 @@ function connectInternal() {
       if (msg.phase === "loading") {
         el("repoId").textContent = "…";
         el("backend").textContent = "…";
+        compareMode = false;
+        ptqCompareMode = false;
         setCompareLayoutVisible(false);
         const te = el("trtEnginesBlock");
         if (te) te.hidden = true;
@@ -1357,7 +1401,8 @@ function connectInternal() {
       }
       meta = msg;
       compareMode = Boolean(meta.compare_mode);
-      setCompareLayoutVisible(compareMode);
+      ptqCompareMode = Boolean(meta.ptq_compare);
+      setCompareLayoutVisible(dualPredMode());
       stepReceiveCount = 0;
       resetSeries();
       resetHzEstimators();

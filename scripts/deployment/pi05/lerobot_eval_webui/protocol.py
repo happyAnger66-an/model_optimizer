@@ -23,6 +23,7 @@ class StepEvent:
     images: dict[str, str] | None
     server_timing: dict[str, float] | None
     pred_action_trt: list[float] | None = None
+    pred_action_ptq: list[float] | None = None
 
 
 def event_to_json(event: dict[str, Any]) -> str:
