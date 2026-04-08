@@ -101,33 +101,10 @@ function setCompareLayoutVisible(on) {
   else refreshCompareDimTable();
 }
 
-/** 按维 mse% 单元格：大可改为科学计数，避免撑破列宽 */
-function fmtMsePctDimCell(v) {
+/** 按维累计表：直接显示服务端 JSON 中的原始数值（不做 %/科学计数转换） */
+function fmtCompareDimRawCell(v) {
   if (typeof v !== "number" || !Number.isFinite(v)) return "—";
-  const a = Math.abs(v);
-  if (a >= 1e7) return `${v.toExponential(2)}%`;
-  if (a >= 1e4) return `${v.toPrecision(4)}%`;
-  return `${v.toFixed(3)}%`;
-}
-
-/**
- * 相对误差 p99（服务端为比值 r=|pred−gt|/max(|gt|,eps)，非「已乘 100 的百分数」）。
- * 仅在 r*100≤999.99 时显示为 xx.xx%；更大时用科学计数显示 r，避免亿级假「%」。
- */
-function fmtRelP99DimCell(v) {
-  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) return "—";
-  const pct = v * 100;
-  if (pct <= 999.99) return `${pct.toFixed(2)}%`;
-  return v.toExponential(2);
-}
-
-/** PT−TRT 累计均方（维）：小量用科学计数 */
-function fmtPairMseDimCell(v) {
-  if (typeof v !== "number" || !Number.isFinite(v)) return "—";
-  if (v === 0) return "0";
-  if (v >= 1e-2) return v.toFixed(6);
-  if (v >= 1e-8) return v.toExponential(2);
-  return v.toExponential(2);
+  return String(v);
 }
 
 /** 按当前 state.dims 与 latest* 缓存刷新「按维累计对比」tbody */
@@ -157,11 +134,11 @@ function refreshCompareDimTable() {
     const pM = Array.isArray(pairDm) && typeof pairDm[d] === "number" ? pairDm[d] : null;
 
     for (const text of [
-      fmtMsePctDimCell(vPt),
-      fmtRelP99DimCell(pPt),
-      fmtMsePctDimCell(vTrt),
-      fmtRelP99DimCell(pTrt),
-      fmtPairMseDimCell(pM),
+      fmtCompareDimRawCell(vPt),
+      fmtCompareDimRawCell(pPt),
+      fmtCompareDimRawCell(vTrt),
+      fmtCompareDimRawCell(pTrt),
+      fmtCompareDimRawCell(pM),
     ]) {
       const td = document.createElement("td");
       td.textContent = text;

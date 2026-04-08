@@ -528,21 +528,19 @@ code {
   background: var(--chart-wrap-bg);
 }
 .compareDimTable {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.72rem;
+  width: max(100%, max-content);
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0.75rem 0;
+  font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
-  table-layout: fixed;
 }
 .compareDimTable th,
 .compareDimTable td {
   border-bottom: 1px solid var(--border);
-  padding: 0.22rem 0.35rem;
+  padding: 0.35rem 0.55rem;
   text-align: right;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 6.5rem;
 }
 .compareDimTable th {
   position: sticky;
@@ -551,12 +549,12 @@ code {
   color: var(--mono-fg);
   font-weight: 600;
   text-align: center;
-  max-width: none;
+  padding-left: 0.65rem;
+  padding-right: 0.65rem;
 }
 .compareDimTable thead th:first-child,
 .compareDimTable tbody td:first-child {
-  width: 2.25rem;
-  max-width: 2.25rem;
+  width: 2.5rem;
 }
 .compareDimTable tbody td:first-child {
   text-align: center;

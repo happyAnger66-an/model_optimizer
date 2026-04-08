@@ -169,11 +169,11 @@
             <thead>
               <tr>
                 <th scope="col" title="动作维下标">dim</th>
-                <th scope="col" title="相对 GT² 的累计 mse%（数值大可呈科学计数）">PT mse%</th>
-                <th scope="col" title="相对误差 p99：|pred−gt|/max(|gt|,ε)。≤999% 显示百分号，更大显示比值（科学计数）">PT p99</th>
-                <th scope="col" title="相对 GT² 的累计 mse%（数值大可呈科学计数）">TRT mse%</th>
-                <th scope="col" title="相对误差 p99：|pred−gt|/max(|gt|,ε)。≤999% 显示百分号，更大显示比值（科学计数）">TRT p99</th>
-                <th scope="col" title="各步 mean((PT−TRT)²) 的累计">PT−TRT mse</th>
+                <th scope="col" title="服务端 mse_pct_dim_mean">PT mse%</th>
+                <th scope="col" title="服务端 rel_p99_dim">PT p99</th>
+                <th scope="col" title="服务端 mse_pct_dim_mean_trt">TRT mse%</th>
+                <th scope="col" title="服务端 rel_p99_dim_trt">TRT p99</th>
+                <th scope="col" title="服务端 mse_pt_trt_dim_mean">PT−TRT mse</th>
               </tr>
             </thead>
             <tbody id="compareDimTableBody"></tbody>
