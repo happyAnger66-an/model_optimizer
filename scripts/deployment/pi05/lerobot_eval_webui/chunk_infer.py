@@ -14,7 +14,7 @@ from .action_align import align_action_dim
 from .dataset import tree_to_numpy
 from .media import encode_jpeg_b64, to_hwc_uint8
 from .protocol import StepEvent, event_to_json
-from .running_stats import RunningErrorStats, RunningPerDimRelStats
+from .running_stats import RunningErrorStats, RunningPerDimMsePctStats
 
 # 与 standalone / perf 一致：复用同一底层 model 引用打印 time_results
 _perf_model: Any | None = None
@@ -34,7 +34,7 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     repack_fn = bundle["repack_fn"]
     policy = bundle["policy"]
     running_stats: RunningErrorStats = bundle["running_err_stats"]
-    per_dim_rel: RunningPerDimRelStats = bundle["running_per_dim_rel"]
+    per_dim_mse_pct: RunningPerDimMsePctStats = bundle["running_per_dim_mse_pct"]
 
     stride_ok = (idx - start_index) % action_horizon == 0
     chunk_fits = idx + action_horizon <= n and idx + action_horizon <= end
@@ -130,20 +130,13 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
         denom = np.maximum(abs_gt, float(args.rel_eps))
         rel_err = (abs_diff / denom).astype(np.float64, copy=False)
 
-        # step 局部（只用于参考）
-        step_p99_abs = float(np.percentile(abs_diff, 99.0))
-        step_mean_rel = float(np.mean(rel_err))
-
         # 全局累计（server 端流式统计，跨 step 累加）
         running_stats.update_abs_and_rel(
             abs_err_values=np.ravel(abs_diff),
             rel_err_values=np.ravel(rel_err),
         )
-        per_dim_rel.update_rel_vec(np.ravel(rel_err))
-        cum_mean_rel = running_stats.mean_rel()
-        cum_p99_abs = running_stats.p99_abs_value()
-        dim_mean_rel = per_dim_rel.mean_rel()
-        dim_p99_rel = per_dim_rel.p99_rel_value()
+        per_dim_mse_pct.update(np.ravel(diff).astype(np.float64), np.ravel(gt_h[k]).astype(np.float64))
+        dim_mse_pct_mean = per_dim_mse_pct.mse_pct_mean()
 
         step_images = images if k == 0 else None
         step_event = StepEvent(
@@ -160,15 +153,8 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
             metrics={
                 "mse": mse,
                 "mae": mae,
-                # 累计：截至当前为止所有 step 的所有动作维度展开后的统计
-                "mean_rel_err": float(cum_mean_rel) if cum_mean_rel is not None else None,
-                "p99_abs_err": float(cum_p99_abs) if cum_p99_abs is not None else None,
-                # 单步：仅该 step 的动作维度统计（用于对照）
-                "mean_rel_err_step": step_mean_rel,
-                "p99_abs_err_step": step_p99_abs,
-                # 每个动作维度的累计相对误差统计（用于前端显示在对应维度子图旁）
-                "rel_dim_mean": dim_mean_rel,
-                "rel_dim_p99": dim_p99_rel,
+                # 量化口径：每个动作维度的累计 MSE 百分比（mean(diff^2)/mean(gt^2)）
+                "mse_pct_dim_mean": dim_mse_pct_mean,
             },
             images=step_images,
             server_timing={"infer_ms": float(infer_ms)} if k == 0 else None,

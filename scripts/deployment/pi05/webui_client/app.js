@@ -433,10 +433,6 @@ function updateTop(event) {
   if (event.metrics) {
     if (typeof event.metrics.mae === "number") el("mae").textContent = event.metrics.mae.toFixed(6);
     if (typeof event.metrics.mse === "number") el("mse").textContent = event.metrics.mse.toFixed(6);
-    if (typeof event.metrics.mean_rel_err === "number")
-      el("meanRelErr").textContent = event.metrics.mean_rel_err.toFixed(6);
-    if (typeof event.metrics.p99_abs_err === "number")
-      el("p99AbsErr").textContent = event.metrics.p99_abs_err.toFixed(6);
   }
 }
 
@@ -524,13 +520,11 @@ function clearClientDisplay() {
   el("gpuUtil").textContent = "-";
   el("mae").textContent = "-";
   el("mse").textContent = "-";
-  el("meanRelErr").textContent = "-";
-  el("p99AbsErr").textContent = "-";
   resetHzEstimators();
   // reset per-dim titles
   for (const d of state.dims) {
     const t = document.getElementById(`dimTitle-${d}`);
-    if (t) t.textContent = `Action dim ${d} · rel_mean - · rel_p99 -`;
+    if (t) t.textContent = `Action dim ${d} · mse_pct_mean -`;
   }
   if (meta) {
     el("repoId").textContent = meta.repo_id ?? "-";
@@ -589,7 +583,7 @@ async function initChart() {
     const title = document.createElement("div");
     title.className = "chartDimTitle";
     title.id = `dimTitle-${d}`;
-    title.textContent = `Action dim ${d} · rel_mean - · rel_p99 -`;
+    title.textContent = `Action dim ${d} · mse_pct_mean -`;
     const plotDiv = document.createElement("div");
     plotDiv.id = chartDivId(d);
     plotDiv.className = "chart";
@@ -611,21 +605,18 @@ async function initChart() {
   applyChartsCols();
 }
 
-function updatePerDimRelStatsFromStep(event) {
+function updatePerDimMsePctFromStep(event) {
   const met = event.metrics;
   if (!met || typeof met !== "object") return;
-  const means = met.rel_dim_mean;
-  const p99s = met.rel_dim_p99;
-  if (!Array.isArray(means) || !Array.isArray(p99s)) return;
+  const arr = met.mse_pct_dim_mean;
+  if (!Array.isArray(arr)) return;
 
   for (const d of state.dims) {
     const t = document.getElementById(`dimTitle-${d}`);
     if (!t) continue;
-    const m = typeof means[d] === "number" ? means[d] : null;
-    const p = typeof p99s[d] === "number" ? p99s[d] : null;
-    const ms = m === null ? "-" : m.toFixed(4);
-    const ps = p === null ? "-" : p.toFixed(4);
-    t.textContent = `Action dim ${d} · rel_mean ${ms} · rel_p99 ${ps}`;
+    const v = typeof arr[d] === "number" ? arr[d] : null;
+    const s = v === null ? "-" : `${v.toFixed(3)}%`;
+    t.textContent = `Action dim ${d} · mse_pct_mean ${s}`;
   }
 }
 
@@ -910,7 +901,7 @@ function connectInternal() {
       }
 
       pushPoint(msg);
-      updatePerDimRelStatsFromStep(msg);
+      updatePerDimMsePctFromStep(msg);
     }
   };
 }

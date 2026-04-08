@@ -101,6 +101,12 @@ python scripts/deployment/pi05/lerobot_eval_webui_server.py \
 | `max-fps` | `0` | 限制推送 **step 事件** 速率（条/秒）；`0` 表示不限制 |
 | `history-size` | `0` | 保留最近 N 条已推送消息；新连接会先收到当前 `meta` 再 **回放** 缓存（`0` 表示不缓存） |
 
+### 误差指标口径（相对误差）
+
+| 参数 | 默认值 | 含义 |
+|------|--------|------|
+| `rel-eps` | `1e-8` | 相对误差分母 eps：`rel = |pred-gt| / max(|gt|, rel_eps)`，用于屏蔽 `gt≈0` 导致的发散 |
+
 ### GPU 监控（可选）
 
 | 参数 | 默认值 | 含义 |
