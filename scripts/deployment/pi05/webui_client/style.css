@@ -484,6 +484,16 @@ code {
   }
 }
 
+.trtEnginesBlock {
+  margin-top: 0.35rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.trtEnginesBlock > div span:last-child {
+  word-break: break-all;
+}
+
 @media (max-width: 1200px) {
   .grid {
     grid-template-columns: repeat(2, 1fr);

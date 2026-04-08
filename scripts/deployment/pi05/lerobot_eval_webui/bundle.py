@@ -141,9 +141,20 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
     meta_payload["rel_err_denominator"] = "max_abs_gt_eps"
     meta_payload["rel_eps"] = float(args.rel_eps)
 
+    if args.inference_mode == "tensorrt" or args.compare_mode:
+        meta_payload["tensorrt"] = {
+            "precision": args.precision,
+            "engine_path": args.engine_path or "",
+            "vit_engine": args.vit_engine or "",
+            "llm_engine": args.llm_engine or "",
+            "expert_engine": args.expert_engine or "",
+            "denoise_engine": args.denoise_engine or "",
+            "embed_prefix_engine": args.embed_prefix_engine or "",
+        }
+
     meta_msg = event_to_json(meta_payload)
 
-    return {
+    out: dict[str, Any] = {
         "meta_msg": meta_msg,
         "dataset": dataset,
         "repack_fn": repack_fn,
@@ -161,3 +172,7 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
         "running_per_dim_mse_pct": RunningPerDimMsePctStats(),
         "running_per_dim_rel_p99": RunningPerDimRelP99Stats(),
     }
+    if args.compare_mode:
+        out["running_per_dim_mse_pct_trt"] = RunningPerDimMsePctStats()
+        out["running_per_dim_rel_p99_trt"] = RunningPerDimRelP99Stats()
+    return out

@@ -37,6 +37,8 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     running_stats: RunningErrorStats = bundle["running_err_stats"]
     per_dim_mse_pct: RunningPerDimMsePctStats = bundle["running_per_dim_mse_pct"]
     per_dim_rel_p99: RunningPerDimRelP99Stats = bundle["running_per_dim_rel_p99"]
+    per_dim_mse_pct_trt: RunningPerDimMsePctStats | None = bundle.get("running_per_dim_mse_pct_trt")
+    per_dim_rel_p99_trt: RunningPerDimRelP99Stats | None = bundle.get("running_per_dim_rel_p99_trt")
 
     stride_ok = (idx - start_index) % action_horizon == 0
     chunk_fits = idx + action_horizon <= n and idx + action_horizon <= end
@@ -202,6 +204,20 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
 
         metrics["mse_pct_dim_mean"] = dim_mse_pct_mean
         metrics["rel_p99_dim"] = dim_rel_p99
+
+        if (
+            pred_h_trt is not None
+            and per_dim_mse_pct_trt is not None
+            and per_dim_rel_p99_trt is not None
+        ):
+            abs_diff_trt = np.abs(diff_trt).astype(np.float64, copy=False)
+            rel_err_trt = (abs_diff_trt / denom).astype(np.float64, copy=False)
+            per_dim_mse_pct_trt.update(
+                np.ravel(diff_trt).astype(np.float64), np.ravel(gt_h[k]).astype(np.float64)
+            )
+            per_dim_rel_p99_trt.update(np.ravel(rel_err_trt))
+            metrics["mse_pct_dim_mean_trt"] = per_dim_mse_pct_trt.mse_pct_mean()
+            metrics["rel_p99_dim_trt"] = per_dim_rel_p99_trt.rel_p99()
 
         step_images = images if k == 0 else None
         step_event = StepEvent(

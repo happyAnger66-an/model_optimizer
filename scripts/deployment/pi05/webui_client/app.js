@@ -7,6 +7,8 @@ let connected = false;
 let compareMode = false;
 let latestDimMsePctMean = null; // number[] | null
 let latestDimRelP99 = null; // number[] | null
+let latestDimMsePctMeanTrt = null; // number[] | null，仅 compare_mode
+let latestDimRelP99Trt = null; // number[] | null，仅 compare_mode
 
 /** 非用户主动断开时，每 RECONNECT_MS 自动重连一次 */
 const RECONNECT_MS = 3000;
@@ -54,6 +56,44 @@ const PLOTLY_THEME = {
 };
 
 const el = (id) => document.getElementById(id);
+
+/** 各 dim 子图标题占位（与 updatePerDimMsePctFromStep 展示格式一致） */
+function dimChartTitlePlaceholder(d) {
+  const di = Number(d);
+  if (compareMode) {
+    return `Action dim ${di} · PT mse% - · PT p99 - · TRT mse% - · TRT p99 -`;
+  }
+  return `Action dim ${di} · mse_pct_mean - · rel_p99 -`;
+}
+
+function metaStr(v) {
+  if (v === undefined || v === null) return "—";
+  const s = String(v).trim();
+  return s.length ? s : "—";
+}
+
+/** 根据 meta.tensorrt 显示 / 隐藏 TensorRT 引擎路径与各引擎文件名（仅 tensorrt 或 compare 模式有） */
+function applyTensorrtMetaFromMsg(m) {
+  const block = el("trtEnginesBlock");
+  if (!block) return;
+  const trt = m && m.tensorrt;
+  if (!trt || typeof trt !== "object") {
+    block.hidden = true;
+    return;
+  }
+  block.hidden = false;
+  const set = (id, v) => {
+    const n = el(id);
+    if (n) n.textContent = metaStr(v);
+  };
+  set("trtPrecision", trt.precision);
+  set("trtEnginePath", trt.engine_path);
+  set("trtVit", trt.vit_engine);
+  set("trtLlm", trt.llm_engine);
+  set("trtExpert", trt.expert_engine);
+  set("trtDenoise", trt.denoise_engine);
+  set("trtEmbedPrefix", trt.embed_prefix_engine);
+}
 
 function setInferLoadingSub(text) {
   const s = el("inferLoadingSub");
@@ -600,6 +640,8 @@ function clearClientDisplay() {
   resetSeries();
   latestDimMsePctMean = null;
   latestDimRelP99 = null;
+  latestDimMsePctMeanTrt = null;
+  latestDimRelP99Trt = null;
   el("prompt").textContent = "—";
   const imgB = el("imgBase");
   const imgW = el("imgWrist");
@@ -623,12 +665,13 @@ function clearClientDisplay() {
   // reset per-dim titles
   for (const d of state.dims) {
     const t = document.getElementById(`dimTitle-${d}`);
-    if (t) t.textContent = `Action dim ${d} · mse_pct_mean - · rel_p99 -`;
+    if (t) t.textContent = dimChartTitlePlaceholder(d);
   }
   if (meta) {
     el("repoId").textContent = meta.repo_id ?? "-";
     el("backend").textContent = meta.backend ?? "-";
   }
+  applyTensorrtMetaFromMsg(meta);
   setProgress("已清空本页曲线与图像（WebSocket 未断开；可继续接收后续 step）。");
   purgeAndNewPlotAllChartsSync();
 }
@@ -682,7 +725,7 @@ async function initChart() {
     const title = document.createElement("div");
     title.className = "chartDimTitle";
     title.id = `dimTitle-${d}`;
-    title.textContent = `Action dim ${d} · mse_pct_mean - · rel_p99 -`;
+    title.textContent = dimChartTitlePlaceholder(d);
     const plotDiv = document.createElement("div");
     plotDiv.id = chartDivId(d);
     plotDiv.className = "chart";
@@ -709,18 +752,34 @@ function updatePerDimMsePctFromStep(event) {
   if (!met || typeof met !== "object") return;
   const arr = met.mse_pct_dim_mean;
   const p99 = met.rel_p99_dim;
-  if (!Array.isArray(arr) && !Array.isArray(p99)) return;
+  const arrTrt = met.mse_pct_dim_mean_trt;
+  const p99Trt = met.rel_p99_dim_trt;
+  if (!Array.isArray(arr) && !Array.isArray(p99) && !Array.isArray(arrTrt) && !Array.isArray(p99Trt)) {
+    return;
+  }
   if (Array.isArray(arr)) latestDimMsePctMean = arr;
   if (Array.isArray(p99)) latestDimRelP99 = p99;
+  if (compareMode) {
+    if (Array.isArray(arrTrt)) latestDimMsePctMeanTrt = arrTrt;
+    if (Array.isArray(p99Trt)) latestDimRelP99Trt = p99Trt;
+  }
 
   for (const d of state.dims) {
     const t = document.getElementById(`dimTitle-${d}`);
     if (!t) continue;
     const v = Array.isArray(arr) && typeof arr[d] === "number" ? arr[d] : null;
-    const s = v === null ? "-" : `${v.toFixed(3)}%`;
+    const sPt = v === null ? "-" : `${v.toFixed(3)}%`;
     const rp = Array.isArray(p99) && typeof p99[d] === "number" ? p99[d] : null;
-    const rs = rp === null ? "-" : `${(rp * 100.0).toFixed(2)}%`;
-    t.textContent = `Action dim ${d} · mse_pct_mean ${s} · rel_p99 ${rs}`;
+    const rsPt = rp === null ? "-" : `${(rp * 100.0).toFixed(2)}%`;
+    if (compareMode && (Array.isArray(arrTrt) || Array.isArray(p99Trt))) {
+      const vt = Array.isArray(arrTrt) && typeof arrTrt[d] === "number" ? arrTrt[d] : null;
+      const sTrt = vt === null ? "-" : `${vt.toFixed(3)}%`;
+      const rpt = Array.isArray(p99Trt) && typeof p99Trt[d] === "number" ? p99Trt[d] : null;
+      const rsTrt = rpt === null ? "-" : `${(rpt * 100.0).toFixed(2)}%`;
+      t.textContent = `Action dim ${d} · PT mse% ${sPt} · PT p99 ${rsPt} · TRT mse% ${sTrt} · TRT p99 ${rsTrt}`;
+    } else {
+      t.textContent = `Action dim ${d} · mse_pct_mean ${sPt} · rel_p99 ${rsPt}`;
+    }
   }
 }
 
@@ -744,26 +803,59 @@ function downloadCsv(filename, rows) {
 }
 
 function downloadDimStatsCsv() {
-  if (!latestDimMsePctMean && !latestDimRelP99) {
+  if (
+    !latestDimMsePctMean &&
+    !latestDimRelP99 &&
+    !latestDimMsePctMeanTrt &&
+    !latestDimRelP99Trt
+  ) {
     setProgress("暂无可下载数据：请先接收至少一条 step。");
     return;
   }
-  const rows = [["dim", "mse_pct_mean_pct", "rel_p99_pct"]];
-  for (const d of state.dims) {
-    const msePct =
-      Array.isArray(latestDimMsePctMean) && typeof latestDimMsePctMean[d] === "number"
-        ? latestDimMsePctMean[d]
-        : "";
-    const relP99Pct =
-      Array.isArray(latestDimRelP99) && typeof latestDimRelP99[d] === "number"
-        ? latestDimRelP99[d] * 100.0
-        : "";
-    rows.push([d, msePct, relP99Pct]);
+  let rows;
+  if (compareMode) {
+    rows = [["dim", "pt_mse_pct_mean_pct", "pt_rel_p99_pct", "trt_mse_pct_mean_pct", "trt_rel_p99_pct"]];
+    for (const d of state.dims) {
+      const msePct =
+        Array.isArray(latestDimMsePctMean) && typeof latestDimMsePctMean[d] === "number"
+          ? latestDimMsePctMean[d]
+          : "";
+      const relP99Pct =
+        Array.isArray(latestDimRelP99) && typeof latestDimRelP99[d] === "number"
+          ? latestDimRelP99[d] * 100.0
+          : "";
+      const msePctTrt =
+        Array.isArray(latestDimMsePctMeanTrt) && typeof latestDimMsePctMeanTrt[d] === "number"
+          ? latestDimMsePctMeanTrt[d]
+          : "";
+      const relP99PctTrt =
+        Array.isArray(latestDimRelP99Trt) && typeof latestDimRelP99Trt[d] === "number"
+          ? latestDimRelP99Trt[d] * 100.0
+          : "";
+      rows.push([d, msePct, relP99Pct, msePctTrt, relP99PctTrt]);
+    }
+  } else {
+    rows = [["dim", "mse_pct_mean_pct", "rel_p99_pct"]];
+    for (const d of state.dims) {
+      const msePct =
+        Array.isArray(latestDimMsePctMean) && typeof latestDimMsePctMean[d] === "number"
+          ? latestDimMsePctMean[d]
+          : "";
+      const relP99Pct =
+        Array.isArray(latestDimRelP99) && typeof latestDimRelP99[d] === "number"
+          ? latestDimRelP99[d] * 100.0
+          : "";
+      rows.push([d, msePct, relP99Pct]);
+    }
   }
   const rid = meta?.run_id ?? "no_run_id";
   const ts = new Date().toISOString().replaceAll(":", "-");
   downloadCsv(`pi05_webui_dim_stats_${rid}_${ts}.csv`, rows);
-  setProgress("已下载：各 action dim mse_pct_mean / rel_p99（CSV）。");
+  setProgress(
+    compareMode
+      ? "已下载：各 dim 的 PT/TRT mse_pct_mean 与 rel_p99（CSV）。"
+      : "已下载：各 action dim mse_pct_mean / rel_p99（CSV）。"
+  );
 }
 
 function pushPoint(event) {
@@ -1068,6 +1160,8 @@ function connectInternal() {
       if (msg.phase === "loading") {
         el("repoId").textContent = "…";
         el("backend").textContent = "…";
+        const te = el("trtEnginesBlock");
+        if (te) te.hidden = true;
         el("gpuUtil").textContent = "-";
         el("prompt").textContent = "—";
         setProgress(msg.message || "服务端：正在加载数据集与策略…");
@@ -1082,9 +1176,14 @@ function connectInternal() {
       stepReceiveCount = 0;
       resetSeries();
       resetHzEstimators();
+      latestDimMsePctMean = null;
+      latestDimRelP99 = null;
+      latestDimMsePctMeanTrt = null;
+      latestDimRelP99Trt = null;
       el("runId").textContent = meta.run_id ?? "-";
       el("repoId").textContent = meta.repo_id ?? "-";
       el("backend").textContent = meta.backend ?? "-";
+      applyTensorrtMetaFromMsg(meta);
       el("gpuUtil").textContent =
         typeof meta.gpu_stats_interval_sec === "number" && meta.gpu_stats_interval_sec > 0
           ? "…"
@@ -1101,6 +1200,10 @@ function connectInternal() {
       setInferLoadingBanner(true);
       queueMicrotask(() => {
         purgeAndNewPlotAllChartsSync();
+        for (const d of state.dims) {
+          const t = document.getElementById(`dimTitle-${d}`);
+          if (t) t.textContent = dimChartTitlePlaceholder(d);
+        }
       });
       return;
     }
