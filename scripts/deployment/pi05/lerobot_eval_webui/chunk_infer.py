@@ -14,7 +14,12 @@ from .action_align import align_action_dim
 from .dataset import tree_to_numpy
 from .media import encode_jpeg_b64, to_hwc_uint8
 from .protocol import StepEvent, event_to_json
-from .running_stats import RunningErrorStats, RunningPerDimMsePctStats, RunningPerDimRelP99Stats
+from .running_stats import (
+    RunningErrorStats,
+    RunningPerDimMsePctStats,
+    RunningPerDimPairMseStats,
+    RunningPerDimRelP99Stats,
+)
 
 # 与 standalone / perf 一致：复用同一底层 model 引用打印 time_results
 _perf_model: Any | None = None
@@ -39,6 +44,7 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     per_dim_rel_p99: RunningPerDimRelP99Stats = bundle["running_per_dim_rel_p99"]
     per_dim_mse_pct_trt: RunningPerDimMsePctStats | None = bundle.get("running_per_dim_mse_pct_trt")
     per_dim_rel_p99_trt: RunningPerDimRelP99Stats | None = bundle.get("running_per_dim_rel_p99_trt")
+    pair_mse_per_dim: RunningPerDimPairMseStats | None = bundle.get("running_pt_trt_mse_per_dim")
 
     stride_ok = (idx - start_index) % action_horizon == 0
     chunk_fits = idx + action_horizon <= n and idx + action_horizon <= end
@@ -191,6 +197,9 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
             metrics["mse_pt_trt"] = float(np.mean(diff_pair**2))
             metrics["mae_pt_trt"] = float(np.mean(np.abs(diff_pair)))
             pred_trt_list = [float(x) for x in row_trt.astype(np.float64).tolist()]
+            if pair_mse_per_dim is not None:
+                pair_mse_per_dim.update(np.ravel(diff_pair).astype(np.float64))
+                metrics["mse_pt_trt_dim_mean"] = pair_mse_per_dim.mean_mse_per_dim()
 
         # 全局累计（server 端流式统计，跨 step 累加）— 与单后端一致，仅统计 PyTorch 相对 GT
         running_stats.update_abs_and_rel(

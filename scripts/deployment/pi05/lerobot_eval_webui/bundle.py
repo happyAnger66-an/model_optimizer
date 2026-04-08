@@ -20,7 +20,12 @@ from .dataset import (
 )
 from .gpu_stats import effective_gpu_index
 from .protocol import event_to_json
-from .running_stats import RunningErrorStats, RunningPerDimMsePctStats, RunningPerDimRelP99Stats
+from .running_stats import (
+    RunningErrorStats,
+    RunningPerDimMsePctStats,
+    RunningPerDimPairMseStats,
+    RunningPerDimRelP99Stats,
+)
 from .tensorrt_backend import load_tensorrt_engines
 
 
@@ -175,4 +180,5 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
     if args.compare_mode:
         out["running_per_dim_mse_pct_trt"] = RunningPerDimMsePctStats()
         out["running_per_dim_rel_p99_trt"] = RunningPerDimRelP99Stats()
+        out["running_pt_trt_mse_per_dim"] = RunningPerDimPairMseStats()
     return out

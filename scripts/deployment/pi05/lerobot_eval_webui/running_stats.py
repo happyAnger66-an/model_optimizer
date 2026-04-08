@@ -238,6 +238,40 @@ class RunningPerDimMsePctStats:
 
 
 @dataclass
+class RunningPerDimPairMseStats:
+    """按维累计 (pred_pt - pred_trt)^2 的时间均值（仅 compare 模式）。"""
+
+    err2_sum: list[float] | None = None
+    count: int = 0
+
+    def ensure_dim(self, dim: int) -> None:
+        d = int(dim)
+        if d <= 0:
+            raise ValueError("dim must be > 0")
+        if self.err2_sum is not None and len(self.err2_sum) == d:
+            return
+        self.err2_sum = [0.0 for _ in range(d)]
+        self.count = 0
+
+    def update(self, diff_pair_vec) -> None:
+        if self.err2_sum is None:
+            self.ensure_dim(len(diff_pair_vec))
+        assert self.err2_sum is not None
+        if len(diff_pair_vec) != len(self.err2_sum):
+            self.ensure_dim(len(diff_pair_vec))
+        for i, dv in enumerate(diff_pair_vec):
+            d = float(dv)
+            self.err2_sum[i] += d * d
+        self.count += 1
+
+    def mean_mse_per_dim(self) -> list[float] | None:
+        if self.err2_sum is None or self.count <= 0:
+            return None
+        c = float(self.count)
+        return [float(s / c) for s in self.err2_sum]
+
+
+@dataclass
 class RunningPerDimRelP99Stats:
     """按动作维度累计相对误差 p99（查看最差 1% 的误差）。"""
 

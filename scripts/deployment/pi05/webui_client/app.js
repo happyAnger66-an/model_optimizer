@@ -9,6 +9,7 @@ let latestDimMsePctMean = null; // number[] | null
 let latestDimRelP99 = null; // number[] | null
 let latestDimMsePctMeanTrt = null; // number[] | null，仅 compare_mode
 let latestDimRelP99Trt = null; // number[] | null，仅 compare_mode
+let latestDimMsePtTrtDimMean = null; // number[] | null，各维累计 mean((pt-trt)^2)，仅 compare_mode
 
 /** 非用户主动断开时，每 RECONNECT_MS 自动重连一次 */
 const RECONNECT_MS = 3000;
@@ -61,7 +62,7 @@ const el = (id) => document.getElementById(id);
 function dimChartTitlePlaceholder(d) {
   const di = Number(d);
   if (compareMode) {
-    return `Action dim ${di} · PT mse% - · PT p99 - · TRT mse% - · TRT p99 -`;
+    return `Action dim ${di} · PT mse% - · PT p99 - · TRT mse% - · TRT p99 - · PT-TRT mse -`;
   }
   return `Action dim ${di} · mse_pct_mean - · rel_p99 -`;
 }
@@ -642,6 +643,7 @@ function clearClientDisplay() {
   latestDimRelP99 = null;
   latestDimMsePctMeanTrt = null;
   latestDimRelP99Trt = null;
+  latestDimMsePtTrtDimMean = null;
   el("prompt").textContent = "—";
   const imgB = el("imgBase");
   const imgW = el("imgWrist");
@@ -754,7 +756,14 @@ function updatePerDimMsePctFromStep(event) {
   const p99 = met.rel_p99_dim;
   const arrTrt = met.mse_pct_dim_mean_trt;
   const p99Trt = met.rel_p99_dim_trt;
-  if (!Array.isArray(arr) && !Array.isArray(p99) && !Array.isArray(arrTrt) && !Array.isArray(p99Trt)) {
+  const pairDm = met.mse_pt_trt_dim_mean;
+  if (
+    !Array.isArray(arr) &&
+    !Array.isArray(p99) &&
+    !Array.isArray(arrTrt) &&
+    !Array.isArray(p99Trt) &&
+    !Array.isArray(pairDm)
+  ) {
     return;
   }
   if (Array.isArray(arr)) latestDimMsePctMean = arr;
@@ -762,6 +771,7 @@ function updatePerDimMsePctFromStep(event) {
   if (compareMode) {
     if (Array.isArray(arrTrt)) latestDimMsePctMeanTrt = arrTrt;
     if (Array.isArray(p99Trt)) latestDimRelP99Trt = p99Trt;
+    if (Array.isArray(pairDm)) latestDimMsePtTrtDimMean = pairDm;
   }
 
   for (const d of state.dims) {
@@ -771,12 +781,14 @@ function updatePerDimMsePctFromStep(event) {
     const sPt = v === null ? "-" : `${v.toFixed(3)}%`;
     const rp = Array.isArray(p99) && typeof p99[d] === "number" ? p99[d] : null;
     const rsPt = rp === null ? "-" : `${(rp * 100.0).toFixed(2)}%`;
-    if (compareMode && (Array.isArray(arrTrt) || Array.isArray(p99Trt))) {
+    if (compareMode && (Array.isArray(arrTrt) || Array.isArray(p99Trt) || Array.isArray(pairDm))) {
       const vt = Array.isArray(arrTrt) && typeof arrTrt[d] === "number" ? arrTrt[d] : null;
       const sTrt = vt === null ? "-" : `${vt.toFixed(3)}%`;
       const rpt = Array.isArray(p99Trt) && typeof p99Trt[d] === "number" ? p99Trt[d] : null;
       const rsTrt = rpt === null ? "-" : `${(rpt * 100.0).toFixed(2)}%`;
-      t.textContent = `Action dim ${d} · PT mse% ${sPt} · PT p99 ${rsPt} · TRT mse% ${sTrt} · TRT p99 ${rsTrt}`;
+      const pm =
+        Array.isArray(pairDm) && typeof pairDm[d] === "number" ? pairDm[d].toFixed(6) : "-";
+      t.textContent = `Action dim ${d} · PT mse% ${sPt} · PT p99 ${rsPt} · TRT mse% ${sTrt} · TRT p99 ${rsTrt} · PT-TRT mse ${pm}`;
     } else {
       t.textContent = `Action dim ${d} · mse_pct_mean ${sPt} · rel_p99 ${rsPt}`;
     }
@@ -807,14 +819,24 @@ function downloadDimStatsCsv() {
     !latestDimMsePctMean &&
     !latestDimRelP99 &&
     !latestDimMsePctMeanTrt &&
-    !latestDimRelP99Trt
+    !latestDimRelP99Trt &&
+    !latestDimMsePtTrtDimMean
   ) {
     setProgress("暂无可下载数据：请先接收至少一条 step。");
     return;
   }
   let rows;
   if (compareMode) {
-    rows = [["dim", "pt_mse_pct_mean_pct", "pt_rel_p99_pct", "trt_mse_pct_mean_pct", "trt_rel_p99_pct"]];
+    rows = [
+      [
+        "dim",
+        "pt_mse_pct_mean_pct",
+        "pt_rel_p99_pct",
+        "trt_mse_pct_mean_pct",
+        "trt_rel_p99_pct",
+        "pt_trt_mse_mean",
+      ],
+    ];
     for (const d of state.dims) {
       const msePct =
         Array.isArray(latestDimMsePctMean) && typeof latestDimMsePctMean[d] === "number"
@@ -832,7 +854,11 @@ function downloadDimStatsCsv() {
         Array.isArray(latestDimRelP99Trt) && typeof latestDimRelP99Trt[d] === "number"
           ? latestDimRelP99Trt[d] * 100.0
           : "";
-      rows.push([d, msePct, relP99Pct, msePctTrt, relP99PctTrt]);
+      const pairMse =
+        Array.isArray(latestDimMsePtTrtDimMean) && typeof latestDimMsePtTrtDimMean[d] === "number"
+          ? latestDimMsePtTrtDimMean[d]
+          : "";
+      rows.push([d, msePct, relP99Pct, msePctTrt, relP99PctTrt, pairMse]);
     }
   } else {
     rows = [["dim", "mse_pct_mean_pct", "rel_p99_pct"]];
@@ -853,7 +879,7 @@ function downloadDimStatsCsv() {
   downloadCsv(`pi05_webui_dim_stats_${rid}_${ts}.csv`, rows);
   setProgress(
     compareMode
-      ? "已下载：各 dim 的 PT/TRT mse_pct_mean 与 rel_p99（CSV）。"
+      ? "已下载：各 dim 的 PT/TRT mse_pct、rel_p99 及 PT-TRT mse（CSV）。"
       : "已下载：各 action dim mse_pct_mean / rel_p99（CSV）。"
   );
 }
@@ -1180,6 +1206,7 @@ function connectInternal() {
       latestDimRelP99 = null;
       latestDimMsePctMeanTrt = null;
       latestDimRelP99Trt = null;
+      latestDimMsePtTrtDimMean = null;
       el("runId").textContent = meta.run_id ?? "-";
       el("repoId").textContent = meta.repo_id ?? "-";
       el("backend").textContent = meta.backend ?? "-";
