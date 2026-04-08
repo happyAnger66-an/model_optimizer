@@ -249,7 +249,7 @@ code {
 
 .img {
   width: 100%;
-  max-height: 320px;
+  max-height: 192px;
   object-fit: contain;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -257,7 +257,7 @@ code {
 }
 
 .imgLarge {
-  max-height: 380px;
+  max-height: 228px;
 }
 
 .chart {
@@ -266,10 +266,17 @@ code {
 }
 
 .chartsContainer {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
   gap: 12px;
   width: 100%;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .chartsContainer {
+    grid-template-columns: 1fr;
+  }
 }
 
 .chartDimWrap {

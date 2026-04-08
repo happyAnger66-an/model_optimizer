@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Pi0.5 LeRobot Eval WebUI</title>
     <link rel="stylesheet" href="./style.css" />
-    <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+    <!-- Plotly 放 vendor/ 本地加载；脚本 defer 到文末，避免阻塞首屏 HTML/CSS -->
   </head>
   <body>
     <div class="topbar">
@@ -77,7 +77,7 @@
           <span class="kv">window</span>
           <input id="windowSize" class="input small" type="number" min="50" max="5000" value="200" />
           <span class="kv">dims</span>
-          <input id="dims" class="input dimsInput" value="0,1,2" />
+          <input id="dims" class="input dimsInput" value="0,1,2,3,4,5" />
           <button id="btnApplyDims" class="btn btn-secondary">Apply</button>
         </div>
         <div id="chartsContainer" class="chartsContainer"></div>
@@ -91,6 +91,7 @@
       Disconnect，否则会每 3s 自动重连。
     </div>
 
-    <script src="./app.js"></script>
+    <script defer src="./vendor/plotly-2.30.0.min.js"></script>
+    <script defer src="./app.js"></script>
   </body>
 </html>

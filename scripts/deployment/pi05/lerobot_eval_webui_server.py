@@ -360,10 +360,10 @@ def _process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     obs = {k: v for k, v in packed.items() if k != "actions"}
 
     t0 = time.monotonic()
-    t_0 = time.time()
+#    t_0 = time.time()
     out = policy.infer(obs)
-    infer_time = time.time() - t_0
-    print(colored(f"[infer] 推理时间: {infer_time:.2f} 秒", "cyan"), flush=True)
+#    infer_time = time.time() - t_0
+#    print(colored(f"[infer] 推理时间: {infer_time:.2f} 秒", "cyan"), flush=True)
     infer_ms = (time.monotonic() - t0) * 1000.0
 
     global model

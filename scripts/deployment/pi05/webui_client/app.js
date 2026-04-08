@@ -134,7 +134,7 @@ const chartLayouts = new Map();
 
 const state = {
   windowSize: 200,
-  dims: [0, 1, 2],
+  dims: [0, 1, 2, 3, 4, 5],
   x: [],
   gt: new Map(), // dim -> []
   pred: new Map(), // dim -> []
@@ -249,12 +249,18 @@ function chartDivId(d) {
   return `chart-dim-${d}`;
 }
 
-function initChart() {
+function raf() {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+/** 先铺好 DOM，再分帧 newPlot，避免 6 个子图在同一次任务里卡死主线程导致「白屏很久」 */
+async function initChart() {
   resetSeries();
   chartLayouts.clear();
   const container = el("chartsContainer");
   container.innerHTML = "";
 
+  const jobs = [];
   for (const d of state.dims) {
     const wrap = document.createElement("div");
     wrap.className = "chartDimWrap";
@@ -287,7 +293,13 @@ function initChart() {
     ];
     const layout = buildPlotlyLayout();
     chartLayouts.set(d, layout);
-    Plotly.newPlot(chartDivId(d), traces, layout, { displayModeBar: false, responsive: true });
+    jobs.push([chartDivId(d), traces, layout]);
+  }
+
+  await raf();
+  for (const [id, traces, layout] of jobs) {
+    Plotly.newPlot(id, traces, layout, { displayModeBar: false, responsive: true });
+    await raf();
   }
 }
 
@@ -475,22 +487,22 @@ function disconnect() {
   el("btnDisconnect").disabled = true;
 }
 
-function applyDims() {
+async function applyDims() {
   const newWindow = Number.parseInt(el("windowSize").value, 10);
   if (Number.isFinite(newWindow) && newWindow >= 50) state.windowSize = newWindow;
 
   const dims = parseDims(el("dims").value);
   if (dims.length > 0) state.dims = dims;
-  initChart();
+  await initChart();
 }
 
-function setup() {
+async function setup() {
   setBadge(false);
-  initChart();
+  await initChart();
 
   el("btnConnect").addEventListener("click", () => connect());
   el("btnDisconnect").addEventListener("click", () => disconnect());
-  el("btnApplyDims").addEventListener("click", () => applyDims());
+  el("btnApplyDims").addEventListener("click", () => void applyDims());
 
   el("themeSelect").addEventListener("change", () => {
     applyTheme(el("themeSelect").value);
@@ -503,9 +515,11 @@ function setup() {
 }
 
 async function bootstrap() {
-  await loadDefaultWsUrl();
   applyThemeFromStorage();
-  setup();
+  // 与 setup 并行：不阻塞首屏；hint 稍后写入 ws 输入框即可
+  const hint = loadDefaultWsUrl().catch(() => {});
+  await setup();
+  await hint;
 }
 
 bootstrap();
