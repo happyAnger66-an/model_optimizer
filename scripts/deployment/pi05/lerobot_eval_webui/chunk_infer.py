@@ -14,7 +14,7 @@ from .action_align import align_action_dim
 from .dataset import tree_to_numpy
 from .media import encode_jpeg_b64, to_hwc_uint8
 from .protocol import StepEvent, event_to_json
-from .running_stats import RunningErrorStats, RunningPerDimMsePctStats
+from .running_stats import RunningErrorStats, RunningPerDimMsePctStats, RunningPerDimRelP99Stats
 
 # 与 standalone / perf 一致：复用同一底层 model 引用打印 time_results
 _perf_model: Any | None = None
@@ -35,6 +35,7 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     policy = bundle["policy"]
     running_stats: RunningErrorStats = bundle["running_err_stats"]
     per_dim_mse_pct: RunningPerDimMsePctStats = bundle["running_per_dim_mse_pct"]
+    per_dim_rel_p99: RunningPerDimRelP99Stats = bundle["running_per_dim_rel_p99"]
 
     stride_ok = (idx - start_index) % action_horizon == 0
     chunk_fits = idx + action_horizon <= n and idx + action_horizon <= end
@@ -137,6 +138,8 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
         )
         per_dim_mse_pct.update(np.ravel(diff).astype(np.float64), np.ravel(gt_h[k]).astype(np.float64))
         dim_mse_pct_mean = per_dim_mse_pct.mse_pct_mean()
+        per_dim_rel_p99.update(np.ravel(rel_err))
+        dim_rel_p99 = per_dim_rel_p99.rel_p99()
 
         step_images = images if k == 0 else None
         step_event = StepEvent(
@@ -155,6 +158,8 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
                 "mae": mae,
                 # 量化口径：每个动作维度的累计 MSE 百分比（mean(diff^2)/mean(gt^2)）
                 "mse_pct_dim_mean": dim_mse_pct_mean,
+                # 相对误差：每个动作维度累计 p99（最差 1%）
+                "rel_p99_dim": dim_rel_p99,
             },
             images=step_images,
             server_timing={"infer_ms": float(infer_ms)} if k == 0 else None,

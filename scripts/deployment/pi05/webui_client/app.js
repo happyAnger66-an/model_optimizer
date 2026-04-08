@@ -524,7 +524,7 @@ function clearClientDisplay() {
   // reset per-dim titles
   for (const d of state.dims) {
     const t = document.getElementById(`dimTitle-${d}`);
-    if (t) t.textContent = `Action dim ${d} · mse_pct_mean -`;
+    if (t) t.textContent = `Action dim ${d} · mse_pct_mean - · rel_p99 -`;
   }
   if (meta) {
     el("repoId").textContent = meta.repo_id ?? "-";
@@ -583,7 +583,7 @@ async function initChart() {
     const title = document.createElement("div");
     title.className = "chartDimTitle";
     title.id = `dimTitle-${d}`;
-    title.textContent = `Action dim ${d} · mse_pct_mean -`;
+    title.textContent = `Action dim ${d} · mse_pct_mean - · rel_p99 -`;
     const plotDiv = document.createElement("div");
     plotDiv.id = chartDivId(d);
     plotDiv.className = "chart";
@@ -609,14 +609,17 @@ function updatePerDimMsePctFromStep(event) {
   const met = event.metrics;
   if (!met || typeof met !== "object") return;
   const arr = met.mse_pct_dim_mean;
-  if (!Array.isArray(arr)) return;
+  const p99 = met.rel_p99_dim;
+  if (!Array.isArray(arr) && !Array.isArray(p99)) return;
 
   for (const d of state.dims) {
     const t = document.getElementById(`dimTitle-${d}`);
     if (!t) continue;
-    const v = typeof arr[d] === "number" ? arr[d] : null;
+    const v = Array.isArray(arr) && typeof arr[d] === "number" ? arr[d] : null;
     const s = v === null ? "-" : `${v.toFixed(3)}%`;
-    t.textContent = `Action dim ${d} · mse_pct_mean ${s}`;
+    const rp = Array.isArray(p99) && typeof p99[d] === "number" ? p99[d] : null;
+    const rs = rp === null ? "-" : `${(rp * 100.0).toFixed(2)}%`;
+    t.textContent = `Action dim ${d} · mse_pct_mean ${s} · rel_p99 ${rs}`;
   }
 }
 

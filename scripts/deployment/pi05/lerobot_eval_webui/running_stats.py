@@ -236,3 +236,36 @@ class RunningPerDimMsePctStats:
             out.append(float(100.0 * mse / (g_pow + float(self.eps))))
         return out
 
+
+@dataclass
+class RunningPerDimRelP99Stats:
+    """按动作维度累计相对误差 p99（查看最差 1% 的误差）。"""
+
+    p99_rel: list[P2Quantile] | None = None
+
+    def ensure_dim(self, dim: int) -> None:
+        d = int(dim)
+        if d <= 0:
+            raise ValueError("dim must be > 0")
+        if self.p99_rel is not None and len(self.p99_rel) == d:
+            return
+        self.p99_rel = [P2Quantile(0.99) for _ in range(d)]
+
+    def update(self, rel_err_vec) -> None:
+        if self.p99_rel is None:
+            self.ensure_dim(len(rel_err_vec))
+        assert self.p99_rel is not None
+        if len(rel_err_vec) != len(self.p99_rel):
+            self.ensure_dim(len(rel_err_vec))
+        for i, v in enumerate(rel_err_vec):
+            self.p99_rel[i].update(float(v))
+
+    def rel_p99(self) -> list[float] | None:
+        if self.p99_rel is None:
+            return None
+        out: list[float] = []
+        for q in self.p99_rel:
+            v = q.value()
+            out.append(float(v) if v is not None else float("nan"))
+        return out
+
