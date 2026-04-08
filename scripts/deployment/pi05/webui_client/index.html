@@ -23,6 +23,22 @@
         <input id="wsUrl" class="input" placeholder="ws://127.0.0.1:8765/ws" />
         <button id="btnConnect" class="btn">Connect</button>
         <button id="btnDisconnect" class="btn btn-secondary" disabled>Disconnect</button>
+        <button
+          id="btnResetDisplay"
+          class="btn btn-secondary"
+          type="button"
+          title="清空曲线、图像与进度显示（不断开 WebSocket）"
+        >
+          清空显示
+        </button>
+        <button
+          id="btnDownloadStats"
+          class="btn btn-secondary"
+          type="button"
+          title="下载各 action dim 的 mse_pct_mean / rel_p99（CSV，可用 Excel 打开）"
+        >
+          下载数据
+        </button>
         <button id="btnPauseInfer" class="btn btn-secondary" type="button" disabled title="暂停服务端推理（下一数据块前生效）">
           暂停推理
         </button>
@@ -130,9 +146,6 @@
           <span class="kv">dims</span>
           <input id="dims" class="input dimsInput" value="0,1,2,3,4,5" />
           <button id="btnApplyDims" class="btn btn-secondary">Apply</button>
-          <button id="btnResetDisplay" class="btn btn-secondary" type="button" title="清空曲线、图像与进度显示（不断开 WebSocket）">
-            清空显示
-          </button>
         </div>
         <div id="chartsContainer" class="chartsContainer"></div>
       </div>

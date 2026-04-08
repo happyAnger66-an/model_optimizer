@@ -3,6 +3,8 @@
 let ws = null;
 let meta = null;
 let connected = false;
+let latestDimMsePctMean = null; // number[] | null
+let latestDimRelP99 = null; // number[] | null
 
 /** 非用户主动断开时，每 RECONNECT_MS 自动重连一次 */
 const RECONNECT_MS = 3000;
@@ -507,6 +509,8 @@ function purgeAndNewPlotAllChartsSync() {
 function clearClientDisplay() {
   stepReceiveCount = 0;
   resetSeries();
+  latestDimMsePctMean = null;
+  latestDimRelP99 = null;
   el("prompt").textContent = "—";
   const imgB = el("imgBase");
   const imgW = el("imgWrist");
@@ -611,6 +615,8 @@ function updatePerDimMsePctFromStep(event) {
   const arr = met.mse_pct_dim_mean;
   const p99 = met.rel_p99_dim;
   if (!Array.isArray(arr) && !Array.isArray(p99)) return;
+  if (Array.isArray(arr)) latestDimMsePctMean = arr;
+  if (Array.isArray(p99)) latestDimRelP99 = p99;
 
   for (const d of state.dims) {
     const t = document.getElementById(`dimTitle-${d}`);
@@ -621,6 +627,48 @@ function updatePerDimMsePctFromStep(event) {
     const rs = rp === null ? "-" : `${(rp * 100.0).toFixed(2)}%`;
     t.textContent = `Action dim ${d} · mse_pct_mean ${s} · rel_p99 ${rs}`;
   }
+}
+
+function csvEscape(v) {
+  const s = String(v ?? "");
+  if (/[\",\\n]/.test(s)) return `"${s.replaceAll("\"", "\"\"")}"`;
+  return s;
+}
+
+function downloadCsv(filename, rows) {
+  const csv = rows.map((r) => r.map(csvEscape).join(",")).join("\n") + "\n";
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function downloadDimStatsCsv() {
+  if (!latestDimMsePctMean && !latestDimRelP99) {
+    setProgress("暂无可下载数据：请先接收至少一条 step。");
+    return;
+  }
+  const rows = [["dim", "mse_pct_mean_pct", "rel_p99_pct"]];
+  for (const d of state.dims) {
+    const msePct =
+      Array.isArray(latestDimMsePctMean) && typeof latestDimMsePctMean[d] === "number"
+        ? latestDimMsePctMean[d]
+        : "";
+    const relP99Pct =
+      Array.isArray(latestDimRelP99) && typeof latestDimRelP99[d] === "number"
+        ? latestDimRelP99[d] * 100.0
+        : "";
+    rows.push([d, msePct, relP99Pct]);
+  }
+  const rid = meta?.run_id ?? "no_run_id";
+  const ts = new Date().toISOString().replaceAll(":", "-");
+  downloadCsv(`pi05_webui_dim_stats_${rid}_${ts}.csv`, rows);
+  setProgress("已下载：各 action dim mse_pct_mean / rel_p99（CSV）。");
 }
 
 function pushPoint(event) {
@@ -956,6 +1004,7 @@ async function setup() {
   });
   el("btnApplyDims").addEventListener("click", () => void applyDims());
   el("btnResetDisplay").addEventListener("click", () => clearClientDisplay());
+  el("btnDownloadStats").addEventListener("click", () => downloadDimStatsCsv());
 
   el("chartsCols").addEventListener("change", () => applyChartsCols());
 
