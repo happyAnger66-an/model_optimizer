@@ -18,9 +18,9 @@ run_x86:
 	--gpus all \
 	-v ${PWD}:/workspace \
 	-v ${HOME}:/srcs \
-	-v ${HOME}/.cache:/srcs/.cache \
+	-v ${HOME}/.cache:~/.cache \
 	--shm-size=4g \
-	--env PYTHONPATH=/opt/openpi/lib/python3.12/site-packages/:/srcs/sources/opensrc/robot/openpi/src/:/srcs/sources/opensrc/robot/openpi/packages/openpi-client/src/ \
+	--env PYTHONPATH=/opt/openpi/lib/python3.12/site-packages/:/workspace/third_party/openpi/src/:/workspace/third_party/openpi/packages/openpi-client/src/ \
 	model_optimizer:x86 \
 	/bin/bash
 
