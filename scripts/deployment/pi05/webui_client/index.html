@@ -184,7 +184,11 @@
       <div class="card span4">
         <div class="cardTitle">
           误差曲线
-          <span class="subInline">MAE / MSE：与下方 dims 一致，每维一条线；与 window 同步滚动</span>
+          <span class="subInline">MAE / MSE：与下方 dims 一致，每维一条线；可勾选隐藏；与 window 同步滚动</span>
+        </div>
+        <div class="sub metricDimTogglesRow" aria-label="误差曲线按 dim 显示">
+          <span class="kv">显示 dim</span>
+          <div id="metricDimToggles" class="metricDimToggles"></div>
         </div>
         <div id="metricsChartsContainer" class="metricsChartsRow"></div>
       </div>

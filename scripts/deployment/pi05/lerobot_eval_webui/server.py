@@ -29,6 +29,17 @@ async def run_server(args: Args) -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
+    # 对端在握手完成前断开时，websockets 会打 ERROR + 堆栈（ConnectionClosedError: no close frame…）。
+    # 常见于：浏览器/工具误连、端口扫描、HTTP 探活、错误 path。与推理逻辑无关，故压低噪声。
+    class _SuppressWsHandshakeNoise(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            if "opening handshake failed" in record.getMessage():
+                return False
+            return True
+
+    for _name in ("websockets.server", "websockets.asyncio.server", "websockets"):
+        logging.getLogger(_name).addFilter(_SuppressWsHandshakeNoise())
+
     run_id = uuid.uuid4().hex[:12]
     broadcaster = WebsocketBroadcaster(history_size=args.history_size)
     meta_ready: dict[str, Any] = {"msg": None}

@@ -418,6 +418,15 @@ code {
   align-items: center;
 }
 
+.metricDimToggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
 .footer {
   padding: 12px 16px;
   color: var(--muted);

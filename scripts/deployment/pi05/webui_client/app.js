@@ -692,6 +692,70 @@ function restyleAllDimChartsVisibility() {
   }
 }
 
+/** dim -> 误差曲线是否显示（dims 变化时保留仍存在的 dim 的勾选） */
+const metricDimCheckboxPreference = new Map();
+
+function pruneMetricDimPreferences() {
+  const ds = new Set(state.dims);
+  for (const k of [...metricDimCheckboxPreference.keys()]) {
+    if (!ds.has(k)) metricDimCheckboxPreference.delete(k);
+  }
+}
+
+function getMetricDimVisibility() {
+  return state.dims.map((d) => {
+    const inp = el(`metricDimShow-${d}`);
+    if (inp) return inp.checked === true;
+    return metricDimCheckboxPreference.get(d) !== false;
+  });
+}
+
+function applyVisibilityToMetricTraces(traces) {
+  const vis = getMetricDimVisibility();
+  for (let i = 0; i < traces.length; i++) {
+    traces[i].visible = vis[i] !== false;
+  }
+}
+
+function restyleAllMetricChartsVisibility() {
+  const vis = getMetricDimVisibility();
+  for (const def of METRIC_CHART_DEFS) {
+    const gd = document.getElementById(def.id);
+    if (!gd || !gd.data || gd.data.length !== vis.length) continue;
+    try {
+      Plotly.restyle(gd, { visible: vis });
+    } catch (e) {
+      /* ignore */
+    }
+  }
+}
+
+function renderMetricDimToggles() {
+  const box = el("metricDimToggles");
+  if (!box) return;
+  pruneMetricDimPreferences();
+  box.innerHTML = "";
+  for (const d of state.dims) {
+    if (!metricDimCheckboxPreference.has(d)) {
+      metricDimCheckboxPreference.set(d, true);
+    }
+    const label = document.createElement("label");
+    label.className = "checkbox metricDimToggleItem";
+    const inp = document.createElement("input");
+    inp.type = "checkbox";
+    inp.id = `metricDimShow-${d}`;
+    inp.checked = metricDimCheckboxPreference.get(d) !== false;
+    const dimVal = d;
+    inp.addEventListener("change", () => {
+      metricDimCheckboxPreference.set(dimVal, inp.checked);
+      restyleAllMetricChartsVisibility();
+    });
+    label.appendChild(inp);
+    label.appendChild(document.createTextNode(` dim ${d}`));
+    box.appendChild(label);
+  }
+}
+
 /** 与子图初始状态一致的空曲线（gt / pred_pt / 可选 pred_trt） */
 function traceTemplatesEmpty() {
   const p = getPlotlyPalette();
@@ -732,6 +796,7 @@ function buildMetricTracesFromState(def) {
       line: { width: 1.5, color: metricDimLineColor(i) },
     });
   }
+  applyVisibilityToMetricTraces(traces);
   return traces;
 }
 
@@ -750,6 +815,7 @@ function emptyMetricTraces(def) {
       line: { width: 1.5, color: metricDimLineColor(i) },
     });
   }
+  applyVisibilityToMetricTraces(traces);
   return traces;
 }
 
@@ -896,6 +962,7 @@ async function initChart() {
     await raf();
   }
   setDimTraceToggleUi();
+  renderMetricDimToggles();
   applyChartsCols();
   refreshCompareDimTable();
 }
@@ -1148,6 +1215,7 @@ function pushPoint(event) {
       }
       const xPay = state.dims.map(() => xArr);
       Plotly.restyle(gd, { x: xPay, y: yPayload }, state.dims.map((_, i) => i));
+      Plotly.restyle(gd, { visible: getMetricDimVisibility() });
     } catch (e) {
       const layout = layoutFallback();
       metricsLayouts.set(def.id, layout);
@@ -1324,6 +1392,7 @@ function connectInternal() {
         }
         updateMetricChartWrapTitles();
         setDimTraceToggleUi();
+        renderMetricDimToggles();
         refreshCompareDimTable();
       });
       return;
