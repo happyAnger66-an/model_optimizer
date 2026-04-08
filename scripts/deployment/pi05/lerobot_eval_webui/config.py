@@ -56,3 +56,6 @@ class Args:
 
     gpu_device_index: int | None = None
     """``nvidia-smi -i`` 使用的 GPU 下标。``None`` 时从 ``--device`` 解析 ``cuda:N``，否则为 ``0``。"""
+
+    rel_eps: float = 1e-8
+    """相对误差分母的 eps：``rel = |pred-gt| / max(|gt|, rel_eps)``。用于屏蔽 gt≈0 导致的发散。"""

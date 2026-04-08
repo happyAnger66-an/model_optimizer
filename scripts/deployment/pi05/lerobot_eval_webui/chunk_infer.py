@@ -126,7 +126,8 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
         mse = float(np.mean(diff**2))
         mae = float(np.mean(np.abs(diff)))
         abs_diff = np.abs(diff).astype(np.float64, copy=False)
-        denom = np.abs(gt_h[k]).astype(np.float64, copy=False) + 1e-6
+        abs_gt = np.abs(gt_h[k]).astype(np.float64, copy=False)
+        denom = np.maximum(abs_gt, float(args.rel_eps))
         rel_err = (abs_diff / denom).astype(np.float64, copy=False)
 
         # step 局部（只用于参考）

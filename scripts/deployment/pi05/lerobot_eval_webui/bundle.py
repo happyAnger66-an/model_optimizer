@@ -113,6 +113,8 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
     if args.gpu_stats_interval_sec and args.gpu_stats_interval_sec > 0:
         meta_payload["gpu_stats_interval_sec"] = float(args.gpu_stats_interval_sec)
         meta_payload["gpu_device_index"] = int(effective_gpu_index(args))
+    meta_payload["rel_err_denominator"] = "max_abs_gt_eps"
+    meta_payload["rel_eps"] = float(args.rel_eps)
 
     meta_msg = event_to_json(meta_payload)
 
