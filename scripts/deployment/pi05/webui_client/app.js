@@ -3,7 +3,7 @@
 let ws = null;
 let meta = null;
 let connected = false;
-/** 由服务端 meta.compare_mode 设置：误差曲线为 PT / TRT / 两路差 三路 */
+/** 由服务端 meta.compare_mode 设置：误差曲线仅 PT−TRT（与 GT 的对比见 Run 区表格） */
 let compareMode = false;
 let latestDimMsePctMean = null; // number[] | null
 let latestDimRelP99 = null; // number[] | null
@@ -99,6 +99,7 @@ function setCompareLayoutVisible(on) {
   }
   if (!on) resetCompareScalarTable();
   else refreshCompareDimTable();
+  updateMetricChartWrapTitles();
 }
 
 /** 按维累计表：直接显示服务端 JSON 中的原始数值（不做 %/科学计数转换） */
@@ -221,13 +222,26 @@ function buildMetricsLayout(yAxisTitle) {
       gridcolor: p.grid,
       zerolinecolor: p.zero,
     },
-    showlegend: compareMode,
-    legend: compareMode
-      ? { font: { size: 9, color: p.legend }, orientation: "h", y: 1.2, x: 0 }
-      : undefined,
+    showlegend: false,
     font: { color: p.font, size: 11 },
-    height: compareMode ? 220 : 200,
+    height: 200,
   };
+}
+
+/** 误差曲线图 y 轴标题：compare 时仅画 PT−TRT */
+function metricsChartYAxisTitle(def) {
+  if (!compareMode) return def.yLabel;
+  return `PT−TRT ${def.yLabel}`;
+}
+
+function updateMetricChartWrapTitles() {
+  for (const def of METRIC_CHART_DEFS) {
+    const t = el(`metricTitle-${def.id}`);
+    if (!t) continue;
+    t.textContent = compareMode
+      ? `PT−TRT ${def.cardTitle} vs global_index`
+      : `${def.cardTitle} vs global_index`;
+  }
 }
 
 function buildPlotlyLayout() {
@@ -283,7 +297,7 @@ function refreshMetricsChartsTheme() {
     } catch (e) {
       /* ignore */
     }
-    const layout = buildMetricsLayout(def.yLabel);
+    const layout = buildMetricsLayout(metricsChartYAxisTitle(def));
     metricsLayouts.set(def.id, layout);
     const sk = def.seriesKey;
     let traces;
@@ -298,30 +312,14 @@ function refreshMetricsChartsTheme() {
         },
       ];
     } else {
-      const c2 = sk === "mae" ? p.predTrt : p.compareMseTrt;
-      const s2 = sk === "mae" ? "mae_trt" : "mse_trt";
-      const s3 = sk === "mae" ? "mae_pt_trt" : "mse_pt_trt";
+      const sPair = sk === "mae" ? "mae_pt_trt" : "mse_pt_trt";
       traces = [
         {
           x: [...state.x],
-          y: [...state[sk]],
+          y: [...state[sPair]],
           mode: "lines",
-          name: `${sk}_pt`,
-          line: { width: 2, color: p[def.colorKey] },
-        },
-        {
-          x: [...state.x],
-          y: [...state[s2]],
-          mode: "lines",
-          name: `${sk}_trt`,
-          line: { width: 2, color: c2 },
-        },
-        {
-          x: [...state.x],
-          y: [...state[s3]],
-          mode: "lines",
-          name: `${sk}_pt_trt`,
-          line: { width: 2, dash: "dot", color: p.comparePair },
+          name: `PT−TRT ${sk}`,
+          line: { width: 2, color: p.comparePair },
         },
       ];
     }
@@ -422,8 +420,6 @@ const state = {
   x: [],
   mae: [],
   mse: [],
-  mae_trt: [],
-  mse_trt: [],
   mae_pt_trt: [],
   mse_pt_trt: [],
   gt: new Map(), // dim -> []
@@ -569,8 +565,6 @@ function resetSeries() {
   state.x = [];
   state.mae = [];
   state.mse = [];
-  state.mae_trt = [];
-  state.mse_trt = [];
   state.mae_pt_trt = [];
   state.mse_pt_trt = [];
   state.gt = new Map();
@@ -678,16 +672,13 @@ function emptyMetricTraces(def) {
       },
     ];
   }
-  const c2 = def.seriesKey === "mae" ? p.predTrt : p.compareMseTrt;
   return [
-    { x: [], y: [], mode: "lines", name: `${def.seriesKey}_pt`, line: { width: 2, color: c1 } },
-    { x: [], y: [], mode: "lines", name: `${def.seriesKey}_trt`, line: { width: 2, color: c2 } },
     {
       x: [],
       y: [],
       mode: "lines",
-      name: `${def.seriesKey}_pt_trt`,
-      line: { width: 2, dash: "dot", color: p.comparePair },
+      name: `PT−TRT ${def.seriesKey}`,
+      line: { width: 2, color: p.comparePair },
     },
   ];
 }
@@ -701,7 +692,7 @@ function purgeAndNewPlotMetricsChartsSync() {
     } catch (e) {
       /* ignore */
     }
-    const layout = buildMetricsLayout(def.yLabel);
+    const layout = buildMetricsLayout(metricsChartYAxisTitle(def));
     metricsLayouts.set(def.id, layout);
     Plotly.newPlot(div, emptyMetricTraces(def), layout, { displayModeBar: false, responsive: true });
   }
@@ -780,6 +771,7 @@ async function initMetricsChartsInContainer() {
     wrap.className = "chartDimWrap";
     const title = document.createElement("div");
     title.className = "chartDimTitle";
+    title.id = `metricTitle-${def.id}`;
     title.textContent = `${def.cardTitle} vs global_index`;
     const plotDiv = document.createElement("div");
     plotDiv.id = def.id;
@@ -787,7 +779,7 @@ async function initMetricsChartsInContainer() {
     wrap.appendChild(title);
     wrap.appendChild(plotDiv);
     mcont.appendChild(wrap);
-    const layout = buildMetricsLayout(def.yLabel);
+    const layout = buildMetricsLayout(metricsChartYAxisTitle(def));
     metricsLayouts.set(def.id, layout);
     jobs.push([def.id, emptyMetricTraces(def), layout]);
   }
@@ -796,6 +788,7 @@ async function initMetricsChartsInContainer() {
     Plotly.newPlot(id, traces, layout, { displayModeBar: false, responsive: true });
     await raf();
   }
+  updateMetricChartWrapTitles();
 }
 
 async function initChart() {
@@ -995,31 +988,24 @@ function pushPoint(event) {
   const met = event.metrics;
   let maeV = null;
   let mseV = null;
-  let maeTrtV = null;
-  let mseTrtV = null;
   let maePtTrtV = null;
   let msePtTrtV = null;
   if (met && typeof met === "object") {
     if (typeof met.mae === "number") maeV = met.mae;
     if (typeof met.mse === "number") mseV = met.mse;
     if (compareMode) {
-      if (typeof met.mae_trt === "number") maeTrtV = met.mae_trt;
-      if (typeof met.mse_trt === "number") mseTrtV = met.mse_trt;
       if (typeof met.mae_pt_trt === "number") maePtTrtV = met.mae_pt_trt;
       if (typeof met.mse_pt_trt === "number") msePtTrtV = met.mse_pt_trt;
     }
   }
-  state.mae.push(maeV);
-  state.mse.push(mseV);
-  while (state.mae.length > state.windowSize) state.mae.shift();
-  while (state.mse.length > state.windowSize) state.mse.shift();
-  if (compareMode) {
-    state.mae_trt.push(maeTrtV);
-    state.mse_trt.push(mseTrtV);
+  if (!compareMode) {
+    state.mae.push(maeV);
+    state.mse.push(mseV);
+    while (state.mae.length > state.windowSize) state.mae.shift();
+    while (state.mse.length > state.windowSize) state.mse.shift();
+  } else {
     state.mae_pt_trt.push(maePtTrtV);
     state.mse_pt_trt.push(msePtTrtV);
-    while (state.mae_trt.length > state.windowSize) state.mae_trt.shift();
-    while (state.mse_trt.length > state.windowSize) state.mse_trt.shift();
     while (state.mae_pt_trt.length > state.windowSize) state.mae_pt_trt.shift();
     while (state.mse_pt_trt.length > state.windowSize) state.mse_pt_trt.shift();
   }
@@ -1055,8 +1041,6 @@ function pushPoint(event) {
 
   const maeArr = [...state.mae];
   const mseArr = [...state.mse];
-  const maeTrtArr = [...state.mae_trt];
-  const mseTrtArr = [...state.mse_trt];
   const maePtTrtArr = [...state.mae_pt_trt];
   const msePtTrtArr = [...state.mse_pt_trt];
 
@@ -1065,84 +1049,61 @@ function pushPoint(event) {
     if (!gd) continue;
     const sk = def.seriesKey;
     const yArr = sk === "mae" ? maeArr : mseArr;
-    const yTrt = sk === "mae" ? maeTrtArr : mseTrtArr;
     const yPair = sk === "mae" ? maePtTrtArr : msePtTrtArr;
-    const needTracesMet = compareMode ? 3 : 1;
+    const layoutFallback = () => metricsLayouts.get(def.id) || buildMetricsLayout(metricsChartYAxisTitle(def));
     try {
-      if (!gd.data || gd.data.length < needTracesMet) {
-        const layout = metricsLayouts.get(def.id) || buildMetricsLayout(def.yLabel);
-        metricsLayouts.set(def.id, layout);
-        const p = getPlotlyPalette();
-        let traces;
-        if (!compareMode) {
-          traces = [
-            {
-              x: xArr,
-              y: yArr,
-              mode: "lines",
-              name: def.traceName,
-              line: { width: 2, color: p[def.colorKey] },
-            },
-          ];
-        } else {
-          const c2 = sk === "mae" ? p.predTrt : p.compareMseTrt;
-          traces = [
-            { x: xArr, y: yArr, mode: "lines", name: `${sk}_pt`, line: { width: 2, color: p[def.colorKey] } },
-            { x: xArr, y: yTrt, mode: "lines", name: `${sk}_trt`, line: { width: 2, color: c2 } },
-            {
-              x: xArr,
-              y: yPair,
-              mode: "lines",
-              name: `${sk}_pt_trt`,
-              line: { width: 2, dash: "dot", color: p.comparePair },
-            },
-          ];
-        }
-        Plotly.newPlot(gd, traces, layout, { displayModeBar: false, responsive: true });
-        continue;
-      }
       if (compareMode) {
-        Plotly.restyle(gd, { x: [xArr, xArr, xArr], y: [yArr, yTrt, yPair] }, [0, 1, 2]);
+        if (!gd.data || gd.data.length < 1) {
+          const layout = layoutFallback();
+          metricsLayouts.set(def.id, layout);
+          const p = getPlotlyPalette();
+          Plotly.newPlot(
+            gd,
+            [
+              {
+                x: xArr,
+                y: yPair,
+                mode: "lines",
+                name: `PT−TRT ${sk}`,
+                line: { width: 2, color: p.comparePair },
+              },
+            ],
+            layout,
+            { displayModeBar: false, responsive: true }
+          );
+          continue;
+        }
+        Plotly.restyle(gd, { x: [xArr], y: [yPair] }, [0]);
       } else {
+        if (!gd.data || gd.data.length < 1) {
+          const layout = layoutFallback();
+          metricsLayouts.set(def.id, layout);
+          const p = getPlotlyPalette();
+          Plotly.newPlot(
+            gd,
+            [
+              {
+                x: xArr,
+                y: yArr,
+                mode: "lines",
+                name: def.traceName,
+                line: { width: 2, color: p[def.colorKey] },
+              },
+            ],
+            layout,
+            { displayModeBar: false, responsive: true }
+          );
+          continue;
+        }
         Plotly.restyle(gd, { x: [xArr], y: [yArr] }, [0]);
       }
     } catch (e) {
-      const layout = metricsLayouts.get(def.id) || buildMetricsLayout(def.yLabel);
+      const layout = layoutFallback();
       metricsLayouts.set(def.id, layout);
       const p = getPlotlyPalette();
       const traces = !compareMode
-        ? [
-            {
-              x: xArr,
-              y: yArr,
-              mode: "lines",
-              name: def.traceName,
-              line: { width: 2, color: p[def.colorKey] },
-            },
-          ]
-        : [
-            {
-              x: xArr,
-              y: yArr,
-              mode: "lines",
-              name: `${sk}_pt`,
-              line: { width: 2, color: p[def.colorKey] },
-            },
-            {
-              x: xArr,
-              y: yTrt,
-              mode: "lines",
-              name: `${sk}_trt`,
-              line: { width: 2, color: sk === "mae" ? p.predTrt : p.compareMseTrt },
-            },
-            {
-              x: xArr,
-              y: yPair,
-              mode: "lines",
-              name: `${sk}_pt_trt`,
-              line: { width: 2, dash: "dot", color: p.comparePair },
-            },
-          ];
+        ? [{ x: xArr, y: yArr, mode: "lines", name: def.traceName, line: { width: 2, color: p[def.colorKey] } }]
+        : [{ x: xArr, y: yPair, mode: "lines", name: `PT−TRT ${sk}`, line: { width: 2, color: p.comparePair } }];
       Plotly.newPlot(gd, traces, layout, { displayModeBar: false, responsive: true });
     }
   }
@@ -1313,6 +1274,7 @@ function connectInternal() {
           const t = document.getElementById(`dimTitle-${d}`);
           if (t) t.textContent = dimChartTitlePlaceholder(d);
         }
+        updateMetricChartWrapTitles();
         refreshCompareDimTable();
       });
       return;
