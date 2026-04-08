@@ -58,13 +58,88 @@ const PLOTLY_THEME = {
 
 const el = (id) => document.getElementById(id);
 
-/** 各 dim 子图标题占位（与 updatePerDimMsePctFromStep 展示格式一致） */
+/** 各 dim 子图标题（compare 详细指标见「按维累计对比」表） */
 function dimChartTitlePlaceholder(d) {
   const di = Number(d);
   if (compareMode) {
-    return `Action dim ${di} · PT mse% - · PT p99 - · TRT mse% - · TRT p99 - · PT-TRT mse -`;
+    return `Action dim ${di}`;
   }
   return `Action dim ${di} · mse_pct_mean - · rel_p99 -`;
+}
+
+function resetCompareScalarTable() {
+  for (const id of [
+    "cmpMaePt",
+    "cmpMsePt",
+    "cmpMaeTrt",
+    "cmpMseTrt",
+    "cmpMaePair",
+    "cmpMsePair",
+    "cmpInferPt",
+    "cmpInferTrt",
+  ]) {
+    const n = el(id);
+    if (n) n.textContent = "-";
+  }
+}
+
+/** compare 模式：Run 区隐藏单行 mae/mse，改用表；显示按维累计表 */
+function setCompareLayoutVisible(on) {
+  const ptBlock = el("runScalarPtBlock");
+  const cmpBlock = el("compareMetricsBlock");
+  const dimCard = el("compareDimTableCard");
+  if (ptBlock) ptBlock.style.display = on ? "none" : "";
+  if (cmpBlock) cmpBlock.hidden = !on;
+  if (dimCard) {
+    dimCard.hidden = !on;
+    if (!on) {
+      const tb = el("compareDimTableBody");
+      if (tb) tb.innerHTML = "";
+    }
+  }
+  if (!on) resetCompareScalarTable();
+  else refreshCompareDimTable();
+}
+
+/** 按当前 state.dims 与 latest* 缓存刷新「按维累计对比」tbody */
+function refreshCompareDimTable() {
+  const tbody = el("compareDimTableBody");
+  const card = el("compareDimTableCard");
+  if (!tbody || !card || !compareMode) return;
+  const fmtPct = (v) =>
+    typeof v === "number" && Number.isFinite(v) ? `${v.toFixed(3)}%` : "—";
+  const fmtP99 = (v) =>
+    typeof v === "number" && Number.isFinite(v) ? `${(v * 100).toFixed(2)}%` : "—";
+  const fmtMse = (v) =>
+    typeof v === "number" && Number.isFinite(v) ? v.toFixed(6) : "—";
+
+  const arr = latestDimMsePctMean;
+  const p99 = latestDimRelP99;
+  const arrTrt = latestDimMsePctMeanTrt;
+  const p99Trt = latestDimRelP99Trt;
+  const pairDm = latestDimMsePtTrtDimMean;
+
+  tbody.innerHTML = "";
+  const dims = [...state.dims].sort((a, b) => a - b);
+  for (const d of dims) {
+    const tr = document.createElement("tr");
+    const tdDim = document.createElement("td");
+    tdDim.textContent = String(d);
+    tr.appendChild(tdDim);
+
+    const vPt = Array.isArray(arr) && typeof arr[d] === "number" ? arr[d] : null;
+    const pPt = Array.isArray(p99) && typeof p99[d] === "number" ? p99[d] : null;
+    const vTrt = Array.isArray(arrTrt) && typeof arrTrt[d] === "number" ? arrTrt[d] : null;
+    const pTrt = Array.isArray(p99Trt) && typeof p99Trt[d] === "number" ? p99Trt[d] : null;
+    const pM = Array.isArray(pairDm) && typeof pairDm[d] === "number" ? pairDm[d] : null;
+
+    for (const text of [fmtPct(vPt), fmtP99(pPt), fmtPct(vTrt), fmtP99(pTrt), fmtMse(pM)]) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
 }
 
 function metaStr(v) {
@@ -526,19 +601,28 @@ function updateTop(event) {
     const st = event.server_timing;
     if (typeof st.infer_ms === "number") el("inferMs").textContent = st.infer_ms.toFixed(2);
     if (compareMode) {
-      if (typeof st.infer_ms_pt === "number") el("inferMsPt").textContent = st.infer_ms_pt.toFixed(2);
-      if (typeof st.infer_ms_trt === "number") el("inferMsTrt").textContent = st.infer_ms_trt.toFixed(2);
+      const ipt = el("cmpInferPt");
+      const itr = el("cmpInferTrt");
+      if (ipt && typeof st.infer_ms_pt === "number") ipt.textContent = st.infer_ms_pt.toFixed(2);
+      if (itr && typeof st.infer_ms_trt === "number") itr.textContent = st.infer_ms_trt.toFixed(2);
     }
   }
   if (event.metrics) {
     const m = event.metrics;
-    if (typeof m.mae === "number") el("mae").textContent = m.mae.toFixed(6);
-    if (typeof m.mse === "number") el("mse").textContent = m.mse.toFixed(6);
+    const setNum = (id, v) => {
+      const n = el(id);
+      if (n && typeof v === "number") n.textContent = v.toFixed(6);
+    };
     if (compareMode) {
-      if (typeof m.mae_trt === "number") el("maeTrt").textContent = m.mae_trt.toFixed(6);
-      if (typeof m.mse_trt === "number") el("mseTrt").textContent = m.mse_trt.toFixed(6);
-      if (typeof m.mae_pt_trt === "number") el("maePtTrt").textContent = m.mae_pt_trt.toFixed(6);
-      if (typeof m.mse_pt_trt === "number") el("msePtTrt").textContent = m.mse_pt_trt.toFixed(6);
+      setNum("cmpMaePt", m.mae);
+      setNum("cmpMsePt", m.mse);
+      setNum("cmpMaeTrt", m.mae_trt);
+      setNum("cmpMseTrt", m.mse_trt);
+      setNum("cmpMaePair", m.mae_pt_trt);
+      setNum("cmpMsePair", m.mse_pt_trt);
+    } else {
+      if (typeof m.mae === "number") el("mae").textContent = m.mae.toFixed(6);
+      if (typeof m.mse === "number") el("mse").textContent = m.mse.toFixed(6);
     }
   }
 }
@@ -654,15 +738,10 @@ function clearClientDisplay() {
   el("globalIndex").textContent = "-";
   el("kInChunk").textContent = "-";
   el("inferMs").textContent = "-";
-  el("inferMsPt").textContent = "-";
-  el("inferMsTrt").textContent = "-";
   el("gpuUtil").textContent = "-";
   el("mae").textContent = "-";
   el("mse").textContent = "-";
-  el("maeTrt").textContent = "-";
-  el("mseTrt").textContent = "-";
-  el("maePtTrt").textContent = "-";
-  el("msePtTrt").textContent = "-";
+  resetCompareScalarTable();
   resetHzEstimators();
   // reset per-dim titles
   for (const d of state.dims) {
@@ -674,6 +753,7 @@ function clearClientDisplay() {
     el("backend").textContent = meta.backend ?? "-";
   }
   applyTensorrtMetaFromMsg(meta);
+  refreshCompareDimTable();
   setProgress("已清空本页曲线与图像（WebSocket 未断开；可继续接收后续 step）。");
   purgeAndNewPlotAllChartsSync();
 }
@@ -747,6 +827,7 @@ async function initChart() {
     await raf();
   }
   applyChartsCols();
+  refreshCompareDimTable();
 }
 
 function updatePerDimMsePctFromStep(event) {
@@ -777,22 +858,17 @@ function updatePerDimMsePctFromStep(event) {
   for (const d of state.dims) {
     const t = document.getElementById(`dimTitle-${d}`);
     if (!t) continue;
-    const v = Array.isArray(arr) && typeof arr[d] === "number" ? arr[d] : null;
-    const sPt = v === null ? "-" : `${v.toFixed(3)}%`;
-    const rp = Array.isArray(p99) && typeof p99[d] === "number" ? p99[d] : null;
-    const rsPt = rp === null ? "-" : `${(rp * 100.0).toFixed(2)}%`;
-    if (compareMode && (Array.isArray(arrTrt) || Array.isArray(p99Trt) || Array.isArray(pairDm))) {
-      const vt = Array.isArray(arrTrt) && typeof arrTrt[d] === "number" ? arrTrt[d] : null;
-      const sTrt = vt === null ? "-" : `${vt.toFixed(3)}%`;
-      const rpt = Array.isArray(p99Trt) && typeof p99Trt[d] === "number" ? p99Trt[d] : null;
-      const rsTrt = rpt === null ? "-" : `${(rpt * 100.0).toFixed(2)}%`;
-      const pm =
-        Array.isArray(pairDm) && typeof pairDm[d] === "number" ? pairDm[d].toFixed(6) : "-";
-      t.textContent = `Action dim ${d} · PT mse% ${sPt} · PT p99 ${rsPt} · TRT mse% ${sTrt} · TRT p99 ${rsTrt} · PT-TRT mse ${pm}`;
+    if (compareMode) {
+      t.textContent = `Action dim ${d}`;
     } else {
+      const v = Array.isArray(arr) && typeof arr[d] === "number" ? arr[d] : null;
+      const sPt = v === null ? "-" : `${v.toFixed(3)}%`;
+      const rp = Array.isArray(p99) && typeof p99[d] === "number" ? p99[d] : null;
+      const rsPt = rp === null ? "-" : `${(rp * 100.0).toFixed(2)}%`;
       t.textContent = `Action dim ${d} · mse_pct_mean ${sPt} · rel_p99 ${rsPt}`;
     }
   }
+  if (compareMode) refreshCompareDimTable();
 }
 
 function csvEscape(v) {
@@ -1186,6 +1262,7 @@ function connectInternal() {
       if (msg.phase === "loading") {
         el("repoId").textContent = "…";
         el("backend").textContent = "…";
+        setCompareLayoutVisible(false);
         const te = el("trtEnginesBlock");
         if (te) te.hidden = true;
         el("gpuUtil").textContent = "-";
@@ -1197,8 +1274,7 @@ function connectInternal() {
       }
       meta = msg;
       compareMode = Boolean(meta.compare_mode);
-      const cmb = el("compareMetricsBlock");
-      if (cmb) cmb.hidden = !compareMode;
+      setCompareLayoutVisible(compareMode);
       stepReceiveCount = 0;
       resetSeries();
       resetHzEstimators();
@@ -1231,6 +1307,7 @@ function connectInternal() {
           const t = document.getElementById(`dimTitle-${d}`);
           if (t) t.textContent = dimChartTitlePlaceholder(d);
         }
+        refreshCompareDimTable();
       });
       return;
     }

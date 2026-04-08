@@ -494,6 +494,71 @@ code {
   word-break: break-all;
 }
 
+.compareMetricsBlock {
+  margin-top: 0.35rem;
+}
+
+.compareScalarTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+.compareScalarTable th,
+.compareScalarTable td {
+  border: 1px solid var(--border);
+  padding: 0.2rem 0.45rem;
+  text-align: right;
+}
+.compareScalarTable th[scope="row"],
+.compareScalarTable th[scope="col"]:first-child {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 600;
+}
+.compareScalarTable thead th {
+  background: var(--chart-wrap-bg);
+  color: var(--mono-fg);
+}
+
+.compareDimTableWrap {
+  overflow-x: auto;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--chart-wrap-bg);
+}
+.compareDimTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+.compareDimTable th,
+.compareDimTable td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.28rem 0.5rem;
+  text-align: right;
+  white-space: nowrap;
+}
+.compareDimTable th {
+  position: sticky;
+  top: 0;
+  background: var(--panel2);
+  color: var(--mono-fg);
+  font-weight: 600;
+  text-align: center;
+}
+.compareDimTable tbody td:first-child {
+  text-align: center;
+  font-weight: 600;
+  color: var(--muted);
+}
+.compareDimTable tbody tr:hover td {
+  background: rgba(37, 99, 235, 0.06);
+}
+html[data-theme="dark"] .compareDimTable tbody tr:hover td {
+  background: rgba(96, 165, 250, 0.08);
+}
+
 @media (max-width: 1200px) {
   .grid {
     grid-template-columns: repeat(2, 1fr);

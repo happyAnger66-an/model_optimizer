@@ -94,15 +94,41 @@
             <span class="kv" title="服务端 nvidia-smi 采样：GPU / 显存控制器利用率">gpu</span>
             <span id="gpuUtil">-</span>
           </div>
-          <div><span class="kv">mae</span> <span id="mae">-</span></div>
-          <div><span class="kv">mse</span> <span id="mse">-</span></div>
-          <div id="compareMetricsBlock" class="mono compareMetricsBlock" hidden>
-            <div><span class="kv">infer_ms_pt</span> <span id="inferMsPt">-</span></div>
-            <div><span class="kv">infer_ms_trt</span> <span id="inferMsTrt">-</span></div>
-            <div><span class="kv">mae_trt</span> <span id="maeTrt">-</span></div>
-            <div><span class="kv">mse_trt</span> <span id="mseTrt">-</span></div>
-            <div><span class="kv">mae_pt_trt</span> <span id="maePtTrt">-</span></div>
-            <div><span class="kv">mse_pt_trt</span> <span id="msePtTrt">-</span></div>
+          <div id="runScalarPtBlock" class="runScalarPtBlock">
+            <div><span class="kv">mae</span> <span id="mae">-</span></div>
+            <div><span class="kv">mse</span> <span id="mse">-</span></div>
+          </div>
+          <div id="compareMetricsBlock" class="compareMetricsBlock" hidden>
+            <table class="compareScalarTable mono" aria-label="逐步：PT / TRT / 互差">
+              <thead>
+                <tr>
+                  <th scope="col"></th>
+                  <th scope="col">PT↔GT</th>
+                  <th scope="col">TRT↔GT</th>
+                  <th scope="col">PT−TRT</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">MAE</th>
+                  <td id="cmpMaePt">-</td>
+                  <td id="cmpMaeTrt">-</td>
+                  <td id="cmpMaePair">-</td>
+                </tr>
+                <tr>
+                  <th scope="row">MSE</th>
+                  <td id="cmpMsePt">-</td>
+                  <td id="cmpMseTrt">-</td>
+                  <td id="cmpMsePair">-</td>
+                </tr>
+                <tr>
+                  <th scope="row">infer_ms</th>
+                  <td id="cmpInferPt">-</td>
+                  <td id="cmpInferTrt">-</td>
+                  <td>—</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -131,6 +157,28 @@
       <div class="card span2 cardPrompt">
         <div class="cardTitle">Prompt（任务指令）</div>
         <div id="prompt" class="prompt promptCompact">—</div>
+      </div>
+
+      <div id="compareDimTableCard" class="card span4" hidden>
+        <div class="cardTitle">
+          按维累计对比
+          <span class="subInline">与「各动作维度」中 dims 选择一致；数值为截至当前 step 的流式累计</span>
+        </div>
+        <div class="compareDimTableWrap">
+          <table class="compareDimTable mono" id="compareDimTable" aria-label="按维累计 PT TRT">
+            <thead>
+              <tr>
+                <th scope="col">dim</th>
+                <th scope="col">PT mse%</th>
+                <th scope="col">PT p99</th>
+                <th scope="col">TRT mse%</th>
+                <th scope="col">TRT p99</th>
+                <th scope="col">PT−TRT mse</th>
+              </tr>
+            </thead>
+            <tbody id="compareDimTableBody"></tbody>
+          </table>
+        </div>
       </div>
 
       <div class="card span4">
