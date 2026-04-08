@@ -30,6 +30,22 @@
       </div>
     </div>
 
+    <div
+      id="inferLoadingBanner"
+      class="inferLoadingBanner"
+      hidden
+      role="status"
+      aria-live="polite"
+      aria-hidden="true"
+    >
+      <span class="inferLoadingBannerIcon" aria-hidden="true">⏳</span>
+      <div class="inferLoadingBannerBody">
+        <span class="inferLoadingBannerTitle">请稍候</span>
+        <span class="inferLoadingBannerSep" aria-hidden="true">·</span>
+        <span class="inferLoadingBannerSub" id="inferLoadingSub">连接后在此等候首次推理结果…</span>
+      </div>
+    </div>
+
     <div class="grid">
       <div class="card">
         <div class="cardTitle">Run</div>
@@ -41,6 +57,14 @@
           <div><span class="kv">global_index</span> <span id="globalIndex">-</span></div>
           <div><span class="kv">k_in_chunk</span> <span id="kInChunk">-</span></div>
           <div><span class="kv">infer_ms</span> <span id="inferMs">-</span></div>
+          <div>
+            <span class="kv" title="相邻两次 chunk 起点（每次 policy.infer）间隔估计">infer_hz</span>
+            <span id="inferHz">-</span>
+          </div>
+          <div>
+            <span class="kv" title="最近约 1s 内 step 消息速率（action_horizon 展开后的时间步流）">step_hz</span>
+            <span id="stepHz">-</span>
+          </div>
           <div><span class="kv">mae</span> <span id="mae">-</span></div>
           <div><span class="kv">mse</span> <span id="mse">-</span></div>
         </div>
@@ -74,15 +98,37 @@
 
       <div class="card span4">
         <div class="cardTitle">
+          误差曲线
+          <span class="subInline">MAE / MSE 随 global_index，与下方 window 同步滚动</span>
+        </div>
+        <div id="metricsChartsContainer" class="metricsChartsRow"></div>
+      </div>
+
+      <div class="card span4">
+        <div class="cardTitle">
           各动作维度
           <span class="subInline">每维单独子图（gt / pred）</span>
         </div>
         <div class="sub">
           <span class="kv">window</span>
           <input id="windowSize" class="input small" type="number" min="50" max="5000" value="120" />
+          <label class="chartsColsLabel">
+            <span class="kv">dim 列/行</span>
+            <select id="chartsCols" class="themeSelect chartsColsSelect" aria-label="各动作维度子图每行几列">
+              <option value="1">1</option>
+              <option value="2" selected>2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+            </select>
+          </label>
           <span class="kv">dims</span>
           <input id="dims" class="input dimsInput" value="0,1,2,3,4,5" />
           <button id="btnApplyDims" class="btn btn-secondary">Apply</button>
+          <button id="btnResetDisplay" class="btn btn-secondary" type="button" title="清空曲线、图像与进度显示（不断开 WebSocket）">
+            清空显示
+          </button>
         </div>
         <div id="chartsContainer" class="chartsContainer"></div>
       </div>

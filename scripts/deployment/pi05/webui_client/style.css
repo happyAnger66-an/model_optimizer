@@ -267,6 +267,25 @@ code {
 
 .chartsContainer {
   display: grid;
+  /* 默认 2 列；具体列数由 app.js applyChartsCols 写 inline grid-template-columns */
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  width: 100%;
+  align-items: start;
+}
+
+.chartsColsLabel {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.chartsColsSelect {
+  min-width: 4rem;
+}
+
+.metricsChartsRow {
+  display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 12px;
   width: 100%;
@@ -274,7 +293,11 @@ code {
 }
 
 @media (max-width: 900px) {
+  /* 窄屏强制单列，覆盖 inline 多列（避免挤爆） */
   .chartsContainer {
+    grid-template-columns: 1fr !important;
+  }
+  .metricsChartsRow {
     grid-template-columns: 1fr;
   }
 }
@@ -400,6 +423,65 @@ code {
   color: var(--muted);
   border-top: 1px solid var(--border);
   background: var(--footer-bg);
+}
+
+/* 连接后 ~ 首条 step 前：顶栏下内嵌条，不遮罩、不拦截操作 */
+.inferLoadingBanner {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin: 0 16px 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--progress-border);
+  background: var(--progress-bg);
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.inferLoadingBanner[hidden] {
+  display: none !important;
+}
+
+.inferLoadingBannerIcon {
+  font-size: 1.35rem;
+  line-height: 1;
+  flex-shrink: 0;
+  animation: inferHourglassNudge 1.4s ease-in-out infinite;
+}
+
+.inferLoadingBannerBody {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.45rem;
+  min-width: 0;
+}
+
+.inferLoadingBannerTitle {
+  font-weight: 700;
+  color: var(--card-title);
+}
+
+.inferLoadingBannerSep {
+  color: var(--muted);
+  user-select: none;
+}
+
+.inferLoadingBannerSub {
+  color: var(--muted);
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+@keyframes inferHourglassNudge {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-4deg);
+  }
+  50% {
+    transform: translateY(-4px) rotate(4deg);
+  }
 }
 
 @media (max-width: 1200px) {

@@ -7,6 +7,7 @@ from termcolor import colored
 
 import logging
 
+from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
 from model_optimizer.quantization.quantization_utils import quantize_model
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
@@ -20,6 +21,9 @@ class Vit(torch.nn.Module, Model):
         self.vision_tower = vision_tower
         self.device = self.vision_tower.device
         self.multi_modal_projector = multi_modal_projector
+
+    def get_calibrate_dataset(self, calib_data):
+        return open_pi05_calib_for_quantize(calib_data, component="pi05_vit")
 
     def forward(self, pixel_values):
         #        logger.info(f'Pi05Vit input: {pixel_values.shape}')

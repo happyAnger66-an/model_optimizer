@@ -73,9 +73,15 @@ def quantize_model(
         Args:
             model: Model to calibrate
         """
-        # Create progress bar for calibration
-        print(f"Calibrating model on {len(calib_dataloader)} samples...")
-        pbar = tqdm(calib_dataloader, desc="Calibrating", unit="num_samples")
+        try:
+            n = len(calib_dataloader)
+        except TypeError:
+            n = None
+        if n is not None:
+            print(f"Calibrating model on {n} samples...")
+        else:
+            print("Calibrating model (streaming calibration data, total unknown)...")
+        pbar = tqdm(calib_dataloader, total=n, desc="Calibrating", unit="num_samples")
 
         # Add extra necessary kwargs for Phi-4-Multimodal
         kwargs = {}
@@ -127,9 +133,15 @@ def quantize_draft_model(
         Args:
             draft_model: Model to calibrate
         """
-        # Create progress bar for calibration
-        print(f"Calibrating model on {len(calib_dataloader)} samples...")
-        pbar = tqdm(calib_dataloader, desc="Calibrating", unit="num_samples")
+        try:
+            n = len(calib_dataloader)
+        except TypeError:
+            n = None
+        if n is not None:
+            print(f"Calibrating model on {n} samples...")
+        else:
+            print("Calibrating model (streaming calibration data, total unknown)...")
+        pbar = tqdm(calib_dataloader, total=n, desc="Calibrating", unit="num_samples")
         assert base_model.device == draft_model.device, "Base model and draft model must be on the same device"
 
         for data in pbar:

@@ -17,6 +17,7 @@ from model_optimizer.quantization.quantization_utils import quantize_model
 from modelopt.onnx.quantization.qdq_utils import fp4qdq_to_2dq
 from model_optimizer.utils.utils import is_fp4_quantized, set_dynamic_quant, is_nvfp4_quantized
 from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
+from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,9 @@ class LLM(torch.nn.Module, Model):
         self.config = config
         self.model.config._attn_implementation = "eager"
 
+    def get_calibrate_dataset(self, calib_data):
+        return open_pi05_calib_for_quantize(calib_data, component="pi05_llm")
+
     def _wrap_past_key_values(self, input_keys, input_values):
         k_v_cache = DynamicCache()
         num_layers = input_keys.shape[0]
@@ -219,9 +223,15 @@ class LLM(torch.nn.Module, Model):
             Args:
                 model: Model to val
             """
-            # Create progress bar for val
-            print(f"Val model on {len(val_datas)} samples...")
-            pbar = tqdm(val_datas, desc="Val", unit="num_samples")
+            try:
+                n = len(val_datas)
+            except TypeError:
+                n = None
+            if n is not None:
+                print(f"Val model on {n} samples...")
+            else:
+                print("Val model (streaming calib data, total unknown)...")
+            pbar = tqdm(val_datas, total=n, desc="Val", unit="num_samples")
 
             for data in pbar:
                 if isinstance(data, dict):
