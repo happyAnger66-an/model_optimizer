@@ -18,6 +18,13 @@ if isinstance(_qc, dict):
         "*layers.17.mlp.gate_proj.weight_quantizer": {"enable": False},
         "*layers.17.mlp.up_proj.weight_quantizer": {"enable": False},
     }
+    for i in range(1, 17):
+        QUANT_CFG["quant_cfg"][f"*layers.{i}.mlp.down_proj.input_quantizer"] = {"enable": False}
+        QUANT_CFG["quant_cfg"][f"*layers.{i}.mlp.up_proj.input_quantizer"] = {"enable": False}
+        QUANT_CFG["quant_cfg"][f"*layers.{i}.mlp.gate_proj.input_quantizer"] = {"enable": False}
+        QUANT_CFG["quant_cfg"][f"*layers.{i}.mlp.down_proj.weight_quantizer"] = {"enable": False}
+        QUANT_CFG["quant_cfg"][f"*layers.{i}.mlp.gate_proj.weight_quantizer"] = {"enable": False}
+        QUANT_CFG["quant_cfg"][f"*layers.{i}.mlp.up_proj.weight_quantizer"] = {"enable": False}
 else:
     QUANT_CFG["quant_cfg"] = list(_qc) + [
         {"quantizer_name": _DISABLE_DOWN_PROJ_IN, "enable": False},
