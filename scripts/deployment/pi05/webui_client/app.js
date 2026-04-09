@@ -1299,18 +1299,9 @@ function pushPoint(event) {
   }
 
   const xArr = [...state.x];
-  const needTracesDim = dualPredMode() ? 3 : 2;
-  for (const d of state.dims) {
-    const id = chartDivId(d);
-    const gd = document.getElementById(id);
-    if (!gd) continue;
-    const gArr = state.gt.get(d);
-    const pArr = state.pred.get(d);
-    if (!gArr || !pArr) continue;
-    try {
-      if (!gd.data || gd.data.length < needTracesDim) {
+
   if (!isDimChartsFoldCollapsed()) {
-    const needTracesDim = compareMode ? 3 : 2;
+    const needTracesDim = dualPredMode() ? 3 : 2;
     for (const d of state.dims) {
       const id = chartDivId(d);
       const gd = document.getElementById(id);
@@ -1326,7 +1317,7 @@ function pushPoint(event) {
           continue;
         }
         const visDim = getDimTraceVisibility();
-        if (compareMode) {
+        if (dualPredMode()) {
           const tArr = state.pred_trt.get(d) || [];
           Plotly.restyle(gd, { x: [xArr, xArr, xArr], y: [[...gArr], [...pArr], [...tArr]] }, [0, 1, 2]);
           Plotly.restyle(gd, { visible: visDim });
@@ -1339,30 +1330,6 @@ function pushPoint(event) {
         chartLayouts.set(d, layout);
         Plotly.newPlot(gd, buildTracesForDim(d), layout, { displayModeBar: false, responsive: true });
       }
-      const visDim = getDimTraceVisibility();
-      if (dualPredMode()) {
-        const tArr = state.pred_trt.get(d) || [];
-        Plotly.restyle(gd, { x: [xArr, xArr, xArr], y: [[...gArr], [...pArr], [...tArr]] }, [0, 1, 2]);
-        Plotly.restyle(gd, { visible: visDim });
-      } else {
-        Plotly.restyle(gd, { x: [xArr, xArr], y: [[...gArr], [...pArr]] }, [0, 1]);
-        Plotly.restyle(gd, { visible: visDim });
-      }
-    } catch (e) {
-      const layout = chartLayouts.get(d) || buildPlotlyLayout();
-      chartLayouts.set(d, layout);
-      Plotly.newPlot(gd, buildTracesForDim(d), layout, { displayModeBar: false, responsive: true });
-    }
-  }
-
-  const needTracesMet = state.dims.length;
-  for (const def of METRIC_CHART_DEFS) {
-    const gd = document.getElementById(def.id);
-    if (!gd) continue;
-    const sk = def.seriesKey;
-    const yPayload = state.dims.map((d) => {
-      if (!dualPredMode()) {
-        const arr = sk === "mae" ? state.maePerDim.get(d) : state.msePerDim.get(d);
     }
   }
 
@@ -1373,7 +1340,7 @@ function pushPoint(event) {
       if (!gd) continue;
       const sk = def.seriesKey;
       const yPayload = state.dims.map((d) => {
-        if (!compareMode) {
+        if (!dualPredMode()) {
           const arr = sk === "mae" ? state.maePerDim.get(d) : state.msePerDim.get(d);
           return [...(arr || [])];
         }
