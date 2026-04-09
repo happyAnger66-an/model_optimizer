@@ -12,8 +12,11 @@ if isinstance(_qc, dict):
     QUANT_CFG["quant_cfg"] = {
         **_qc,
         _DISABLE_DOWN_PROJ_IN: {"enable": False},
-        # 若仍不理想，可再加权重量化：
-        # "*layers.17.mlp.down_proj.weight_quantizer": {"enable": False},
+        "*layers.17.mlp.up_proj.input_quantizer": {"enable": False},
+        "*layers.17.mlp.gate_proj.input_quantizer": {"enable": False},
+        "*layers.17.mlp.down_proj.weight_quantizer": {"enable": False},
+        "*layers.17.mlp.gate_proj.weight_quantizer": {"enable": False},
+        "*layers.17.mlp.up_proj.weight_quantizer": {"enable": False},
     }
 else:
     QUANT_CFG["quant_cfg"] = list(_qc) + [
