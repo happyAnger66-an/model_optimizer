@@ -21,6 +21,7 @@ def unwrap_pytorch_pi05_model(policy: Any) -> Any | None:
 
 def start_pi05_calib_collectors(policy: Any, save_dir: Path) -> list[Any]:
     from model_optimizer.calibrate.collector.pi05 import (
+        Pi05DenoiseCalibCollector,
         Pi05ExpertCalibCollector,
         Pi05LLMCalibCollector,
         Pi05VitCalibCollector,
@@ -34,6 +35,7 @@ def start_pi05_calib_collectors(policy: Any, save_dir: Path) -> list[Any]:
         Pi05LLMCalibCollector(torch_model, save_str),
         Pi05ExpertCalibCollector(torch_model, save_str),
         Pi05VitCalibCollector(torch_model, save_str),
+        Pi05DenoiseCalibCollector(torch_model, save_str),
     ]
     print(colored(f"[infer] Pi0.5 calib 收集已启用 → {save_str}", "green"), flush=True)
     return collectors

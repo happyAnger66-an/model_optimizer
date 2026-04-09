@@ -105,6 +105,8 @@ def build_engine(
     plugin_lib_paths: Sequence[str] | None = None,
     init_builtin_trt_plugins: bool = True,
     strongly_typed_network: bool = False,
+    debug_output_tensors: Sequence[str] | None = None,
+    debug_dump_tensor_names: bool = False,
 ):
     """
     Build TensorRT engine from ONNX model.
@@ -215,6 +217,68 @@ def build_engine(
         out = network.get_output(i)
         logger.info(f"  Output {i}: {out.name} {out.shape}")
         print(colored(f"  Output {i}: {out.name} {out.shape}", print_color))
+
+    def _iter_all_tensors():
+        # Iterate tensors reachable from layers (best-effort; TRT Python API lacks a global tensor registry)
+        for li in range(network.num_layers):
+            layer = network.get_layer(li)
+            # inputs
+            for j in range(layer.num_inputs):
+                t = layer.get_input(j)
+                if t is not None:
+                    yield t
+            # outputs
+            for j in range(layer.num_outputs):
+                t = layer.get_output(j)
+                if t is not None:
+                    yield t
+
+    def _find_tensor_by_name(name: str):
+        target = str(name)
+        for t in _iter_all_tensors():
+            try:
+                if t.name == target:
+                    return t
+            except Exception:
+                continue
+        return None
+
+    if debug_dump_tensor_names:
+        # Print a de-duplicated list to help user pick debug_output_tensors
+        seen = set()
+        names = []
+        for t in _iter_all_tensors():
+            try:
+                n = str(t.name)
+            except Exception:
+                continue
+            if not n or n in seen:
+                continue
+            seen.add(n)
+            names.append(n)
+        names.sort()
+        logger.info("All network tensor names (dedup, %d):", len(names))
+        for n in names:
+            logger.info("  %s", n)
+        print(colored(f"Dumped {len(names)} tensor names to log (debug_dump_tensor_names=True).", print_color))
+
+    if debug_output_tensors:
+        added = 0
+        for n in debug_output_tensors:
+            t = _find_tensor_by_name(n)
+            if t is None:
+                logger.warning("debug_output_tensors: tensor not found: %s", n)
+                continue
+            try:
+                network.mark_output(t)
+                added += 1
+                logger.info("Marked debug output tensor: %s", t.name)
+                print(colored(f"Marked debug output tensor: {t.name}", print_color))
+            except Exception as exc:
+                logger.warning("Failed to mark output %s: %s", n, exc)
+        if added:
+            logger.info("Network outputs after debug mark: %d", network.num_outputs)
+            print(colored(f"Network outputs after debug mark: {network.num_outputs}", print_color))
 
     # Create builder config
     logger.info("\n[Step 3/5] Configuring builder...")

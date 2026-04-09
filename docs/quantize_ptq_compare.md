@@ -16,22 +16,32 @@
 | 参数 | 含义                                                         |
 |------|--------------------------------------------------------------|
 | `--ptq-compare` | 开启双路 PyTorch（FP + PTQ）                                  |
+| `--ptq-trt-compare` | 开启双路：**PyTorch PTQ（fake quant）** vs **TensorRT engine**（PTQ−TRT 对比） |
 | `--ptq-quant-cfg` | ModelOpt 量化配置 JSON（可含顶层 `quant_mode`，会经 `normalize_quant_cfg` 处理） |
 | `--ptq-calib-dir` | 与 `open_pi05_calib_for_quantize` 一致：含 `pi05_vit` / `pi05_llm` / `pi05_expert` 的 manifest 或分片目录 |
 | `--ptq-parts` | 可多选：`vit`、`llm`、`expert`（tyro：`--ptq-parts llm expert`） |
 | `--ptq-layer-report-path` | 可选：分层 JSON 报告输出路径                                |
-| `--ptq-layer-report-samples` | layer report 使用 `[start_index, start_index+N)` 的连续帧，默认 32 |
+| `--ptq-layer-report-samples` | layer report 使用 `[start_index, start_index+N)` 连续帧，默认 32 |
+| `--ptq-layer-report-histogram` | 报告每层附带 FP 激活 subsample 直方图（默认开启；`--no-ptq-layer-report-histogram` 可关以减小 JSON/meta） |
+| `--ptq-layer-report-hist-bins` | 直方图 bin 数，默认 40 |
+| `--ptq-layer-report-hist-max-elems` | 每层每次 forward 参与直方图的最大元素数，默认 100000 |
 
 约束：
 
 - 必须 **`--inference-mode pytorch`**。
 - **`--ptq-parts` 非空**；`--ptq-quant-cfg` 为存在的文件；`--ptq-calib-dir` 为存在的目录。
+- `--ptq-trt-compare` 需要额外提供 TensorRT 引擎参数：`--engine-path` 与各 `--{vit,llm,expert,...}_engine`（与 `--compare-mode` 相同）。
 
 ## 管线行为
 
 1. **bundle 加载**（`bundle.load_infer_bundle`）：创建 `policy`（浮点），再创建 `policy_ptq`，按 `ptq_parts` 调用 `ptq_compare.apply_selective_ptq`（内部对 `Vit`/`LLM`/`Expert` 包装调用 `quantize_model` + `set_dynamic_quant(..., "fp16")`，**不导出 ONNX**）。
-2. **可选 layer report**：在得到 `dataset` 与 `repack_fn` 后，调用 `write_ptq_layer_report`，对每条样本先后 `policy.infer` 与 `policy_ptq.infer`（带 hook），JSON 写入 `ptq_layer_report_path`；并在 meta 中带上该路径（若配置）。
+2. **可选 layer report**：在得到 `dataset` 与 `repack_fn` 后，调用 `write_ptq_layer_report`，对每条样本先后 `policy.infer` 与 `policy_ptq.infer`（带 hook），JSON 写入 `ptq_layer_report_path`；并在 meta 中带上该路径（若配置）。报告每层可含 **`fp_activation_histogram`**：`bin_edges`/`counts`、`underflow`/`overflow`（落在首帧按 0.1%–99.9% 分位确定的边界外）、以及 subsample 上的 **min/max/mean/std**；WebUI 中点击带直方图的表行可查看条形图。
 3. **chunk 推理**（`chunk_infer.process_infer_chunk`）：与 TRT 对比类似，对同 obs 双路 `infer`，step JSON 中增加 `pred_action_ptq` 与 `mse_ptq` / `mae_pt_ptq` 等字段；累计 `running_*_ptq` 统计供前端按维表使用。
+
+### ptq_trt_compare（PTQ vs TRT）管线差异
+
+- **两路**：pred1 为 *同一份 PyTorch policy 就地应用 PTQ（fake quant）*；pred2 为 *另一份 policy 挂载 TensorRT engine*。
+- **指标**：meta 中会携带 `pred1_name=PTQ`、`pred2_name=TRT`、`pair_name=PTQ−TRT`，前端会据此把 `pred_pt/pred_trt` 标签替换为 `pred_ptq/pred_trt` 并显示 `PTQ−TRT`。
 
 ## WebSocket / 前端
 
