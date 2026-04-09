@@ -11,6 +11,21 @@ import torch
 
 MANIFEST_FORMAT = "pi05_calib_shards_v1"
 
+def _torch_load_compat(path: Path) -> Any:
+    """兼容 PyTorch 2.6+ torch.load(weights_only=True 默认)。
+
+    我们的 calib shard 是 `torch.save(list[dict[str, Tensor]])`，不属于纯 state_dict 权重文件，
+    因此在 PyTorch 2.6+ 需要显式 `weights_only=False` 才能正常反序列化。
+    """
+    try:
+        return torch.load(path, map_location="cpu")
+    except Exception as exc:
+        msg = str(exc)
+        if "weights_only" in msg or "Weights only load failed" in msg:
+            # 仅对本地生成的 calib 数据回退；这会允许 pickle 执行，请确保文件来源可信。
+            return torch.load(path, map_location="cpu", weights_only=False)
+        raise
+
 
 class Pi05CalibShardIterable:
     """按分片依次 torch.load，每次只在内存中保留当前分片。"""
@@ -31,7 +46,7 @@ class Pi05CalibShardIterable:
 
     def __iter__(self) -> Iterator[Any]:
         for path in self._shard_paths:
-            chunk = torch.load(path, map_location="cpu")
+            chunk = _torch_load_compat(path)
             if not isinstance(chunk, list):
                 chunk = list(chunk)
             try:
@@ -79,7 +94,7 @@ def open_pi05_calib_for_quantize(calib_data: str | os.PathLike[str], *, componen
     component = str(component)
 
     if p.is_file():
-        data = torch.load(p, map_location="cpu")
+        data = _torch_load_compat(p)
         if not isinstance(data, list):
             data = list(data)
         return data
@@ -100,7 +115,7 @@ def open_pi05_calib_for_quantize(calib_data: str | os.PathLike[str], *, componen
 
     merged = p / f"{component}_calib_datas.pt"
     if merged.is_file():
-        data = torch.load(merged, map_location="cpu")
+        data = _torch_load_compat(merged)
         if not isinstance(data, list):
             data = list(data)
         return data

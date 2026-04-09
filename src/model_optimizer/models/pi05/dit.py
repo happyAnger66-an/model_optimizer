@@ -14,6 +14,7 @@ from termcolor import colored
 from transformers.cache_utils import DynamicCache
 
 from ..model import Model
+from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
 from model_optimizer.quantization.quantization_utils import quantize_model
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
@@ -112,6 +113,10 @@ class Pi05DenoiseStep(nn.Module, Model):
     def model(self):
         """与 Expert 一致，供 Model 基类 NVFP4 等路径使用。"""
         return self.gemma_expert
+
+    def get_calibrate_dataset(self, calib_data):
+        # 与 LLM/Vit/Expert 一致：支持 manifest+shards（低内存）与旧 merged .pt
+        return open_pi05_calib_for_quantize(calib_data, component="pi05_denoise")
 
     def val(self, val_data, batch_size, output_dir):
         raise NotImplementedError(

@@ -23,8 +23,14 @@ class Model:
         raise NotImplementedError
 
     def get_calibrate_dataset(self, calib_data_file):
-        datas = torch.load(calib_data_file)
-        return datas
+        # 兼容 PyTorch 2.6+ torch.load(weights_only=True 默认) 与我们自定义的 calib 数据格式
+        try:
+            return torch.load(calib_data_file, map_location="cpu")
+        except Exception as exc:
+            msg = str(exc)
+            if "weights_only" in msg or "Weights only load failed" in msg:
+                return torch.load(calib_data_file, map_location="cpu", weights_only=False)
+            raise
 
     def load(self, config):
         raise NotImplementedError
