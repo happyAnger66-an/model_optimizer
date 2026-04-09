@@ -184,6 +184,9 @@ def load_infer_bundle(
             start_index=int(args.start_index),
             num_samples=int(args.ptq_layer_report_samples),
             report_path=ptq_layer_report_path_resolved,
+            include_activation_histogram=bool(args.ptq_layer_report_histogram),
+            hist_bins=int(args.ptq_layer_report_hist_bins),
+            hist_max_elems=int(args.ptq_layer_report_hist_max_elems),
         )
         try:
             with open(ptq_layer_report_path_resolved, encoding="utf-8") as rf:

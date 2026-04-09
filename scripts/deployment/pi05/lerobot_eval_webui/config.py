@@ -33,6 +33,12 @@ class Args:
     """可选：将各 QuantLinear 输出相对 FP 的误差写入该 JSON 路径。"""
     ptq_layer_report_samples: int = 32
     """layer report 使用的连续样本数（自 start_index 起）。"""
+    ptq_layer_report_histogram: bool = True
+    """layer report 是否附带各层 FP 激活 subsample 直方图（JSON 变大，便于看长尾/异常）。"""
+    ptq_layer_report_hist_bins: int = 40
+    """直方图 bin 数（线性分箱）。"""
+    ptq_layer_report_hist_max_elems: int = 100_000
+    """每层每次 forward 参与直方图与统计的最多元素数（降内存/耗时）。"""
 
     precision: Literal["fp16", "bf16", "fp32"] = "bf16"
     engine_path: str = ""

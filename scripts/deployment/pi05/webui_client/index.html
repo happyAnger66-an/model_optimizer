@@ -216,9 +216,16 @@
           />
           <span id="ptqLayerReportFilterHint" class="sub muted ptqLayerReportFilterHint"></span>
         </div>
+        <div id="ptqHistClickHint" class="sub muted ptqHistClickHint" hidden>
+          点击表行查看该层 FP 激活 subsample 直方图；两侧 under/overflow 为分箱边界外的样本数（便于看长尾）。
+        </div>
         <div id="ptqLayerReportHeatRow" class="ptqLayerReportHeatRow" hidden aria-hidden="true"></div>
         <div class="ptqLayerReportWrap">
-          <table class="compareDimTable mono ptqLayerReportTable" aria-label="PTQ 分层误差">
+          <table
+            id="ptqLayerReportTable"
+            class="compareDimTable mono ptqLayerReportTable"
+            aria-label="PTQ 分层误差"
+          >
             <thead>
               <tr>
                 <th scope="col">模块</th>
@@ -230,6 +237,14 @@
             </thead>
             <tbody id="ptqLayerReportBody"></tbody>
           </table>
+        </div>
+        <div id="ptqLayerReportHistPanel" class="ptqLayerReportHistPanel" hidden>
+          <div class="sub ptqHistTitle">
+            <span class="kv">FP 激活直方图</span>
+            <span id="ptqHistModule" class="ptqHistModule mono"></span>
+          </div>
+          <div id="ptqHistBars" class="ptqHistBars" aria-label="直方图条"></div>
+          <div id="ptqHistStats" class="sub muted ptqHistStats"></div>
         </div>
       </div>
 

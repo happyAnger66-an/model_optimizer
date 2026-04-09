@@ -21,6 +21,8 @@ let latestDimMsePtTrtDimMean = null; // number[] | null，各维累计 mean((pt-
 
 /** PTQ 分层报告：完整 layers，供模块名子串过滤 */
 let ptqLayerReportLayersAll = null;
+/** 当前选中的、用于展示 FP 直方图的模块名 */
+let ptqLayerReportSelectedModule = null;
 
 /** 非用户主动断开时，每 RECONNECT_MS 自动重连一次 */
 const RECONNECT_MS = 3000;
@@ -195,6 +197,7 @@ function fmtPtqLayerMetric(x) {
 
 function resetPtqLayerReportDom() {
   ptqLayerReportLayersAll = null;
+  ptqLayerReportSelectedModule = null;
   const sumEl = el("ptqLayerReportSummary");
   const noteEl = el("ptqLayerReportNote");
   const body = el("ptqLayerReportBody");
@@ -216,6 +219,18 @@ function resetPtqLayerReportDom() {
     heatRow.hidden = true;
     heatRow.setAttribute("aria-hidden", "true");
   }
+  const hhint = el("ptqHistClickHint");
+  if (hhint) hhint.hidden = true;
+  const hp = el("ptqLayerReportHistPanel");
+  if (hp) {
+    hp.hidden = true;
+    const bars = el("ptqHistBars");
+    if (bars) bars.innerHTML = "";
+    const st = el("ptqHistStats");
+    if (st) st.textContent = "";
+    const hm = el("ptqHistModule");
+    if (hm) hm.textContent = "";
+  }
 }
 
 /** 模块路径包含输入子串即保留（区分大小写，与 Excel「包含」一致） */
@@ -225,6 +240,87 @@ function filterPtqLayersByModuleSubstring(layers, rawQ) {
   return layers.filter((r) => {
     const mod = typeof r.module === "string" ? r.module : "";
     return mod.includes(q);
+  });
+}
+
+function findPtqLayerByModule(mod) {
+  if (!mod || !Array.isArray(ptqLayerReportLayersAll)) return null;
+  return ptqLayerReportLayersAll.find((x) => x.module === mod) ?? null;
+}
+
+function setPtqReportRowSelection(tr) {
+  const body = el("ptqLayerReportBody");
+  if (body) {
+    for (const r of body.querySelectorAll("tr.ptqRowSelected")) {
+      r.classList.remove("ptqRowSelected");
+    }
+  }
+  if (tr) tr.classList.add("ptqRowSelected");
+}
+
+function renderPtqHistPanel(layer) {
+  const panel = el("ptqLayerReportHistPanel");
+  const title = el("ptqHistModule");
+  const bars = el("ptqHistBars");
+  const statsEl = el("ptqHistStats");
+  if (!panel || !bars) return;
+  if (!layer || !layer.fp_activation_histogram) {
+    panel.hidden = true;
+    if (statsEl) statsEl.textContent = "";
+    return;
+  }
+  panel.hidden = false;
+  const h = layer.fp_activation_histogram;
+  if (title) title.textContent = layer.module || "—";
+  const counts = h.counts;
+  const edges = h.bin_edges;
+  if (!Array.isArray(counts) || !Array.isArray(edges) || counts.length + 1 !== edges.length) {
+    bars.innerHTML = "";
+    const d = document.createElement("div");
+    d.className = "sub muted";
+    d.textContent = "直方图字段不完整";
+    bars.appendChild(d);
+    if (statsEl) statsEl.textContent = "";
+    return;
+  }
+  const maxC = Math.max(...counts.map((c) => Number(c) || 0), 1);
+  bars.innerHTML = "";
+  for (let i = 0; i < counts.length; i++) {
+    const c = Number(counts[i]) || 0;
+    const d = document.createElement("div");
+    d.className = "ptqHistBar";
+    d.style.height = `${(c / maxC) * 100}%`;
+    d.title = `[${edges[i]}, ${edges[i + 1]}): ${c}`;
+    bars.appendChild(d);
+  }
+  const st = h.stats || {};
+  const uf = h.underflow ?? 0;
+  const of = h.overflow ?? 0;
+  if (statsEl) {
+    statsEl.textContent =
+      `under=${uf} · over=${of} · n≈${st.n ?? "?"} · min=${fmtPtqLayerMetric(st.min)} · max=${fmtPtqLayerMetric(st.max)} · mean=${fmtPtqLayerMetric(st.mean)} · std=${fmtPtqLayerMetric(st.std)}`;
+  }
+}
+
+function ensurePtqReportBodyClickDelegate() {
+  const tb = el("ptqLayerReportBody");
+  if (!tb || tb.dataset.ptqHistDel === "1") return;
+  tb.dataset.ptqHistDel = "1";
+  tb.addEventListener("click", (ev) => {
+    const tr = ev.target.closest("tr");
+    if (!tr || !tb.contains(tr) || !tr.classList.contains("ptqRowHasHist")) return;
+    const mod = tr.dataset.module || "";
+    if (!mod) return;
+    if (ptqLayerReportSelectedModule === mod) {
+      ptqLayerReportSelectedModule = null;
+      setPtqReportRowSelection(null);
+      const panel = el("ptqLayerReportHistPanel");
+      if (panel) panel.hidden = true;
+      return;
+    }
+    ptqLayerReportSelectedModule = mod;
+    setPtqReportRowSelection(tr);
+    renderPtqHistPanel(findPtqLayerByModule(mod));
   });
 }
 
@@ -303,6 +399,10 @@ function renderPtqLayerReportHeatAndTable(layers) {
   for (const r of layers) {
     const tr = document.createElement("tr");
     const mod = typeof r.module === "string" ? r.module : "—";
+    tr.dataset.module = mod;
+    if (r.fp_activation_histogram) {
+      tr.classList.add("ptqRowHasHist");
+    }
     const tdM = document.createElement("td");
     tdM.textContent = mod.length > 52 ? `${mod.slice(0, 50)}…` : mod;
     tdM.title = mod;
@@ -318,6 +418,23 @@ function renderPtqLayerReportHeatAndTable(layers) {
       typeof sn === "number" && Number.isFinite(sn) ? String(Math.round(sn)) : "—";
     tr.appendChild(tdS);
     body.appendChild(tr);
+  }
+
+  if (ptqLayerReportSelectedModule) {
+    const stillHere = layers.some((r) => r.module === ptqLayerReportSelectedModule);
+    if (!stillHere) {
+      ptqLayerReportSelectedModule = null;
+      const p = el("ptqLayerReportHistPanel");
+      if (p) p.hidden = true;
+    } else {
+      for (const tr of body.querySelectorAll("tr")) {
+        if (tr.dataset.module === ptqLayerReportSelectedModule) {
+          setPtqReportRowSelection(tr);
+          renderPtqHistPanel(findPtqLayerByModule(ptqLayerReportSelectedModule));
+          break;
+        }
+      }
+    }
   }
 }
 
@@ -373,7 +490,13 @@ function renderPtqLayerReportFromMeta(m) {
   if (filterInp) filterInp.value = "";
   if (filterRow) filterRow.hidden = layers.length === 0;
 
+  const hhint = el("ptqHistClickHint");
+  if (hhint) {
+    hhint.hidden = !layers.some((r) => r.fp_activation_histogram);
+  }
+
   renderPtqLayerReportHeatAndTable(layers);
+  ensurePtqReportBodyClickDelegate();
 }
 
 function syncPtqLayerReportCard() {
@@ -1911,6 +2034,7 @@ async function setup() {
   if (ptqFilt) {
     ptqFilt.addEventListener("input", () => refreshPtqLayerReportFilteredTable());
   }
+  ensurePtqReportBodyClickDelegate();
   el("btnDownloadStats").addEventListener("click", () => downloadDimStatsCsv());
 
   el("chartsCols").addEventListener("change", () => applyChartsCols());
