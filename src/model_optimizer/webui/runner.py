@@ -295,7 +295,7 @@ class Runner:
         yield from self.cmd_runner.run()
 
     def monitor(self, finalize=True):
-        r"""Monitorgit the training progress and logs."""
+        r"""Monitor the running progress and logs."""
         self.aborted = False
         self.running = True
 

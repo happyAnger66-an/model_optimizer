@@ -1,4 +1,4 @@
-# Copyright 2025 Optuna, HuggingFace Inc. and the LlamaFactory team.
+# Copyright 2025 Optuna, HuggingFace Inc. and the model_optimizer team.
 #
 # This code is inspired by the HuggingFace's transformers library.
 # https://github.com/huggingface/transformers/blob/v4.40.0/src/transformers/utils/logging.py
@@ -32,7 +32,7 @@ _default_log_level: "logging._Level" = logging.INFO
 
 
 class LoggerHandler(logging.Handler):
-    r"""Redirect the logging output to the logging file for LLaMA Board."""
+    r"""Redirect the logging output to the logging file for Model Optimizer WebUI."""
 
     def __init__(self, output_dir: str) -> None:
         super().__init__()
@@ -79,7 +79,7 @@ class _Logger(logging.Logger):
 
 def _get_default_logging_level() -> "logging._Level":
     r"""Return the default logging level."""
-    env_level_str = os.getenv("LLAMAFACTORY_VERBOSITY", None)
+    env_level_str = os.getenv("MODEL_OPTIMIZER_VERBOSITY", None)
     if env_level_str:
         if env_level_str.upper() in logging._nameToLevel:
             return logging._nameToLevel[env_level_str.upper()]

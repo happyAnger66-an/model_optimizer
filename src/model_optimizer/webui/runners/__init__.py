@@ -64,7 +64,7 @@ class CommandRunner:
     
     def monitor(self, finalize=True):
         print('monitor')
-        r"""Monitorgit the training progress and logs."""
+        r"""Monitor the running progress and logs."""
         self.aborted = False
         self.running = True
 

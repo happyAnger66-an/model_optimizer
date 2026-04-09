@@ -258,7 +258,7 @@ class LLM(torch.nn.Module, Model):
         calib_dataloader = self.get_calibrate_dataset(calib_data)
         quantize_model(self, quant_cfg, calib_dataloader)
         self.is_quantized = True
-        set_dynamic_quant(self, "fp16")
+        set_dynamic_quant(self, "bf16")
 
         self.export(export_dir, dynamo=False)
         onnx_path = f"{export_dir}/llm.onnx"

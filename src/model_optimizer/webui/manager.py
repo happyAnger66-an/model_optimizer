@@ -1,4 +1,4 @@
-# Copyright 2025 the LlamaFactory team.
+# Copyright 2025 the model_optimizer team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ class Manager:
     def get_elem_by_id(self, elem_id: str) -> "Component":
         r"""Get element by id.
 
-        Example: top.lang, train.dataset
+        Example: top.lang, quantize.export_dir
         """
 #        print(f'ei: {elem_id}: {self._id_to_elem}')
         return self._id_to_elem[elem_id]

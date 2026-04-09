@@ -11,8 +11,8 @@ from yaml import safe_dump, safe_load
 from .extras import logging
 
 DEFAULT_DATA_DIR = "data"
-DEFAULT_CACHE_DIR = "llamaboard_cache"
-DEFAULT_CONFIG_DIR = "llamaboard_config"
+DEFAULT_CACHE_DIR = "model_optimizer_cache"
+DEFAULT_CONFIG_DIR = "model_optimizer_config"
 DEFAULT_SAVE_DIR = "saves"
 USER_CONFIG = "user_config.yaml"
 
@@ -76,14 +76,7 @@ def get_save_dir(*paths: str) -> os.PathLike:
 
 def _clean_cmd(args: dict[str, Any]) -> dict[str, Any]:
     r"""Remove args with NoneType or False or empty string value."""
-    no_skip_keys = [
-        "packing",
-        "enable_thinking",
-        "use_reentrant_gc",
-        "double_quantization",
-        "freeze_vision_tower",
-        "freeze_multi_modal_projector",
-    ]
+    no_skip_keys: list[str] = []
     return {k: v for k, v in args.items() if (k in no_skip_keys) or (v is not None and v is not False and v != "")}
 
 def save_cmd(args: dict[str, Any]) -> str:

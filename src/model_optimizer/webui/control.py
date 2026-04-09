@@ -42,14 +42,14 @@ def get_running_info(lang: str, output_path: os.PathLike) -> tuple[str, "gr.Slid
 
 
 def get_quantize_info(lang: str, output_path: os.PathLike, do_quantize: bool) -> tuple[str, "gr.Slider", dict[str, Any]]:
-    r"""Get training infomation for monitor.
+    r"""Get quantize/eval information for monitor.
 
     If do_quantize is True:
-        Inputs: top.lang, train.output_path
-        Outputs: train.output_box, train.progress_bar, train.loss_viewer, train.swanlab_link
+        Inputs: top.lang, quantize.output_path
+        Outputs: quantize.output_box, quantize.progress_bar
     If do_quantize is False:
         Inputs: top.lang, eval.output_path
-        Outputs: eval.output_box, eval.progress_bar, None, None
+        Outputs: eval.output_box, eval.progress_bar
     """
     running_log = ""
     running_progress = gr.Slider(visible=False)
