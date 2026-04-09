@@ -26,6 +26,9 @@ let wsConnectGeneration = 0;
 
 const THEME_STORAGE_KEY = "pi05_webui_theme";
 const CHARTS_COLS_STORAGE_KEY = "pi05_webui_charts_cols";
+/** 折叠误差曲线 / 各 dim 子图（1=折叠），减少 Plotly 每步重绘 */
+const FOLD_METRICS_STORAGE_KEY = "pi05_webui_fold_metrics";
+const FOLD_DIM_CHARTS_STORAGE_KEY = "pi05_webui_fold_dim_charts";
 const DEFAULT_WS_FALLBACK = "ws://127.0.0.1:8765/ws";
 
 const PLOTLY_THEME = {
@@ -317,7 +320,10 @@ function buildPlotlyLayout() {
   };
 }
 
-function refreshChartsTheme() {
+function refreshDimChartsTheme() {
+  if (isDimChartsFoldCollapsed()) {
+    return;
+  }
   for (const d of state.dims) {
     const id = chartDivId(d);
     const div = document.getElementById(id);
@@ -331,10 +337,12 @@ function refreshChartsTheme() {
     chartLayouts.set(d, layout);
     Plotly.newPlot(div, buildTracesForDim(d), layout, { displayModeBar: false, responsive: true });
   }
-  refreshMetricsChartsTheme();
 }
 
 function refreshMetricsChartsTheme() {
+  if (isMetricsFoldCollapsed()) {
+    return;
+  }
   for (const def of METRIC_CHART_DEFS) {
     const div = document.getElementById(def.id);
     if (!div) continue;
@@ -348,6 +356,11 @@ function refreshMetricsChartsTheme() {
     const traces = buildMetricTracesFromState(def);
     Plotly.newPlot(div, traces, layout, { displayModeBar: false, responsive: true });
   }
+}
+
+function refreshChartsTheme() {
+  refreshDimChartsTheme();
+  refreshMetricsChartsTheme();
 }
 
 function applyTheme(mode) {
@@ -671,6 +684,69 @@ function chartDivId(d) {
   return `chart-dim-${d}`;
 }
 
+function isMetricsFoldCollapsed() {
+  const b = el("metricsFoldBody");
+  return !!(b && b.hidden);
+}
+
+function isDimChartsFoldCollapsed() {
+  const b = el("dimChartsFoldBody");
+  return !!(b && b.hidden);
+}
+
+function setFoldUi(section, collapsed) {
+  const isMetrics = section === "metrics";
+  const btn = el(isMetrics ? "btnFoldMetrics" : "btnFoldDimCharts");
+  const body = el(isMetrics ? "metricsFoldBody" : "dimChartsFoldBody");
+  if (!btn || !body) return;
+  body.hidden = !!collapsed;
+  btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  btn.textContent = collapsed ? "►" : "▼";
+  try {
+    localStorage.setItem(isMetrics ? FOLD_METRICS_STORAGE_KEY : FOLD_DIM_CHARTS_STORAGE_KEY, collapsed ? "1" : "0");
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function loadFoldPreference(key) {
+  try {
+    const v = localStorage.getItem(key);
+    return v === "1";
+  } catch (e) {
+    return false;
+  }
+}
+
+function applyFoldPreferencesFromStorage() {
+  setFoldUi("metrics", loadFoldPreference(FOLD_METRICS_STORAGE_KEY));
+  setFoldUi("dim", loadFoldPreference(FOLD_DIM_CHARTS_STORAGE_KEY));
+}
+
+function purgeMetricsPlotDivsOnly() {
+  for (const def of METRIC_CHART_DEFS) {
+    const div = document.getElementById(def.id);
+    if (!div) continue;
+    try {
+      Plotly.purge(div);
+    } catch (e) {
+      /* ignore */
+    }
+  }
+}
+
+function purgeDimPlotDivsOnly() {
+  for (const d of state.dims) {
+    const div = document.getElementById(chartDivId(d));
+    if (!div) continue;
+    try {
+      Plotly.purge(div);
+    } catch (e) {
+      /* ignore */
+    }
+  }
+}
+
 /** 与各 dim 子图 trace 顺序一致：gt、pred_pt、[pred_trt] */
 function getDimTraceVisibility() {
   const gt = el("dimShowGt")?.checked !== false;
@@ -834,6 +910,10 @@ function emptyMetricTraces(def) {
 }
 
 function purgeAndNewPlotMetricsChartsSync() {
+  if (isMetricsFoldCollapsed()) {
+    purgeMetricsPlotDivsOnly();
+    return;
+  }
   for (const def of METRIC_CHART_DEFS) {
     const div = document.getElementById(def.id);
     if (!div) continue;
@@ -848,7 +928,11 @@ function purgeAndNewPlotMetricsChartsSync() {
   }
 }
 
-function purgeAndNewPlotAllChartsSync() {
+function purgeAndNewPlotDimChartsSync() {
+  if (isDimChartsFoldCollapsed()) {
+    purgeDimPlotDivsOnly();
+    return;
+  }
   for (const d of state.dims) {
     const id = chartDivId(d);
     const div = document.getElementById(id);
@@ -863,6 +947,10 @@ function purgeAndNewPlotAllChartsSync() {
     chartLayouts.set(d, layout);
     Plotly.newPlot(div, traces, layout, { displayModeBar: false, responsive: true });
   }
+}
+
+function purgeAndNewPlotAllChartsSync() {
+  purgeAndNewPlotDimChartsSync();
   purgeAndNewPlotMetricsChartsSync();
 }
 
@@ -933,10 +1021,14 @@ async function initMetricsChartsInContainer() {
     metricsLayouts.set(def.id, layout);
     jobs.push([def.id, emptyMetricTraces(def), layout]);
   }
-  await raf();
-  for (const [id, traces, layout] of jobs) {
-    Plotly.newPlot(id, traces, layout, { displayModeBar: false, responsive: true });
+  if (!isMetricsFoldCollapsed()) {
     await raf();
+    for (const [id, traces, layout] of jobs) {
+      Plotly.newPlot(id, traces, layout, { displayModeBar: false, responsive: true });
+      await raf();
+    }
+  } else {
+    purgeMetricsPlotDivsOnly();
   }
   updateMetricChartWrapTitles();
 }
@@ -970,10 +1062,14 @@ async function initChart() {
     jobs.push([chartDivId(d), traces, layout]);
   }
 
-  await raf();
-  for (const [id, traces, layout] of jobs) {
-    Plotly.newPlot(id, traces, layout, { displayModeBar: false, responsive: true });
+  if (!isDimChartsFoldCollapsed()) {
     await raf();
+    for (const [id, traces, layout] of jobs) {
+      Plotly.newPlot(id, traces, layout, { displayModeBar: false, responsive: true });
+      await raf();
+    }
+  } else {
+    purgeDimPlotDivsOnly();
   }
   setDimTraceToggleUi();
   renderMetricDimToggles();
@@ -1213,10 +1309,35 @@ function pushPoint(event) {
     if (!gArr || !pArr) continue;
     try {
       if (!gd.data || gd.data.length < needTracesDim) {
+  if (!isDimChartsFoldCollapsed()) {
+    const needTracesDim = compareMode ? 3 : 2;
+    for (const d of state.dims) {
+      const id = chartDivId(d);
+      const gd = document.getElementById(id);
+      if (!gd) continue;
+      const gArr = state.gt.get(d);
+      const pArr = state.pred.get(d);
+      if (!gArr || !pArr) continue;
+      try {
+        if (!gd.data || gd.data.length < needTracesDim) {
+          const layout = chartLayouts.get(d) || buildPlotlyLayout();
+          chartLayouts.set(d, layout);
+          Plotly.newPlot(gd, buildTracesForDim(d), layout, { displayModeBar: false, responsive: true });
+          continue;
+        }
+        const visDim = getDimTraceVisibility();
+        if (compareMode) {
+          const tArr = state.pred_trt.get(d) || [];
+          Plotly.restyle(gd, { x: [xArr, xArr, xArr], y: [[...gArr], [...pArr], [...tArr]] }, [0, 1, 2]);
+          Plotly.restyle(gd, { visible: visDim });
+        } else {
+          Plotly.restyle(gd, { x: [xArr, xArr], y: [[...gArr], [...pArr]] }, [0, 1]);
+          Plotly.restyle(gd, { visible: visDim });
+        }
+      } catch (e) {
         const layout = chartLayouts.get(d) || buildPlotlyLayout();
         chartLayouts.set(d, layout);
         Plotly.newPlot(gd, buildTracesForDim(d), layout, { displayModeBar: false, responsive: true });
-        continue;
       }
       const visDim = getDimTraceVisibility();
       if (dualPredMode()) {
@@ -1242,26 +1363,39 @@ function pushPoint(event) {
     const yPayload = state.dims.map((d) => {
       if (!dualPredMode()) {
         const arr = sk === "mae" ? state.maePerDim.get(d) : state.msePerDim.get(d);
+    }
+  }
+
+  if (!isMetricsFoldCollapsed()) {
+    const needTracesMet = state.dims.length;
+    for (const def of METRIC_CHART_DEFS) {
+      const gd = document.getElementById(def.id);
+      if (!gd) continue;
+      const sk = def.seriesKey;
+      const yPayload = state.dims.map((d) => {
+        if (!compareMode) {
+          const arr = sk === "mae" ? state.maePerDim.get(d) : state.msePerDim.get(d);
+          return [...(arr || [])];
+        }
+        const arr = sk === "mae" ? state.maePtTrtPerDim.get(d) : state.msePtTrtPerDim.get(d);
         return [...(arr || [])];
-      }
-      const arr = sk === "mae" ? state.maePtTrtPerDim.get(d) : state.msePtTrtPerDim.get(d);
-      return [...(arr || [])];
-    });
-    const layoutFallback = () => metricsLayouts.get(def.id) || metricsChartLayout(def);
-    try {
-      if (!gd.data || gd.data.length !== needTracesMet) {
+      });
+      const layoutFallback = () => metricsLayouts.get(def.id) || metricsChartLayout(def);
+      try {
+        if (!gd.data || gd.data.length !== needTracesMet) {
+          const layout = layoutFallback();
+          metricsLayouts.set(def.id, layout);
+          Plotly.newPlot(gd, buildMetricTracesFromState(def), layout, { displayModeBar: false, responsive: true });
+          continue;
+        }
+        const xPay = state.dims.map(() => xArr);
+        Plotly.restyle(gd, { x: xPay, y: yPayload }, state.dims.map((_, i) => i));
+        Plotly.restyle(gd, { visible: getMetricDimVisibility() });
+      } catch (e) {
         const layout = layoutFallback();
         metricsLayouts.set(def.id, layout);
         Plotly.newPlot(gd, buildMetricTracesFromState(def), layout, { displayModeBar: false, responsive: true });
-        continue;
       }
-      const xPay = state.dims.map(() => xArr);
-      Plotly.restyle(gd, { x: xPay, y: yPayload }, state.dims.map((_, i) => i));
-      Plotly.restyle(gd, { visible: getMetricDimVisibility() });
-    } catch (e) {
-      const layout = layoutFallback();
-      metricsLayouts.set(def.id, layout);
-      Plotly.newPlot(gd, buildMetricTracesFromState(def), layout, { displayModeBar: false, responsive: true });
     }
   }
 }
@@ -1515,6 +1649,7 @@ async function applyDims() {
 async function setup() {
   setBadge(false);
   loadChartsColsPreference();
+  applyFoldPreferencesFromStorage();
   await initChart();
 
   el("btnConnect").addEventListener("click", () => connect());
@@ -1536,6 +1671,36 @@ async function setup() {
   for (const id of ["dimShowGt", "dimShowPredPt", "dimShowPredTrt"]) {
     const inp = el(id);
     if (inp) inp.addEventListener("change", () => restyleAllDimChartsVisibility());
+  }
+
+  {
+    const bm = el("btnFoldMetrics");
+    if (bm) {
+      bm.addEventListener("click", () => {
+        const collapsed = !isMetricsFoldCollapsed();
+        setFoldUi("metrics", collapsed);
+        if (collapsed) {
+          purgeMetricsPlotDivsOnly();
+        } else {
+          purgeAndNewPlotMetricsChartsSync();
+          renderMetricDimToggles();
+          updateMetricChartWrapTitles();
+        }
+      });
+    }
+    const bd = el("btnFoldDimCharts");
+    if (bd) {
+      bd.addEventListener("click", () => {
+        const collapsed = !isDimChartsFoldCollapsed();
+        setFoldUi("dim", collapsed);
+        if (collapsed) {
+          purgeDimPlotDivsOnly();
+        } else {
+          purgeAndNewPlotDimChartsSync();
+          setDimTraceToggleUi();
+        }
+      });
+    }
   }
 
   el("themeSelect").addEventListener("change", () => {

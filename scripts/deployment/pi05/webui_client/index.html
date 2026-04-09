@@ -182,51 +182,79 @@
       </div>
 
       <div class="card span4">
-        <div class="cardTitle">
-          误差曲线
-          <span class="subInline">MAE / MSE：与下方 dims 一致，每维一条线；可勾选隐藏；与 window 同步滚动</span>
+        <div class="cardTitle chartFoldBar">
+          <button
+            type="button"
+            id="btnFoldMetrics"
+            class="btnFold"
+            aria-expanded="true"
+            aria-controls="metricsFoldBody"
+            title="折叠后暂停误差曲线绘图并释放 Plotly，节省 CPU；数据仍累计，展开后刷新"
+          >
+            ▼
+          </button>
+          <div class="chartFoldTitleBlock" id="metricsFoldTitleBlock">
+            <span class="chartFoldTitleMain">误差曲线</span>
+            <span class="subInline">MAE / MSE：与下方 dims 一致，每维一条线；可勾选隐藏；与 window 同步滚动</span>
+          </div>
         </div>
-        <div class="sub metricDimTogglesRow" aria-label="误差曲线按 dim 显示">
-          <span class="kv">显示 dim</span>
-          <div id="metricDimToggles" class="metricDimToggles"></div>
+        <div id="metricsFoldBody" class="chartFoldBody">
+          <div class="sub metricDimTogglesRow" aria-label="误差曲线按 dim 显示">
+            <span class="kv">显示 dim</span>
+            <div id="metricDimToggles" class="metricDimToggles"></div>
+          </div>
+          <div id="metricsChartsContainer" class="metricsChartsRow"></div>
         </div>
-        <div id="metricsChartsContainer" class="metricsChartsRow"></div>
       </div>
 
       <div class="card span4">
-        <div class="cardTitle">
-          各动作维度
-          <span class="subInline">每维单独子图（gt / pred；勾选可隐藏曲线）</span>
-        </div>
-        <div class="sub">
-          <span class="kv">window</span>
-          <input id="windowSize" class="input small" type="number" min="50" max="5000" value="120" />
-          <label class="chartsColsLabel">
-            <span class="kv">dim 列/行</span>
-            <select id="chartsCols" class="themeSelect chartsColsSelect" aria-label="各动作维度子图每行几列">
-              <option value="1">1</option>
-              <option value="2" selected>2</option>
-              <option value="3">3</option>
-              <option value="4">4</option>
-              <option value="5">5</option>
-              <option value="6">6</option>
-            </select>
-          </label>
-          <span class="kv">dims</span>
-          <input id="dims" class="input dimsInput" value="0,1,2,3,4,5" />
-          <button id="btnApplyDims" class="btn btn-secondary">Apply</button>
-        </div>
-        <div class="sub dimTraceTogglesRow" aria-label="各 dim 子图曲线显示">
-          <span class="kv">显示曲线</span>
-          <label class="checkbox"
-            ><input type="checkbox" id="dimShowGt" checked /> gt</label
+        <div class="cardTitle chartFoldBar">
+          <button
+            type="button"
+            id="btnFoldDimCharts"
+            class="btnFold"
+            aria-expanded="true"
+            aria-controls="dimChartsFoldBody"
+            title="折叠后暂停各动作维度子图绘图并释放 Plotly，节省 CPU；数据仍累计，展开后刷新"
           >
-          <label class="checkbox"
-            ><input type="checkbox" id="dimShowPredPt" checked /> pred_pt</label
-          >
-          <label class="checkbox" id="dimShowPredTrtWrap"><input type="checkbox" id="dimShowPredTrt" checked /> pred_trt</label>
+            ▼
+          </button>
+          <div class="chartFoldTitleBlock" id="dimChartsFoldTitleBlock">
+            <span class="chartFoldTitleMain">各动作维度</span>
+            <span class="subInline">每维单独子图（gt / pred；勾选可隐藏曲线）</span>
+          </div>
         </div>
-        <div id="chartsContainer" class="chartsContainer"></div>
+        <div id="dimChartsFoldBody" class="chartFoldBody">
+          <div class="sub">
+            <span class="kv">window</span>
+            <input id="windowSize" class="input small" type="number" min="50" max="5000" value="120" />
+            <label class="chartsColsLabel">
+              <span class="kv">dim 列/行</span>
+              <select id="chartsCols" class="themeSelect chartsColsSelect" aria-label="各动作维度子图每行几列">
+                <option value="1">1</option>
+                <option value="2" selected>2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+              </select>
+            </label>
+            <span class="kv">dims</span>
+            <input id="dims" class="input dimsInput" value="0,1,2,3,4,5" />
+            <button id="btnApplyDims" class="btn btn-secondary">Apply</button>
+          </div>
+          <div class="sub dimTraceTogglesRow" aria-label="各 dim 子图曲线显示">
+            <span class="kv">显示曲线</span>
+            <label class="checkbox"
+              ><input type="checkbox" id="dimShowGt" checked /> gt</label
+            >
+            <label class="checkbox"
+              ><input type="checkbox" id="dimShowPredPt" checked /> pred_pt</label
+            >
+            <label class="checkbox" id="dimShowPredTrtWrap"><input type="checkbox" id="dimShowPredTrt" checked /> pred_trt</label>
+          </div>
+          <div id="chartsContainer" class="chartsContainer"></div>
+        </div>
       </div>
     </div>
 
