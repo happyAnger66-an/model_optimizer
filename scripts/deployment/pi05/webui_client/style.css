@@ -619,6 +619,74 @@ html[data-theme="dark"] .compareDimTable tbody tr:hover td {
   background: rgba(96, 165, 250, 0.08);
 }
 
+.ptqLayerReportSummary {
+  margin-bottom: 0.35rem;
+  line-height: 1.45;
+}
+.ptqLayerReportNote {
+  margin-bottom: 0.5rem;
+  line-height: 1.4;
+}
+.ptqLayerReportHeatRow {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0 0 0.55rem;
+}
+.ptqLayerReportBarRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.ptqLayerReportBarRowLabel {
+  flex: 0 0 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.ptqLayerReportBarTrack {
+  flex: 1;
+  min-width: 80px;
+  max-width: 220px;
+  height: 9px;
+  background: var(--panel2);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.ptqLayerReportBarFill {
+  height: 100%;
+  border-radius: 5px;
+  background: linear-gradient(90deg, var(--ok), var(--warn), var(--bad));
+  min-width: 2px;
+}
+.ptqLayerReportBarVal {
+  flex: 0 0 4.8rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.ptqLayerReportWrap {
+  max-height: 380px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--chart-wrap-bg);
+}
+.ptqLayerReportTable.compareDimTable thead th:first-child,
+.ptqLayerReportTable.compareDimTable tbody td:first-child {
+  width: auto;
+  min-width: 8rem;
+  max-width: 20rem;
+  text-align: left;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 @media (max-width: 1200px) {
   .grid {
     grid-template-columns: repeat(2, 1fr);

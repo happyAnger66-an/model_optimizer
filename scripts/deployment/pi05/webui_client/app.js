@@ -178,6 +178,145 @@ function refreshCompareDimTable() {
   }
 }
 
+function fmtPtqLayerMetric(x) {
+  if (typeof x !== "number" || !Number.isFinite(x)) return "—";
+  const ax = Math.abs(x);
+  if (ax === 0) return "0";
+  if (ax < 1e-5 || ax >= 1e5) return x.toExponential(3);
+  if (ax < 1e-2) return x.toExponential(3);
+  return x.toFixed(6);
+}
+
+function resetPtqLayerReportDom() {
+  const sumEl = el("ptqLayerReportSummary");
+  const noteEl = el("ptqLayerReportNote");
+  const body = el("ptqLayerReportBody");
+  const heatRow = el("ptqLayerReportHeatRow");
+  if (sumEl) sumEl.textContent = "—";
+  if (noteEl) {
+    noteEl.textContent = "";
+    noteEl.hidden = true;
+  }
+  if (body) body.innerHTML = "";
+  if (heatRow) {
+    heatRow.innerHTML = "";
+    heatRow.hidden = true;
+    heatRow.setAttribute("aria-hidden", "true");
+  }
+}
+
+/** ptq_compare：展示 meta.ptq_layer_report（条形摘要 + 全表） */
+function renderPtqLayerReportFromMeta(m) {
+  resetPtqLayerReportDom();
+  const sumEl = el("ptqLayerReportSummary");
+  const noteEl = el("ptqLayerReportNote");
+  const body = el("ptqLayerReportBody");
+  const heatRow = el("ptqLayerReportHeatRow");
+  if (!sumEl || !body) return;
+
+  const rep = m && m.ptq_layer_report;
+  if (!rep || typeof rep !== "object") {
+    sumEl.textContent = m.ptq_layer_report_path
+      ? "已配置报告路径，但本次 meta 未附带 JSON（请确认服务端已更新）。"
+      : "未生成分层报告：启动时添加 --ptq-layer-report-path；JSON 会随首次 meta 下发。";
+    return;
+  }
+  if (rep.error) {
+    sumEl.textContent = `读取报告失败：${rep.error}`;
+    if (noteEl && rep.path) {
+      noteEl.textContent = String(rep.path);
+      noteEl.hidden = false;
+    }
+    return;
+  }
+
+  const parts = Array.isArray(rep.parts) ? rep.parts.join(", ") : "—";
+  const isStart = rep.indices_start != null ? rep.indices_start : "—";
+  const iu = rep.indices_used != null ? rep.indices_used : "—";
+  const lc = rep.layer_count != null ? rep.layer_count : "—";
+  sumEl.textContent = `parts: ${parts} · 起始下标 ${isStart} · 使用帧数 ${iu} · 统计层数 ${lc}`;
+
+  if (rep.note && noteEl) {
+    noteEl.textContent = String(rep.note);
+    noteEl.hidden = false;
+  }
+
+  const layers = Array.isArray(rep.layers) ? rep.layers : [];
+  const topN = 6;
+  const top = layers.slice(0, topN);
+  const maxMse =
+    top.length > 0
+      ? Math.max(
+          ...top.map((r) => (typeof r.mse_mean === "number" ? r.mse_mean : 0)),
+          1e-30
+        )
+      : 0;
+
+  if (heatRow && top.length > 0 && maxMse > 0) {
+    heatRow.hidden = false;
+    heatRow.setAttribute("aria-hidden", "false");
+    const cap = document.createElement("div");
+    cap.className = "sub muted";
+    cap.style.marginBottom = "0.15rem";
+    cap.textContent = `MSE 较高层（Top ${top.length}，条长 ∝ MSE）`;
+    heatRow.appendChild(cap);
+    for (const r of top) {
+      const row = document.createElement("div");
+      row.className = "ptqLayerReportBarRow";
+      const lab = document.createElement("span");
+      lab.className = "ptqLayerReportBarRowLabel";
+      const fullMod = typeof r.module === "string" ? r.module : "";
+      lab.title = fullMod;
+      lab.textContent = fullMod ? fullMod.split(".").pop() || fullMod : "—";
+      const track = document.createElement("div");
+      track.className = "ptqLayerReportBarTrack";
+      const fill = document.createElement("div");
+      fill.className = "ptqLayerReportBarFill";
+      const mse = typeof r.mse_mean === "number" ? r.mse_mean : 0;
+      fill.style.width = `${Math.min(100, (mse / maxMse) * 100)}%`;
+      track.appendChild(fill);
+      const val = document.createElement("span");
+      val.className = "ptqLayerReportBarVal";
+      val.textContent = fmtPtqLayerMetric(mse);
+      row.appendChild(lab);
+      row.appendChild(track);
+      row.appendChild(val);
+      heatRow.appendChild(row);
+    }
+  }
+
+  for (const r of layers) {
+    const tr = document.createElement("tr");
+    const mod = typeof r.module === "string" ? r.module : "—";
+    const tdM = document.createElement("td");
+    tdM.textContent = mod.length > 52 ? `${mod.slice(0, 50)}…` : mod;
+    tdM.title = mod;
+    tr.appendChild(tdM);
+    for (const key of ["mse_mean", "mae_mean", "max_abs_mean"]) {
+      const td = document.createElement("td");
+      td.textContent = fmtPtqLayerMetric(r[key]);
+      tr.appendChild(td);
+    }
+    const tdS = document.createElement("td");
+    const sn = r.samples;
+    tdS.textContent =
+      typeof sn === "number" && Number.isFinite(sn) ? String(Math.round(sn)) : "—";
+    tr.appendChild(tdS);
+    body.appendChild(tr);
+  }
+}
+
+function syncPtqLayerReportCard() {
+  const card = el("ptqLayerReportCard");
+  if (!card) return;
+  if (!ptqCompareMode) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  renderPtqLayerReportFromMeta(meta || {});
+}
+
 function metaStr(v) {
   if (v === undefined || v === null) return "—";
   const s = String(v).trim();
@@ -989,6 +1128,7 @@ function clearClientDisplay() {
   }
   applyTensorrtMetaFromMsg(meta);
   refreshCompareDimTable();
+  syncPtqLayerReportCard();
   setProgress("已清空本页曲线与图像（WebSocket 未断开；可继续接收后续 step）。");
   purgeAndNewPlotAllChartsSync();
 }
@@ -1491,6 +1631,8 @@ function connectInternal() {
         compareMode = false;
         ptqCompareMode = false;
         setCompareLayoutVisible(false);
+        const prc = el("ptqLayerReportCard");
+        if (prc) prc.hidden = true;
         const te = el("trtEnginesBlock");
         if (te) te.hidden = true;
         el("gpuUtil").textContent = "-";
@@ -1504,6 +1646,7 @@ function connectInternal() {
       compareMode = Boolean(meta.compare_mode);
       ptqCompareMode = Boolean(meta.ptq_compare);
       setCompareLayoutVisible(dualPredMode());
+      syncPtqLayerReportCard();
       stepReceiveCount = 0;
       resetSeries();
       resetHzEstimators();

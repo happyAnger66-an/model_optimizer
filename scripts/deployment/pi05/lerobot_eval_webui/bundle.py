@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -139,9 +140,12 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
     base_ds = unwrap_lerobot_base(dataset)
     ep_per_frame = global_episode_id_per_frame(base_ds, n)
 
+    ptq_layer_report_path_resolved: Path | None = None
+    ptq_layer_report_data: dict[str, Any] | None = None
     if args.ptq_compare and args.ptq_layer_report_path is not None:
         from .ptq_compare import write_ptq_layer_report
 
+        ptq_layer_report_path_resolved = Path(args.ptq_layer_report_path).expanduser().resolve()
         write_ptq_layer_report(
             policy,
             policy_ptq,
@@ -150,8 +154,17 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
             repack_fn=repack_fn,
             start_index=int(args.start_index),
             num_samples=int(args.ptq_layer_report_samples),
-            report_path=Path(args.ptq_layer_report_path),
+            report_path=ptq_layer_report_path_resolved,
         )
+        try:
+            with open(ptq_layer_report_path_resolved, encoding="utf-8") as rf:
+                ptq_layer_report_data = json.load(rf)
+        except Exception as exc:  # pragma: no cover
+            logging.warning("读取 ptq layer report 嵌入 meta 失败: %s", exc)
+            ptq_layer_report_data = {
+                "error": str(exc),
+                "path": str(ptq_layer_report_path_resolved),
+            }
 
     calib_collectors: list[Any] | None = None
     if args.calib_save_path is not None:
@@ -199,10 +212,10 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
         meta_payload["ptq_parts"] = list(args.ptq_parts)
         meta_payload["ptq_quant_cfg"] = str(Path(args.ptq_quant_cfg).expanduser().resolve())
         meta_payload["ptq_calib_dir"] = str(Path(args.ptq_calib_dir).expanduser().resolve())
-        if args.ptq_layer_report_path is not None:
-            meta_payload["ptq_layer_report_path"] = str(
-                Path(args.ptq_layer_report_path).expanduser().resolve()
-            )
+        if args.ptq_layer_report_path is not None and ptq_layer_report_path_resolved is not None:
+            meta_payload["ptq_layer_report_path"] = str(ptq_layer_report_path_resolved)
+            if ptq_layer_report_data is not None:
+                meta_payload["ptq_layer_report"] = ptq_layer_report_data
 
     if args.inference_mode == "tensorrt" or args.compare_mode:
         meta_payload["tensorrt"] = {

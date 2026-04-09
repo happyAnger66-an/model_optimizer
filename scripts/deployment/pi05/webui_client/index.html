@@ -181,6 +181,30 @@
         </div>
       </div>
 
+      <div id="ptqLayerReportCard" class="card span4" hidden>
+        <div class="cardTitle">
+          PTQ 分层报告
+          <span class="subInline">FP vs PTQ · 与 --ptq-layer-report-path 一致</span>
+        </div>
+        <div id="ptqLayerReportSummary" class="sub ptqLayerReportSummary">—</div>
+        <div id="ptqLayerReportNote" class="sub muted ptqLayerReportNote" hidden></div>
+        <div id="ptqLayerReportHeatRow" class="ptqLayerReportHeatRow" hidden aria-hidden="true"></div>
+        <div class="ptqLayerReportWrap">
+          <table class="compareDimTable mono ptqLayerReportTable" aria-label="PTQ 分层误差">
+            <thead>
+              <tr>
+                <th scope="col">模块</th>
+                <th scope="col">MSE(均值)</th>
+                <th scope="col">MAE</th>
+                <th scope="col">max|Δ|(均值)</th>
+                <th scope="col">样本</th>
+              </tr>
+            </thead>
+            <tbody id="ptqLayerReportBody"></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card span4">
         <div class="cardTitle chartFoldBar">
           <button
