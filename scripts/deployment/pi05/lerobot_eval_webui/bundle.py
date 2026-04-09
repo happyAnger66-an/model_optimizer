@@ -46,10 +46,11 @@ def load_infer_bundle(
         if on_progress is not None:
             on_progress(stage, msg)
 
-    if args.compare_mode and args.ptq_compare:
-        raise ValueError("compare_mode 与 ptq_compare 互斥，请勿同时开启。")
-    if args.ptq_compare and args.inference_mode != "pytorch":
-        raise ValueError("ptq_compare 仅支持 inference_mode=pytorch。")
+    modes = [bool(args.compare_mode), bool(args.ptq_compare), bool(getattr(args, "ptq_trt_compare", False))]
+    if sum(1 for x in modes if x) > 1:
+        raise ValueError("compare_mode / ptq_compare / ptq_trt_compare 互斥，请勿同时开启。")
+    if (args.ptq_compare or getattr(args, "ptq_trt_compare", False)) and args.inference_mode != "pytorch":
+        raise ValueError("ptq_compare / ptq_trt_compare 仅支持 inference_mode=pytorch。")
 
     print(colored("[infer] get_config + data_config ...", "cyan"), flush=True)
     _p("config", "读取训练配置与 data_config …")
@@ -92,7 +93,7 @@ def load_infer_bundle(
         pass
     _p("policy_pt", "PyTorch 策略已就绪")
 
-    if args.compare_mode:
+    if args.compare_mode or getattr(args, "ptq_trt_compare", False):
         if not args.engine_path:
             raise ValueError("compare_mode=True 时必须设置 --engine-path（TensorRT 引擎目录）。")
         print(colored("[infer] compare_mode：加载第二套 policy 并挂 TensorRT …", "cyan"), flush=True)
@@ -142,6 +143,46 @@ def load_infer_bundle(
 
         print(colored("[infer] ptq_compare：浮点 policy + PTQ policy 已就绪", "cyan"), flush=True)
         _p("ptq_apply", "选择性 PTQ 已应用（浮点 + PTQ 双路就绪）")
+    elif getattr(args, "ptq_trt_compare", False):
+        # PTQ(Pytorch) vs TRT(engine)
+        if args.ptq_quant_cfg is None or not Path(args.ptq_quant_cfg).is_file():
+            raise ValueError("ptq_trt_compare 需要有效的 --ptq-quant-cfg（存在的 .json 或定义 QUANT_CFG 的 .py）。")
+        if args.ptq_calib_dir is None or not Path(args.ptq_calib_dir).expanduser().is_dir():
+            raise ValueError("ptq_trt_compare 需要 --ptq-calib-dir 指向含 Pi0.5 calib 的目录。")
+        if not args.ptq_parts:
+            raise ValueError("ptq_trt_compare 需要非空 --ptq-parts，例如 vit、llm、expert。")
+        bad = [p for p in args.ptq_parts if p not in ("vit", "llm", "expert")]
+        if bad:
+            raise ValueError(f"非法 --ptq-parts: {bad}（仅允许 vit / llm / expert）。")
+
+        print(colored("[infer] ptq_trt_compare：对 PyTorch policy 应用选择性 PTQ（fake quant）…", "cyan"), flush=True)
+        _p("ptq_apply", "ptq_trt_compare：读取 calib 并应用选择性 PTQ（quantize + dynamic）…")
+        from .ptq_compare import apply_selective_ptq, load_ptq_quant_cfg
+
+        qcfg = load_ptq_quant_cfg(Path(args.ptq_quant_cfg))
+        apply_selective_ptq(policy, Path(args.ptq_calib_dir), qcfg, tuple(args.ptq_parts))
+        _p("ptq_apply", "PTQ 已应用到主 policy（将作为 pred1）")
+
+        if not args.engine_path:
+            raise ValueError("ptq_trt_compare=True 时必须设置 --engine-path（TensorRT 引擎目录）。")
+        print(colored("[infer] ptq_trt_compare：加载第二套 policy 并挂 TensorRT …", "cyan"), flush=True)
+        _p("policy_trt", "ptq_trt_compare：加载 TensorRT 路 PyTorch 封装并挂载引擎 …")
+        policy_trt = policy_config.create_trained_policy(
+            train_cfg,
+            args.checkpoint,
+            pytorch_device=args.device,
+        )
+        load_tensorrt_engines(
+            policy_trt,
+            engine_path=args.engine_path,
+            precision=args.precision,
+            vit_engine=args.vit_engine,
+            llm_engine=args.llm_engine,
+            expert_engine=args.expert_engine,
+            denoise_engine=args.denoise_engine,
+            embed_prefix_engine=args.embed_prefix_engine,
+        )
+        _p("policy_trt", "TensorRT 引擎已挂载（PTQ vs TRT 双路就绪）")
     elif args.inference_mode == "tensorrt":
         if not args.engine_path:
             raise ValueError("inference_mode=tensorrt 时必须设置 --engine-path（引擎目录）。")
@@ -219,6 +260,8 @@ def load_infer_bundle(
         backend = "pytorch+tensorrt"
     elif args.ptq_compare:
         backend = "pytorch+ptq"
+    elif getattr(args, "ptq_trt_compare", False):
+        backend = "pytorch_ptq+tensorrt"
     else:
         backend = args.inference_mode
     meta_payload: dict[str, Any] = {
@@ -228,6 +271,7 @@ def load_infer_bundle(
         "backend": backend,
         "compare_mode": bool(args.compare_mode),
         "ptq_compare": bool(args.ptq_compare),
+        "ptq_trt_compare": bool(getattr(args, "ptq_trt_compare", False)),
         "action_horizon": int(action_horizon),
         "start_index": int(args.start_index),
         "end_index_exclusive": int(end),
@@ -251,8 +295,25 @@ def load_infer_bundle(
             meta_payload["ptq_layer_report_path"] = str(ptq_layer_report_path_resolved)
             if ptq_layer_report_data is not None:
                 meta_payload["ptq_layer_report"] = ptq_layer_report_data
+    if getattr(args, "ptq_trt_compare", False):
+        meta_payload["ptq_parts"] = list(args.ptq_parts)
+        meta_payload["ptq_quant_cfg"] = str(Path(args.ptq_quant_cfg).expanduser().resolve())
+        meta_payload["ptq_calib_dir"] = str(Path(args.ptq_calib_dir).expanduser().resolve())
 
-    if args.inference_mode == "tensorrt" or args.compare_mode:
+        # UI labels：pred1=PTQ(Pytorch), pred2=TRT(engine)
+        meta_payload["pred1_name"] = "PTQ"
+        meta_payload["pred2_name"] = "TRT"
+        meta_payload["pair_name"] = "PTQ−TRT"
+    elif args.ptq_compare:
+        meta_payload["pred1_name"] = "PT"
+        meta_payload["pred2_name"] = "PTQ"
+        meta_payload["pair_name"] = "PT−PTQ"
+    elif args.compare_mode:
+        meta_payload["pred1_name"] = "PT"
+        meta_payload["pred2_name"] = "TRT"
+        meta_payload["pair_name"] = "PT−TRT"
+
+    if args.inference_mode == "tensorrt" or args.compare_mode or getattr(args, "ptq_trt_compare", False):
         meta_payload["tensorrt"] = {
             "precision": args.precision,
             "engine_path": args.engine_path or "",
@@ -294,4 +355,8 @@ def load_infer_bundle(
         out["running_per_dim_mse_pct_ptq"] = RunningPerDimMsePctStats()
         out["running_per_dim_rel_p99_ptq"] = RunningPerDimRelP99Stats()
         out["running_pt_ptq_mse_per_dim"] = RunningPerDimPairMseStats()
+    if getattr(args, "ptq_trt_compare", False):
+        out["running_per_dim_mse_pct_trt"] = RunningPerDimMsePctStats()
+        out["running_per_dim_rel_p99_trt"] = RunningPerDimRelP99Stats()
+        out["running_pt_trt_mse_per_dim"] = RunningPerDimPairMseStats()
     return out

@@ -7,11 +7,13 @@ let connected = false;
 let compareMode = false;
 /** 由服务端 meta.ptq_compare 设置：双路之二为 PyTorch PTQ（与 compare_mode 互斥） */
 let ptqCompareMode = false;
+/** 由服务端 meta.ptq_trt_compare 设置：pred1=PTQ(Pytorch) vs pred2=TRT(engine)（与 compare_mode / ptq_compare 互斥） */
+let ptqTrtCompareMode = false;
 
 /** 服务端 load_infer_bundle 阶段：{ stage, message, done }[]，用于 Server 进度分步展示 */
 let serverLoadStepList = [];
 function dualPredMode() {
-  return compareMode || ptqCompareMode;
+  return compareMode || ptqCompareMode || ptqTrtCompareMode;
 }
 let latestDimMsePctMean = null; // number[] | null
 let latestDimRelP99 = null; // number[] | null
@@ -610,6 +612,9 @@ function metricsChartLayout(def) {
 /** 误差曲线图 y 轴标题：双路时画 PT−第二路（TRT 或 PTQ） */
 function metricsChartYAxisTitle(def) {
   if (!dualPredMode()) return def.yLabel;
+  const pn = meta && meta.pair_name ? String(meta.pair_name) : null;
+  if (pn) return `${pn} ${def.yLabel}`;
+  if (ptqTrtCompareMode) return `PTQ−TRT ${def.yLabel}`;
   if (ptqCompareMode) return `PT−PTQ ${def.yLabel}`;
   return `PT−TRT ${def.yLabel}`;
 }
@@ -618,12 +623,54 @@ function updateMetricChartWrapTitles() {
   for (const def of METRIC_CHART_DEFS) {
     const t = el(`metricTitle-${def.id}`);
     if (!t) continue;
-    const pairLabel = ptqCompareMode ? "PT−PTQ" : "PT−TRT";
+    const pairLabel =
+      (meta && meta.pair_name ? String(meta.pair_name) : null) ||
+      (ptqTrtCompareMode ? "PTQ−TRT" : ptqCompareMode ? "PT−PTQ" : "PT−TRT");
     const base = dualPredMode()
       ? `${pairLabel} ${def.cardTitle} vs global_index`
       : `${def.cardTitle} vs global_index`;
     t.textContent = state.dims.length > 1 ? `${base}（各 dim 一条线）` : base;
   }
+}
+
+function firstPredLabel() {
+  if (ptqTrtCompareMode) return "pred_ptq";
+  return "pred_pt";
+}
+
+function secondPredLabel() {
+  return ptqCompareMode ? "pred_ptq" : "pred_trt";
+}
+
+function applyCompareUiLabels() {
+  const pred1 = (meta && meta.pred1_name ? String(meta.pred1_name) : null) || (ptqTrtCompareMode ? "PTQ" : "PT");
+  const pred2 =
+    (meta && meta.pred2_name ? String(meta.pred2_name) : null) || (ptqCompareMode ? "PTQ" : "TRT");
+  const pair =
+    (meta && meta.pair_name ? String(meta.pair_name) : null) ||
+    (ptqTrtCompareMode ? "PTQ−TRT" : ptqCompareMode ? "PT−PTQ" : "PT−TRT");
+
+  const predLab1 = el("predFirstLabel");
+  if (predLab1) predLab1.textContent = firstPredLabel();
+  const predLab = el("predSecondLabel");
+  if (predLab) predLab.textContent = secondPredLabel();
+  const h1 = el("cmpColFirst");
+  const h2 = el("cmpColSecond");
+  const hPair = el("cmpColPair");
+  if (h1) h1.textContent = `${pred1}↔GT`;
+  if (h2) h2.textContent = `${pred2}↔GT`;
+  if (hPair) hPair.textContent = pair;
+
+  const dm1 = el("cmpDimColFirstMse");
+  const dp1 = el("cmpDimColFirstP99");
+  const dm2 = el("cmpDimColSecondMse");
+  const dp2 = el("cmpDimColSecondP99");
+  const dpair = el("cmpDimColPairMse");
+  if (dm1) dm1.textContent = `${pred1} mse%`;
+  if (dp1) dp1.textContent = `${pred1} p99`;
+  if (dm2) dm2.textContent = `${pred2} mse%`;
+  if (dp2) dp2.textContent = `${pred2} p99`;
+  if (dpair) dpair.textContent = `${pair} mse`;
 }
 
 function buildPlotlyLayout() {
@@ -1238,14 +1285,14 @@ function traceTemplatesEmpty() {
   const p = getPlotlyPalette();
   const traces = [
     { x: [], y: [], mode: "lines", name: "gt", line: { width: 2, color: p.gt } },
-    { x: [], y: [], mode: "lines", name: "pred_pt", line: { width: 2, dash: "dot", color: p.pred } },
+    { x: [], y: [], mode: "lines", name: firstPredLabel(), line: { width: 2, dash: "dot", color: p.pred } },
   ];
   if (dualPredMode()) {
     traces.push({
       x: [],
       y: [],
       mode: "lines",
-      name: "pred_trt",
+      name: secondPredLabel(),
       line: { width: 2, dash: "dash", color: p.predTrt },
     });
   }
@@ -1769,7 +1816,7 @@ function buildTracesForDim(d) {
       x: [...state.x],
       y: [...(state.pred.get(d) || [])],
       mode: "lines",
-      name: "pred_pt",
+      name: firstPredLabel(),
       line: { width: 2, dash: "dot", color: p.pred },
     },
   ];
@@ -1778,7 +1825,7 @@ function buildTracesForDim(d) {
       x: [...state.x],
       y: [...(state.pred_trt.get(d) || [])],
       mode: "lines",
-      name: "pred_trt",
+      name: secondPredLabel(),
       line: { width: 2, dash: "dash", color: p.predTrt },
     });
   }
@@ -1885,6 +1932,8 @@ function connectInternal() {
         el("backend").textContent = "…";
         compareMode = false;
         ptqCompareMode = false;
+        ptqTrtCompareMode = false;
+        applyCompareUiLabels();
         setCompareLayoutVisible(false);
         const prc = el("ptqLayerReportCard");
         if (prc) prc.hidden = true;
@@ -1900,6 +1949,8 @@ function connectInternal() {
       meta = msg;
       compareMode = Boolean(meta.compare_mode);
       ptqCompareMode = Boolean(meta.ptq_compare);
+      ptqTrtCompareMode = Boolean(meta.ptq_trt_compare);
+      applyCompareUiLabels();
       setCompareLayoutVisible(dualPredMode());
       syncPtqLayerReportCard();
       stepReceiveCount = 0;

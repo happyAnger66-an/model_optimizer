@@ -115,9 +115,9 @@
               <thead>
                 <tr>
                   <th scope="col"></th>
-                  <th scope="col">PT↔GT</th>
-                  <th scope="col">TRT↔GT</th>
-                  <th scope="col">PT−TRT</th>
+                  <th scope="col" id="cmpColFirst">PT↔GT</th>
+                  <th scope="col" id="cmpColSecond">TRT↔GT</th>
+                  <th scope="col" id="cmpColPair">PT−TRT</th>
                 </tr>
               </thead>
               <tbody>
@@ -184,11 +184,11 @@
             <thead>
               <tr>
                 <th scope="col" title="动作维下标">dim</th>
-                <th scope="col" title="服务端 mse_pct_dim_mean">PT mse%</th>
-                <th scope="col" title="服务端 rel_p99_dim">PT p99</th>
-                <th scope="col" title="服务端 mse_pct_dim_mean_trt">TRT mse%</th>
-                <th scope="col" title="服务端 rel_p99_dim_trt">TRT p99</th>
-                <th scope="col" title="服务端 mse_pt_trt_dim_mean">PT−TRT mse</th>
+                <th scope="col" title="服务端 mse_pct_dim_mean" id="cmpDimColFirstMse">PT mse%</th>
+                <th scope="col" title="服务端 rel_p99_dim" id="cmpDimColFirstP99">PT p99</th>
+                <th scope="col" title="服务端 mse_pct_dim_mean_trt" id="cmpDimColSecondMse">TRT mse%</th>
+                <th scope="col" title="服务端 rel_p99_dim_trt" id="cmpDimColSecondP99">TRT p99</th>
+                <th scope="col" title="服务端 mse_pt_trt_dim_mean" id="cmpDimColPairMse">PT−TRT mse</th>
               </tr>
             </thead>
             <tbody id="compareDimTableBody"></tbody>
@@ -316,9 +316,13 @@
               ><input type="checkbox" id="dimShowGt" checked /> gt</label
             >
             <label class="checkbox"
-              ><input type="checkbox" id="dimShowPredPt" checked /> pred_pt</label
+              ><input type="checkbox" id="dimShowPredPt" checked />
+              <span id="predFirstLabel">pred_pt</span></label
             >
-            <label class="checkbox" id="dimShowPredTrtWrap"><input type="checkbox" id="dimShowPredTrt" checked /> pred_trt</label>
+            <label class="checkbox" id="dimShowPredTrtWrap"
+              ><input type="checkbox" id="dimShowPredTrt" checked />
+              <span id="predSecondLabel">pred_trt</span></label
+            >
           </div>
           <div id="chartsContainer" class="chartsContainer"></div>
         </div>

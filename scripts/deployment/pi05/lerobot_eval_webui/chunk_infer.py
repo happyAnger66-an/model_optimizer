@@ -209,12 +209,11 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
         timing: dict[str, float] | None = None
         if k == 0:
             if infer_ms_second is not None:
-                timing = {
-                    "infer_ms_pt": float(infer_ms_pt),
-                    "infer_ms_trt": float(infer_ms_second),
-                    "infer_ms_ptq": float(infer_ms_second),
-                    "infer_ms": float(infer_ms_pt + infer_ms_second),
-                }
+                timing = {"infer_ms_pt": float(infer_ms_pt), "infer_ms": float(infer_ms_pt + infer_ms_second)}
+                if policy_trt is not None:
+                    timing["infer_ms_trt"] = float(infer_ms_second)
+                if policy_ptq is not None:
+                    timing["infer_ms_ptq"] = float(infer_ms_second)
             else:
                 timing = {"infer_ms": float(infer_ms_pt)}
 

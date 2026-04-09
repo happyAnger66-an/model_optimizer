@@ -23,6 +23,9 @@ class Args:
 
     # PyTorch 浮点 vs 同权重复本上的选择性 PTQ（fake quant）；与 compare_mode 互斥
     ptq_compare: bool = False
+
+    # PyTorch PTQ（fake quant） vs TensorRT engine；与 compare_mode / ptq_compare 互斥
+    ptq_trt_compare: bool = False
     ptq_quant_cfg: Path | None = None
     """ModelOpt 量化配置：``.json`` 或与 ``normalize_quant_cfg`` 一致的 dict；``.py`` 需定义 ``QUANT_CFG``。"""
     ptq_calib_dir: Path | None = None
