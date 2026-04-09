@@ -79,19 +79,19 @@ def apply_selective_ptq(
             dl = wrap.get_calibrate_dataset(calib_s)
             print(colored(f"[ptq] quantize vit …", "cyan"), flush=True)
             quantize_model(wrap, sub_cfg, dl)
-            set_dynamic_quant(wrap, "fp16")
+            set_dynamic_quant(wrap, "bf16")
         elif part == "llm":
             wrap = _llm_from_pi05(m)
             dl = wrap.get_calibrate_dataset(calib_s)
             print(colored(f"[ptq] quantize llm …", "cyan"), flush=True)
             quantize_model(wrap, sub_cfg, dl)
-            set_dynamic_quant(wrap, "fp16")
+            set_dynamic_quant(wrap, "bf16")
         elif part == "expert":
             wrap = _expert_from_pi05(m)
             dl = wrap.get_calibrate_dataset(calib_s)
             print(colored(f"[ptq] quantize expert …", "cyan"), flush=True)
             quantize_model(wrap, sub_cfg, dl)
-            set_dynamic_quant(wrap, "fp16")
+            set_dynamic_quant(wrap, "bf16")
         else:
             raise ValueError(f"unknown ptq part: {part!r}")
     print(colored("[ptq] 选择性量化完成", "green"), flush=True)
