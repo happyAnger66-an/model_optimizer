@@ -16,6 +16,9 @@ let latestDimMsePctMeanTrt = null; // number[] | null，仅 compare_mode
 let latestDimRelP99Trt = null; // number[] | null，仅 compare_mode
 let latestDimMsePtTrtDimMean = null; // number[] | null，各维累计 mean((pt-trt)^2)，仅 compare_mode
 
+/** PTQ 分层报告：完整 layers，供模块名子串过滤 */
+let ptqLayerReportLayersAll = null;
+
 /** 非用户主动断开时，每 RECONNECT_MS 自动重连一次 */
 const RECONNECT_MS = 3000;
 let manualDisconnect = false;
@@ -188,15 +191,22 @@ function fmtPtqLayerMetric(x) {
 }
 
 function resetPtqLayerReportDom() {
+  ptqLayerReportLayersAll = null;
   const sumEl = el("ptqLayerReportSummary");
   const noteEl = el("ptqLayerReportNote");
   const body = el("ptqLayerReportBody");
   const heatRow = el("ptqLayerReportHeatRow");
+  const filterInp = el("ptqLayerReportFilter");
+  const filterRow = el("ptqLayerReportFilterRow");
+  const filterHint = el("ptqLayerReportFilterHint");
   if (sumEl) sumEl.textContent = "—";
   if (noteEl) {
     noteEl.textContent = "";
     noteEl.hidden = true;
   }
+  if (filterInp) filterInp.value = "";
+  if (filterRow) filterRow.hidden = true;
+  if (filterHint) filterHint.textContent = "";
   if (body) body.innerHTML = "";
   if (heatRow) {
     heatRow.innerHTML = "";
@@ -205,43 +215,45 @@ function resetPtqLayerReportDom() {
   }
 }
 
-/** ptq_compare：展示 meta.ptq_layer_report（条形摘要 + 全表） */
-function renderPtqLayerReportFromMeta(m) {
-  resetPtqLayerReportDom();
-  const sumEl = el("ptqLayerReportSummary");
-  const noteEl = el("ptqLayerReportNote");
+/** 模块路径包含输入子串即保留（区分大小写，与 Excel「包含」一致） */
+function filterPtqLayersByModuleSubstring(layers, rawQ) {
+  const q = String(rawQ ?? "").trim();
+  if (!q) return layers;
+  return layers.filter((r) => {
+    const mod = typeof r.module === "string" ? r.module : "";
+    return mod.includes(q);
+  });
+}
+
+function updatePtqLayerReportFilterHint(shown, total) {
+  const hint = el("ptqLayerReportFilterHint");
+  if (!hint) return;
+  if (typeof total !== "number" || total <= 0) {
+    hint.textContent = "";
+    return;
+  }
+  const s = typeof shown === "number" ? shown : 0;
+  hint.textContent = s === total ? `共 ${total} 层` : `显示 ${s} / ${total} 层`;
+}
+
+/** 根据当前过滤结果重绘条形区与表格（不改变摘要/说明） */
+function renderPtqLayerReportHeatAndTable(layers) {
   const body = el("ptqLayerReportBody");
   const heatRow = el("ptqLayerReportHeatRow");
-  if (!sumEl || !body) return;
-
-  const rep = m && m.ptq_layer_report;
-  if (!rep || typeof rep !== "object") {
-    sumEl.textContent = m.ptq_layer_report_path
-      ? "已配置报告路径，但本次 meta 未附带 JSON（请确认服务端已更新）。"
-      : "未生成分层报告：启动时添加 --ptq-layer-report-path；JSON 会随首次 meta 下发。";
-    return;
-  }
-  if (rep.error) {
-    sumEl.textContent = `读取报告失败：${rep.error}`;
-    if (noteEl && rep.path) {
-      noteEl.textContent = String(rep.path);
-      noteEl.hidden = false;
-    }
-    return;
+  if (!body) return;
+  body.innerHTML = "";
+  if (heatRow) {
+    heatRow.innerHTML = "";
+    heatRow.hidden = true;
+    heatRow.setAttribute("aria-hidden", "true");
   }
 
-  const parts = Array.isArray(rep.parts) ? rep.parts.join(", ") : "—";
-  const isStart = rep.indices_start != null ? rep.indices_start : "—";
-  const iu = rep.indices_used != null ? rep.indices_used : "—";
-  const lc = rep.layer_count != null ? rep.layer_count : "—";
-  sumEl.textContent = `parts: ${parts} · 起始下标 ${isStart} · 使用帧数 ${iu} · 统计层数 ${lc}`;
+  const totalAll =
+    Array.isArray(ptqLayerReportLayersAll) && ptqLayerReportLayersAll.length
+      ? ptqLayerReportLayersAll.length
+      : layers.length;
+  updatePtqLayerReportFilterHint(layers.length, totalAll);
 
-  if (rep.note && noteEl) {
-    noteEl.textContent = String(rep.note);
-    noteEl.hidden = false;
-  }
-
-  const layers = Array.isArray(rep.layers) ? rep.layers : [];
   const topN = 6;
   const top = layers.slice(0, topN);
   const maxMse =
@@ -304,6 +316,61 @@ function renderPtqLayerReportFromMeta(m) {
     tr.appendChild(tdS);
     body.appendChild(tr);
   }
+}
+
+function refreshPtqLayerReportFilteredTable() {
+  if (!Array.isArray(ptqLayerReportLayersAll)) return;
+  const filt = el("ptqLayerReportFilter");
+  const q = filt ? filt.value : "";
+  const filtered = filterPtqLayersByModuleSubstring(ptqLayerReportLayersAll, q);
+  renderPtqLayerReportHeatAndTable(filtered);
+}
+
+/** ptq_compare：展示 meta.ptq_layer_report（条形摘要 + 全表） */
+function renderPtqLayerReportFromMeta(m) {
+  resetPtqLayerReportDom();
+  const sumEl = el("ptqLayerReportSummary");
+  const noteEl = el("ptqLayerReportNote");
+  const body = el("ptqLayerReportBody");
+  if (!sumEl || !body) return;
+
+  const rep = m && m.ptq_layer_report;
+  if (!rep || typeof rep !== "object") {
+    ptqLayerReportLayersAll = null;
+    sumEl.textContent = m.ptq_layer_report_path
+      ? "已配置报告路径，但本次 meta 未附带 JSON（请确认服务端已更新）。"
+      : "未生成分层报告：启动时添加 --ptq-layer-report-path；JSON 会随首次 meta 下发。";
+    return;
+  }
+  if (rep.error) {
+    ptqLayerReportLayersAll = null;
+    sumEl.textContent = `读取报告失败：${rep.error}`;
+    if (noteEl && rep.path) {
+      noteEl.textContent = String(rep.path);
+      noteEl.hidden = false;
+    }
+    return;
+  }
+
+  const parts = Array.isArray(rep.parts) ? rep.parts.join(", ") : "—";
+  const isStart = rep.indices_start != null ? rep.indices_start : "—";
+  const iu = rep.indices_used != null ? rep.indices_used : "—";
+  const lc = rep.layer_count != null ? rep.layer_count : "—";
+  sumEl.textContent = `parts: ${parts} · 起始下标 ${isStart} · 使用帧数 ${iu} · 统计层数 ${lc}`;
+
+  if (rep.note && noteEl) {
+    noteEl.textContent = String(rep.note);
+    noteEl.hidden = false;
+  }
+
+  const layers = Array.isArray(rep.layers) ? rep.layers : [];
+  ptqLayerReportLayersAll = layers;
+  const filterInp = el("ptqLayerReportFilter");
+  const filterRow = el("ptqLayerReportFilterRow");
+  if (filterInp) filterInp.value = "";
+  if (filterRow) filterRow.hidden = layers.length === 0;
+
+  renderPtqLayerReportHeatAndTable(layers);
 }
 
 function syncPtqLayerReportCard() {
@@ -1774,6 +1841,10 @@ async function setup() {
   });
   el("btnApplyDims").addEventListener("click", () => void applyDims());
   el("btnResetDisplay").addEventListener("click", () => clearClientDisplay());
+  const ptqFilt = el("ptqLayerReportFilter");
+  if (ptqFilt) {
+    ptqFilt.addEventListener("input", () => refreshPtqLayerReportFilteredTable());
+  }
   el("btnDownloadStats").addEventListener("click", () => downloadDimStatsCsv());
 
   el("chartsCols").addEventListener("change", () => applyChartsCols());

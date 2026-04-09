@@ -619,6 +619,21 @@ html[data-theme="dark"] .compareDimTable tbody tr:hover td {
   background: rgba(96, 165, 250, 0.08);
 }
 
+.ptqLayerReportFilterRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.65rem;
+  margin-bottom: 0.45rem;
+}
+.ptqLayerReportFilterInput {
+  min-width: 10rem;
+  flex: 1 1 12rem;
+  max-width: 24rem;
+}
+.ptqLayerReportFilterHint {
+  font-variant-numeric: tabular-nums;
+}
 .ptqLayerReportSummary {
   margin-bottom: 0.35rem;
   line-height: 1.45;

@@ -188,6 +188,19 @@
         </div>
         <div id="ptqLayerReportSummary" class="sub ptqLayerReportSummary">—</div>
         <div id="ptqLayerReportNote" class="sub muted ptqLayerReportNote" hidden></div>
+        <div id="ptqLayerReportFilterRow" class="sub ptqLayerReportFilterRow" hidden>
+          <span class="kv">模块过滤</span>
+          <input
+            id="ptqLayerReportFilter"
+            class="input small ptqLayerReportFilterInput"
+            type="text"
+            placeholder="子串匹配，留空显示全部"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="按模块名子串过滤 PTQ 分层表"
+          />
+          <span id="ptqLayerReportFilterHint" class="sub muted ptqLayerReportFilterHint"></span>
+        </div>
         <div id="ptqLayerReportHeatRow" class="ptqLayerReportHeatRow" hidden aria-hidden="true"></div>
         <div class="ptqLayerReportWrap">
           <table class="compareDimTable mono ptqLayerReportTable" aria-label="PTQ 分层误差">
