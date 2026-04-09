@@ -77,6 +77,12 @@ class Args:
     评估结束（或异常退出线程）时在目录下写入各子模块的 ``*_calib_manifest.json`` 与 ``*_calib_shards/`` 分片；
     量化时 ``--calibrate_data`` 传该目录即可流式加载。若仍存在旧的 ``*_calib_datas.pt`` 也会兼容。TensorRT 模式不支持。"""
 
+    calib_max_samples: int = 0
+    """校准数据收集上限（每个 component 单独计数）。0 表示不限制；1 表示每个 component 仅收集 1 条样本。"""
+
+    calib_item: Literal["all", "vit", "llm", "expert", "denoise"] = "all"
+    """仅收集指定子模型的 calib 数据（默认 all）。"""
+
     gpu_stats_interval_sec: float = 1.0
     """周期向 client 推送 ``type=gpu_stats``（需本机 ``nvidia-smi``）。``0`` 表示关闭。"""
 

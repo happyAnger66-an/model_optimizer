@@ -14,11 +14,20 @@ logger = logging.getLogger(__name__)
 class Pi05CalibCollector(ABC):
     name = "pi05"
 
-    def __init__(self, pytorch_model, save_dir, input_keys, *, flush_every: int = 2):
+    def __init__(
+        self,
+        pytorch_model,
+        save_dir,
+        input_keys,
+        *,
+        flush_every: int = 2,
+        max_samples: int = 0,
+    ):
         self.model = pytorch_model
         self.save_dir = save_dir
         self.input_keys = set(input_keys)
         self.flush_every = max(1, int(flush_every))
+        self.max_samples = max(0, int(max_samples))
         self.old_forward = None
         self._pending: list = []
         self._shard_idx = 0
@@ -49,6 +58,8 @@ class Pi05CalibCollector(ABC):
             self._save_shard(chunk)
 
     def _append_sample(self, sample) -> None:
+        if self.max_samples > 0 and self._total_samples + len(self._pending) >= self.max_samples:
+            return
         self._pending.append(sample)
         self._flush_if_needed()
 
@@ -107,8 +118,15 @@ class Pi05CalibCollector(ABC):
 
 class Pi05LLMCalibCollector(Pi05CalibCollector):
     name = "pi05_llm"
-    def __init__(self, pi05_model, save_dir, input_keys=['inputs_embeds', 'attention_mask', 'position_ids']):
-        super().__init__(pi05_model, save_dir, input_keys)
+    def __init__(
+        self,
+        pi05_model,
+        save_dir,
+        input_keys=("inputs_embeds", "attention_mask", "position_ids"),
+        *,
+        max_samples: int = 0,
+    ):
+        super().__init__(pi05_model, save_dir, input_keys, max_samples=max_samples)
 
     def register_hooks(self):
         self.old_forward = self.model.paligemma_with_expert.paligemma.model.language_model.forward
@@ -120,9 +138,15 @@ class Pi05LLMCalibCollector(Pi05CalibCollector):
 
 class Pi05ExpertCalibCollector(Pi05CalibCollector):
     name = "pi05_expert"
-    def __init__(self, pi05_model, save_dir, input_keys=['attention_mask', 
-    'position_ids', 'inputs_embeds', 'adarms_cond', 'past_key_values']):
-        super().__init__(pi05_model, save_dir, input_keys)
+    def __init__(
+        self,
+        pi05_model,
+        save_dir,
+        input_keys=("attention_mask", "position_ids", "inputs_embeds", "adarms_cond", "past_key_values"),
+        *,
+        max_samples: int = 0,
+    ):
+        super().__init__(pi05_model, save_dir, input_keys, max_samples=max_samples)
 
     def _do_past_key_values(self, past_key_values):
         past_keys, past_values = [], []
@@ -158,8 +182,8 @@ class Pi05ExpertCalibCollector(Pi05CalibCollector):
 
 class Pi05VitCalibCollector(Pi05CalibCollector):
     name = "pi05_vit"
-    def __init__(self, pi05_model, save_dir, input_keys=['pixel_values']):
-        super().__init__(pi05_model, save_dir, input_keys)
+    def __init__(self, pi05_model, save_dir, input_keys=("pixel_values",), *, max_samples: int = 0):
+        super().__init__(pi05_model, save_dir, input_keys, max_samples=max_samples)
 
     def hook_forward_input(self, *args, **kwargs):
         one_input = {}
@@ -194,8 +218,10 @@ class Pi05DenoiseCalibCollector(Pi05CalibCollector):
         pi05_model,
         save_dir,
         input_keys=("prefix_pad_masks", "past_keys", "past_values", "x_t", "timestep"),
+        *,
+        max_samples: int = 0,
     ):
-        super().__init__(pi05_model, save_dir, input_keys)
+        super().__init__(pi05_model, save_dir, input_keys, max_samples=max_samples)
 
     def _stack_past_key_values(self, past_key_values):
         # past_key_values: list/tuple of (k,v) per layer

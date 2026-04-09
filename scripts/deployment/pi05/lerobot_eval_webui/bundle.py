@@ -251,7 +251,12 @@ def load_infer_bundle(
         else:
             try:
                 _p("calib", "启动 Pi0.5 calib 收集器 …")
-                calib_collectors = start_pi05_calib_collectors(policy, Path(args.calib_save_path))
+                calib_collectors = start_pi05_calib_collectors(
+                    policy,
+                    Path(args.calib_save_path),
+                    max_samples=int(getattr(args, "calib_max_samples", 0)),
+                    calib_item=str(getattr(args, "calib_item", "all")),
+                )
                 _p("calib", f"calib 收集器已启动 → {args.calib_save_path}")
             except Exception as exc:  # pragma: no cover
                 logging.warning("启动 calib 收集失败，将继续评估但不保存 calib: %s", exc, exc_info=True)
