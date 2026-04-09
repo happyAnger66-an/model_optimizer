@@ -402,6 +402,24 @@ code {
   cursor: not-allowed;
 }
 
+.btnWithIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.btnIcon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  pointer-events: none;
+  vertical-align: middle;
+}
+html[data-theme="dark"] .btnIcon {
+  filter: brightness(1.15);
+}
+
 .sub {
   color: var(--muted);
   font-size: 12px;
