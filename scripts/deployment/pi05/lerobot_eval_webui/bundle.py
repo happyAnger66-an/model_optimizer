@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -30,14 +31,28 @@ from .running_stats import (
 from .tensorrt_backend import load_tensorrt_engines
 
 
-def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
-    """在专用推理线程中执行：数据集 + policy + TRT，避免阻塞 asyncio 事件循环。"""
+def load_infer_bundle(
+    args: Args,
+    run_id: str,
+    *,
+    on_progress: Callable[[str, str], None] | None = None,
+) -> dict[str, Any]:
+    """在专用推理线程中执行：数据集 + policy + TRT，避免阻塞 asyncio 事件循环。
+
+    on_progress(stage_id, message)：可选，供 WebUI 推送加载步骤（stage_id 稳定、便于 client 去重/排序）。
+    """
+
+    def _p(stage: str, msg: str) -> None:
+        if on_progress is not None:
+            on_progress(stage, msg)
+
     if args.compare_mode and args.ptq_compare:
         raise ValueError("compare_mode 与 ptq_compare 互斥，请勿同时开启。")
     if args.ptq_compare and args.inference_mode != "pytorch":
         raise ValueError("ptq_compare 仅支持 inference_mode=pytorch。")
 
     print(colored("[infer] get_config + data_config ...", "cyan"), flush=True)
+    _p("config", "读取训练配置与 data_config …")
     train_cfg = _config.get_config(args.config)
     data_config = train_cfg.data.create(train_cfg.assets_dirs, train_cfg.model)
     if not data_config.repo_id:
@@ -46,6 +61,7 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
     action_keys = tuple(data_config.action_sequence_keys)
 
     print(colored(f"[infer] LeRobotDataset(repo={data_config.repo_id!r}) ...", "cyan"), flush=True)
+    _p("dataset", f"加载 LeRobot 数据集（repo_id={data_config.repo_id}）…")
     dataset = make_lerobot_dataset(
         repo_id=data_config.repo_id,
         action_horizon=action_horizon,
@@ -54,8 +70,10 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
         dataset_root=args.dataset_root,
     )
     repack_fn = build_repack_only(data_config)
+    _p("dataset", f"数据集就绪（共 {len(dataset)} 条）")
 
     print(colored("[infer] create_trained_policy（可能较慢，磁盘/显存占用会上升）...", "cyan"), flush=True)
+    _p("policy_pt", "加载 PyTorch 策略（checkpoint → 内存/显存，可能较慢）…")
     policy = policy_config.create_trained_policy(
         train_cfg,
         args.checkpoint,
@@ -72,11 +90,13 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
         )
     except Exception:
         pass
+    _p("policy_pt", "PyTorch 策略已就绪")
 
     if args.compare_mode:
         if not args.engine_path:
             raise ValueError("compare_mode=True 时必须设置 --engine-path（TensorRT 引擎目录）。")
         print(colored("[infer] compare_mode：加载第二套 policy 并挂 TensorRT …", "cyan"), flush=True)
+        _p("policy_trt", "compare：加载 TensorRT 路 PyTorch 封装并挂载引擎 …")
         policy_trt = policy_config.create_trained_policy(
             train_cfg,
             args.checkpoint,
@@ -93,6 +113,7 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
             embed_prefix_engine=args.embed_prefix_engine,
         )
         print(colored("[infer] compare_mode：PyTorch + TensorRT 双策略已就绪", "cyan"), flush=True)
+        _p("policy_trt", "TensorRT 引擎已挂载（compare 双路就绪）")
     elif args.ptq_compare:
         if args.ptq_quant_cfg is None or not Path(args.ptq_quant_cfg).is_file():
             raise ValueError("ptq_compare 需要有效的 --ptq-quant-cfg（存在的 .json 或定义 QUANT_CFG 的 .py）。")
@@ -105,21 +126,27 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
             raise ValueError(f"非法 --ptq-parts: {bad}（仅允许 vit / llm / expert）。")
 
         print(colored("[infer] ptq_compare：第二份 PyTorch policy + 选择性 PTQ …", "cyan"), flush=True)
+        _p("ptq_policy", "ptq_compare：加载第二套 PyTorch 策略 …")
         policy_ptq = policy_config.create_trained_policy(
             train_cfg,
             args.checkpoint,
             pytorch_device=args.device,
         )
+        _p("ptq_policy", "PTQ 路 PyTorch 策略已加载")
         from .ptq_compare import apply_selective_ptq, load_ptq_quant_cfg
 
         qcfg = load_ptq_quant_cfg(Path(args.ptq_quant_cfg))
+        parts_s = ",".join(args.ptq_parts)
+        _p("ptq_apply", f"ptq_compare：读取 calib 并对 [{parts_s}] 应用量化（quantize + dynamic）…")
         apply_selective_ptq(policy_ptq, Path(args.ptq_calib_dir), qcfg, tuple(args.ptq_parts))
 
         print(colored("[infer] ptq_compare：浮点 policy + PTQ policy 已就绪", "cyan"), flush=True)
+        _p("ptq_apply", "选择性 PTQ 已应用（浮点 + PTQ 双路就绪）")
     elif args.inference_mode == "tensorrt":
         if not args.engine_path:
             raise ValueError("inference_mode=tensorrt 时必须设置 --engine-path（引擎目录）。")
         print(colored("[infer] 加载 TensorRT 引擎 ...", "cyan"), flush=True)
+        _p("tensorrt", "加载 TensorRT 引擎（vit/llm/expert 等）…")
         load_tensorrt_engines(
             policy,
             engine_path=args.engine_path,
@@ -131,6 +158,7 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
             embed_prefix_engine=args.embed_prefix_engine,
         )
         print(colored("[infer] TensorRT 引擎已就绪", "cyan"), flush=True)
+        _p("tensorrt", "TensorRT 引擎已就绪")
 
     n = len(dataset)
     end = min(args.start_index + args.num_samples, n)
@@ -146,6 +174,7 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
         from .ptq_compare import write_ptq_layer_report
 
         ptq_layer_report_path_resolved = Path(args.ptq_layer_report_path).expanduser().resolve()
+        _p("ptq_report", "生成分层 PTQ 报告（hook 对比 FP/PTQ，可能较慢）…")
         write_ptq_layer_report(
             policy,
             policy_ptq,
@@ -165,6 +194,7 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
                 "error": str(exc),
                 "path": str(ptq_layer_report_path_resolved),
             }
+        _p("ptq_report", "分层 PTQ 报告已写入并完成读取")
 
     calib_collectors: list[Any] | None = None
     if args.calib_save_path is not None:
@@ -176,7 +206,9 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
             )
         else:
             try:
+                _p("calib", "启动 Pi0.5 calib 收集器 …")
                 calib_collectors = start_pi05_calib_collectors(policy, Path(args.calib_save_path))
+                _p("calib", f"calib 收集器已启动 → {args.calib_save_path}")
             except Exception as exc:  # pragma: no cover
                 logging.warning("启动 calib 收集失败，将继续评估但不保存 calib: %s", exc, exc_info=True)
 
@@ -228,7 +260,9 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
             "embed_prefix_engine": args.embed_prefix_engine or "",
         }
 
+    _p("ready", "组装 meta、运行态统计器 …")
     meta_msg = event_to_json(meta_payload)
+    _p("ready", "加载阶段完成，即将推送 meta 与 step 流")
 
     out: dict[str, Any] = {
         "meta_msg": meta_msg,

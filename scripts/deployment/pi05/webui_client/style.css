@@ -223,7 +223,7 @@ code {
   white-space: pre-wrap;
   word-break: break-word;
   min-height: 2.5rem;
-  max-height: 9rem;
+  max-height: 12rem;
   overflow-y: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 0.75rem;
@@ -233,6 +233,39 @@ code {
   border-radius: 8px;
   padding: 8px 10px;
   border: 1px solid var(--progress-border);
+}
+
+.serverProgressLine {
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.serverProgressSteps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--muted);
+  border-top: 1px solid var(--progress-border);
+  padding-top: 0.4rem;
+}
+
+.progressStepItem {
+  padding: 0.12rem 0;
+  padding-left: 0.15rem;
+  border-left: 2px solid transparent;
+}
+
+.progressStepItem.active {
+  color: var(--progress-fg);
+  border-left-color: var(--accent);
+}
+
+.progressStepItem.done {
+  opacity: 0.92;
 }
 
 .cardProgress {

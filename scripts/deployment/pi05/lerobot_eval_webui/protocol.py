@@ -34,6 +34,6 @@ LOADING_META_MSG = event_to_json(
     {
         "type": "meta",
         "phase": "loading",
-        "message": "正在加载数据集与策略（首次连接可能较慢）；加载完成后会再推送完整 meta 与 step 流。",
+        "message": "服务端正在初始化：将依次推送各加载步骤（server_progress），完成后下发完整 meta 与 step 流。",
     }
 )

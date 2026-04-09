@@ -163,7 +163,10 @@
 
       <div class="card span2 cardProgress">
         <div class="cardTitle">Server 进度</div>
-        <div id="serverProgress" class="progressPanel">-</div>
+        <div class="progressPanel">
+          <div id="serverProgress" class="serverProgressLine">-</div>
+          <ul id="serverProgressSteps" class="serverProgressSteps" hidden aria-label="服务端加载步骤"></ul>
+        </div>
       </div>
 
       <div class="card span2 cardPrompt">

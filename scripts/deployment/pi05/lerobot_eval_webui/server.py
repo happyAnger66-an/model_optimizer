@@ -139,7 +139,23 @@ async def run_server(args: Args) -> None:
         bundle: dict[str, Any] | None = None
         try:
             print(colored("[infer] 线程启动，开始加载 bundle…", "cyan"), flush=True)
-            bundle = load_infer_bundle(args, run_id)
+
+            def on_progress(stage: str, message: str) -> None:
+                _schedule(
+                    publish(
+                        event_to_json(
+                            {
+                                "type": "server_progress",
+                                "run_id": run_id,
+                                "stage": stage,
+                                "message": message,
+                            }
+                        ),
+                        add_history=False,
+                    )
+                )
+
+            bundle = load_infer_bundle(args, run_id, on_progress=on_progress)
             meta_msg = bundle["meta_msg"]
             meta_ready["msg"] = meta_msg
             print(colored("[infer] 加载完成，向主循环投递 meta …", "cyan"), flush=True)

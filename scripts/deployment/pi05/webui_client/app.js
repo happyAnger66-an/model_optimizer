@@ -7,6 +7,9 @@ let connected = false;
 let compareMode = false;
 /** 由服务端 meta.ptq_compare 设置：双路之二为 PyTorch PTQ（与 compare_mode 互斥） */
 let ptqCompareMode = false;
+
+/** 服务端 load_infer_bundle 阶段：{ stage, message, done }[]，用于 Server 进度分步展示 */
+let serverLoadStepList = [];
 function dualPredMode() {
   return compareMode || ptqCompareMode;
 }
@@ -729,6 +732,61 @@ function updateHzEstimatorsFromStep(msg) {
   }
   const stepHz = (stepReceivePerfRing.length - 1) / spanS;
   sh.textContent = stepHz.toFixed(2);
+}
+
+function resetServerLoadSteps() {
+  serverLoadStepList = [];
+  const ul = el("serverProgressSteps");
+  if (ul) {
+    ul.innerHTML = "";
+    ul.hidden = true;
+  }
+}
+
+function renderServerLoadSteps() {
+  const ul = el("serverProgressSteps");
+  if (!ul) return;
+  if (serverLoadStepList.length === 0) {
+    ul.hidden = true;
+    ul.innerHTML = "";
+    return;
+  }
+  ul.hidden = false;
+  ul.innerHTML = "";
+  for (const s of serverLoadStepList) {
+    const li = document.createElement("li");
+    li.className = s.done ? "progressStepItem done" : "progressStepItem active";
+    li.textContent = (s.done ? "✓ " : "→ ") + s.message;
+    ul.appendChild(li);
+  }
+}
+
+/** 处理 WebSocket type=server_progress（与 bundle.load_infer_bundle 中 on_progress 对应） */
+function applyServerProgressMsg(msg) {
+  const stage = msg.stage || "_";
+  const message = msg.message || "";
+  const active = serverLoadStepList.find((x) => !x.done);
+  if (active && active.stage !== stage) {
+    active.done = true;
+  }
+  let entry = serverLoadStepList.find((x) => x.stage === stage && !x.done);
+  if (!entry) {
+    entry = { stage, message, done: false };
+    serverLoadStepList.push(entry);
+  } else {
+    entry.message = message;
+  }
+  renderServerLoadSteps();
+  const run = serverLoadStepList.find((x) => !x.done);
+  const line = el("serverProgress");
+  if (line) {
+    line.textContent = run ? run.message : message;
+  }
+}
+
+function finalizeServerLoadSteps() {
+  for (const s of serverLoadStepList) s.done = true;
+  renderServerLoadSteps();
 }
 
 function setProgress(text) {
@@ -1637,6 +1695,7 @@ function connectInternal() {
     setBadge(true);
     el("btnConnect").disabled = true;
     el("btnDisconnect").disabled = false;
+    resetServerLoadSteps();
     setProgress("WebSocket 已连接，等待服务端 meta / 数据流…");
     setInferLoadingSub("已连接，等待服务端 meta…");
     setInferLoadingBanner(true);
@@ -1680,6 +1739,11 @@ function connectInternal() {
       return;
     }
 
+    if (msg.type === "server_progress") {
+      applyServerProgressMsg(msg);
+      return;
+    }
+
     if (msg.type === "gpu_stats") {
       const gu =
         typeof msg.gpu_util_pct === "number" ? msg.gpu_util_pct.toFixed(0) : "?";
@@ -1693,6 +1757,7 @@ function connectInternal() {
 
     if (msg.type === "meta") {
       if (msg.phase === "loading") {
+        resetServerLoadSteps();
         el("repoId").textContent = "…";
         el("backend").textContent = "…";
         compareMode = false;
@@ -1730,6 +1795,7 @@ function connectInternal() {
         typeof meta.gpu_stats_interval_sec === "number" && meta.gpu_stats_interval_sec > 0
           ? "…"
           : "—";
+      finalizeServerLoadSteps();
       {
         const lo = meta.start_index ?? "?";
         const hi = meta.end_index_exclusive ?? "?";
