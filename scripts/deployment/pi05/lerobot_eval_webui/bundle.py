@@ -94,7 +94,7 @@ def load_infer_bundle(args: Args, run_id: str) -> dict[str, Any]:
         print(colored("[infer] compare_mode：PyTorch + TensorRT 双策略已就绪", "cyan"), flush=True)
     elif args.ptq_compare:
         if args.ptq_quant_cfg is None or not Path(args.ptq_quant_cfg).is_file():
-            raise ValueError("ptq_compare 需要有效的 --ptq-quant-cfg（存在的 JSON 文件）。")
+            raise ValueError("ptq_compare 需要有效的 --ptq-quant-cfg（存在的 .json 或定义 QUANT_CFG 的 .py）。")
         if args.ptq_calib_dir is None or not Path(args.ptq_calib_dir).expanduser().is_dir():
             raise ValueError("ptq_compare 需要 --ptq-calib-dir 指向含 Pi0.5 calib 的目录。")
         if not args.ptq_parts:

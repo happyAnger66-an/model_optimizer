@@ -9,6 +9,15 @@ def _has_module(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
 
 
+def _can_import(name: str) -> bool:
+    """Check if a module can actually be imported (not just found on disk)."""
+    try:
+        __import__(name)
+        return True
+    except Exception:
+        return False
+
+
 @pytest.mark.e2e
 class TestCliEntrypoint:
     """测试 model-optimizer-cli 入口与基本命令。"""
@@ -26,7 +35,7 @@ class TestCliEntrypoint:
         output = result.stdout + result.stderr
         assert "quantize" in output or "Usage" in output
 
-    @pytest.mark.skipif(not _has_module("modelopt"), reason="quantize 需 modelopt")
+    @pytest.mark.skipif(not _can_import("modelopt.torch"), reason="quantize 需 modelopt (且依赖可正常导入)")
     def test_quantize_help(self, cli_cmd):
         """quantize 子命令 help。"""
         result = cli_cmd("quantize", "--help")

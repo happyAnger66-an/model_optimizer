@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import importlib.util
 import json
 import logging
 from pathlib import Path
@@ -34,10 +35,33 @@ _PART_PREFIXES: dict[str, tuple[str, ...]] = {
 
 
 def load_ptq_quant_cfg(path: Path) -> dict[str, Any]:
+    """加载量化配置：``.json`` 为 JSON；``.py`` / ``.pyw`` 需定义 ``QUANT_CFG``（dict）。
+
+    兼容 ``llm_quant_nvfp4_cfg.py`` 等写法：``QUANT_CFG = { ... }``，内含 ``quant_mode``、``quant_cfg`` 等字段。
+    """
     path = path.expanduser().resolve()
-    with open(path, encoding="utf-8") as f:
-        cfg: dict[str, Any] = json.load(f)
-    cfg = copy.deepcopy(cfg)
+    if not path.is_file():
+        raise FileNotFoundError(f"ptq_quant_cfg: 找不到量化配置文件或路径不是文件: {path}")
+    suffix = path.suffix.lower()
+    if suffix in (".py", ".pyw"):
+        mod_name = f"_ptq_quant_cfg_{path.stem}"
+        spec = importlib.util.spec_from_file_location(mod_name, path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"ptq_quant_cfg: 无法从文件建立模块: {path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        if not hasattr(mod, "QUANT_CFG"):
+            raise AttributeError(f"{path} 中未定义 QUANT_CFG（应为 ModelOpt 量化 dict）")
+        raw = getattr(mod, "QUANT_CFG")
+        if not isinstance(raw, dict):
+            raise TypeError(f"{path} 的 QUANT_CFG 必须是 dict，实际为 {type(raw).__name__}")
+        cfg = copy.deepcopy(raw)
+    else:
+        with open(path, encoding="utf-8") as f:
+            loaded = json.load(f)
+        if not isinstance(loaded, dict):
+            raise TypeError(f"{path} 的 JSON 根节点必须是 object/dict")
+        cfg = copy.deepcopy(loaded)
     if "quant_mode" in cfg:
         _, cfg = normalize_quant_cfg(cfg)
     return cfg
