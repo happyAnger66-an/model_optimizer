@@ -7,7 +7,7 @@
 实现与先前方案一致要点：
 
 - **双 policy**：`create_trained_policy` 加载两次，互不共享权重；仅第二份执行 `quantize_model`。
-- **子系统粒度**：与 `Vit` / `LLM` / `Expert` 的 `quantize` 相同，通过 **包装同一组 `nn.Module` 引用** 对 `vision_tower + multi_modal_projector`、`language_model`、`gemma_expert.model` **就地**插入量化节点。
+- **子系统粒度**：与 `Vit` / `LLM` / `Expert` / `Pi05DenoiseStep`（`denoise`）的 `quantize` 相同，通过 **包装同一组 `nn.Module` 引用** 对 `vision_tower + multi_modal_projector`、`language_model`、`gemma_expert.model`、以及 **denoise 路径上的 expert + `action_in_proj` / `time_mlp_*` / `action_out_proj`** **就地**插入量化节点。
 - **与 TensorRT 对比互斥**：`--compare-mode`（PyTorch vs TRT）与 `--ptq-compare` 不可同时开启。
 - **分层误差**：在 PTQ 后模型上枚举 `modelopt` 的 QuantLinear（若不可用则降级为名称启发式），按 `named_modules` 路径在 **FP 与 PTQ 的同路径模块** 上注册 forward hook，依次 `infer` 收集输出，汇总 MSE / MAE / max abs（跨样本平均）。
 
@@ -18,8 +18,8 @@
 | `--ptq-compare` | 开启双路 PyTorch（FP + PTQ）                                  |
 | `--ptq-trt-compare` | 开启双路：**PyTorch PTQ（fake quant）** vs **TensorRT engine**（PTQ−TRT 对比） |
 | `--ptq-quant-cfg` | ModelOpt 量化配置 JSON（可含顶层 `quant_mode`，会经 `normalize_quant_cfg` 处理） |
-| `--ptq-calib-dir` | 与 `open_pi05_calib_for_quantize` 一致：含 `pi05_vit` / `pi05_llm` / `pi05_expert` 的 manifest 或分片目录 |
-| `--ptq-parts` | 可多选：`vit`、`llm`、`expert`（tyro：`--ptq-parts llm expert`） |
+| `--ptq-calib-dir` | 与 `open_pi05_calib_for_quantize` 一致：含 `pi05_vit` / `pi05_llm` / `pi05_expert` / `pi05_denoise` 的 manifest 或分片目录 |
+| `--ptq-parts` | 可多选：`vit`、`llm`、`expert`、`denoise`（tyro：`--ptq-parts llm denoise`） |
 | `--ptq-layer-report-path` | 可选：分层 JSON 报告输出路径                                |
 | `--ptq-layer-report-samples` | layer report 使用 `[start_index, start_index+N)` 连续帧，默认 32 |
 | `--ptq-layer-report-histogram` | 报告每层附带 FP 激活 subsample 直方图（默认开启；`--no-ptq-layer-report-histogram` 可关以减小 JSON/meta） |

@@ -121,10 +121,10 @@ def load_infer_bundle(
         if args.ptq_calib_dir is None or not Path(args.ptq_calib_dir).expanduser().is_dir():
             raise ValueError("ptq_compare 需要 --ptq-calib-dir 指向含 Pi0.5 calib 的目录。")
         if not args.ptq_parts:
-            raise ValueError("ptq_compare 需要非空 --ptq-parts，例如 vit、llm、expert。")
-        bad = [p for p in args.ptq_parts if p not in ("vit", "llm", "expert")]
+            raise ValueError("ptq_compare 需要非空 --ptq-parts，例如 vit、llm、expert、denoise。")
+        bad = [p for p in args.ptq_parts if p not in ("vit", "llm", "expert", "denoise")]
         if bad:
-            raise ValueError(f"非法 --ptq-parts: {bad}（仅允许 vit / llm / expert）。")
+            raise ValueError(f"非法 --ptq-parts: {bad}（仅允许 vit / llm / expert / denoise）。")
 
         print(colored("[infer] ptq_compare：第二份 PyTorch policy + 选择性 PTQ …", "cyan"), flush=True)
         _p("ptq_policy", "ptq_compare：加载第二套 PyTorch 策略 …")
@@ -150,10 +150,10 @@ def load_infer_bundle(
         if args.ptq_calib_dir is None or not Path(args.ptq_calib_dir).expanduser().is_dir():
             raise ValueError("ptq_trt_compare 需要 --ptq-calib-dir 指向含 Pi0.5 calib 的目录。")
         if not args.ptq_parts:
-            raise ValueError("ptq_trt_compare 需要非空 --ptq-parts，例如 vit、llm、expert。")
-        bad = [p for p in args.ptq_parts if p not in ("vit", "llm", "expert")]
+            raise ValueError("ptq_trt_compare 需要非空 --ptq-parts，例如 vit、llm、expert、denoise。")
+        bad = [p for p in args.ptq_parts if p not in ("vit", "llm", "expert", "denoise")]
         if bad:
-            raise ValueError(f"非法 --ptq-parts: {bad}（仅允许 vit / llm / expert）。")
+            raise ValueError(f"非法 --ptq-parts: {bad}（仅允许 vit / llm / expert / denoise）。")
 
         print(colored("[infer] ptq_trt_compare：对 PyTorch policy 应用选择性 PTQ（fake quant）…", "cyan"), flush=True)
         _p("ptq_apply", "ptq_trt_compare：读取 calib 并应用选择性 PTQ（quantize + dynamic）…")

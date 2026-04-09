@@ -29,9 +29,9 @@ class Args:
     ptq_quant_cfg: Path | None = None
     """ModelOpt 量化配置：``.json`` 或与 ``normalize_quant_cfg`` 一致的 dict；``.py`` 需定义 ``QUANT_CFG``。"""
     ptq_calib_dir: Path | None = None
-    """与 ``open_pi05_calib_for_quantize`` 一致：含 ``pi05_{vit,llm,expert}_calib_*`` 的目录。"""
-    ptq_parts: tuple[Literal["vit", "llm", "expert"], ...] = dataclasses.field(default_factory=tuple)
-    """要量化的子系统，例如 ``--ptq-parts llm expert``。"""
+    """与 ``open_pi05_calib_for_quantize`` 一致：含 ``pi05_{vit,llm,expert,denoise}_calib_*`` 的目录。"""
+    ptq_parts: tuple[Literal["vit", "llm", "expert", "denoise"], ...] = dataclasses.field(default_factory=tuple)
+    """要量化的子系统，例如 ``--ptq-parts llm expert`` 或含 ``denoise``。"""
     ptq_layer_report_path: Path | None = None
     """可选：将各 QuantLinear 输出相对 FP 的误差写入该 JSON 路径。"""
     ptq_layer_report_samples: int = 32

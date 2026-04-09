@@ -1,4 +1,4 @@
-"""Pi0.5 选择性 PTQ（Vit / LLM / Expert）与分层输出误差分析（WebUI / eval 管线）。"""
+"""Pi0.5 选择性 PTQ（Vit / LLM / Expert / Denoise）与分层输出误差分析（WebUI / eval 管线）。"""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 from termcolor import colored
 
+from model_optimizer.models.pi05.dit import Pi05DenoiseStep
 from model_optimizer.models.pi05.expert import Expert
 from model_optimizer.models.pi05.llm import LLM
 from model_optimizer.models.pi05.vit import Vit
@@ -32,6 +33,14 @@ _PART_PREFIXES: dict[str, tuple[str, ...]] = {
     ),
     "llm": ("paligemma_with_expert.paligemma.model.language_model",),
     "expert": ("paligemma_with_expert.gemma_expert.model",),
+    # Pi05 单次 denoise：expert 主干 + 根上 action/time 投影（与 openpi PI0Pytorch.pi05 一致）
+    "denoise": (
+        "paligemma_with_expert.gemma_expert.model",
+        "action_in_proj",
+        "time_mlp_in",
+        "time_mlp_out",
+        "action_out_proj",
+    ),
 }
 
 
@@ -86,6 +95,10 @@ def _expert_from_pi05(pi05: nn.Module) -> Expert:
     return Expert(ge.config, ge.model)
 
 
+def _denoise_from_pi05(pi05: nn.Module) -> Pi05DenoiseStep:
+    return Pi05DenoiseStep.construct_model(pi05)
+
+
 def apply_selective_ptq(
     policy_ptq: Any,
     calib_dir: Path,
@@ -117,6 +130,13 @@ def apply_selective_ptq(
             print(colored(f"[ptq] quantize expert …", "cyan"), flush=True)
             quantize_model(wrap, sub_cfg, dl)
             set_dynamic_quant(wrap, "bf16")
+        elif part == "denoise":
+            wrap = _denoise_from_pi05(m)
+            dl = wrap.get_calibrate_dataset(calib_s)
+            print(colored(f"[ptq] quantize denoise (Pi05DenoiseStep) …", "cyan"), flush=True)
+            quantize_model(wrap, sub_cfg, dl)
+            # 与 Pi05DenoiseStep.quantize 一致（export/TRT 侧常用 fp16）
+            set_dynamic_quant(wrap, "fp16")
         else:
             raise ValueError(f"unknown ptq part: {part!r}")
     print(colored("[ptq] 选择性量化完成", "green"), flush=True)
