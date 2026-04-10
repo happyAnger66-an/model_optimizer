@@ -12,6 +12,8 @@ let ptqTrtCompareMode = false;
 
 /** 服务端 load_infer_bundle 阶段：{ stage, message, done }[]，用于 Server 进度分步展示 */
 let serverLoadStepList = [];
+/** 本会话是否已收到过 step：用于「清空显示」后恢复横幅为 idle / live */
+let inferHasReceivedStep = false;
 function dualPredMode() {
   return compareMode || ptqCompareMode || ptqTrtCompareMode;
 }
@@ -546,7 +548,7 @@ function setInferLoadingSub(text) {
   if (s) s.textContent = text;
 }
 
-/** 顶栏下内嵌加载条；true = 等待首次 step（不遮挡页面交互） */
+/** 顶栏下「请稍候」横幅：加载阶段与漏斗、服务端分步进度同区展示；首条 step 后隐藏 */
 function setInferLoadingBanner(visible) {
   const o = el("inferLoadingBanner");
   if (!o) return;
@@ -558,6 +560,12 @@ function setInferLoadingBanner(visible) {
     o.setAttribute("hidden", "");
     o.setAttribute("aria-hidden", "true");
   }
+}
+
+/** 首条 step 后：与横幅内同一文案的流式状态改在 Run · 状态 中显示 */
+function setServerProgressRunVisible(visible) {
+  const w = el("serverProgressRunWrap");
+  if (w) w.hidden = !visible;
 }
 
 function getPlotlyPalette() {
@@ -962,6 +970,8 @@ function finalizeServerLoadSteps() {
 function setProgress(text) {
   const n = el("serverProgress");
   if (n) n.textContent = text;
+  const r = el("serverProgressRun");
+  if (r) r.textContent = text;
 }
 
 function updateProgressFromStep(msg) {
@@ -1397,7 +1407,8 @@ function clearClientDisplay() {
   latestDimMsePctMeanTrt = null;
   latestDimRelP99Trt = null;
   latestDimMsePtTrtDimMean = null;
-  el("prompt").textContent = "—";
+  const pr = el("prompt");
+  if (pr) pr.textContent = "—";
   const imgB = el("imgBase");
   const imgW = el("imgWrist");
   if (imgB) imgB.removeAttribute("src");
@@ -1425,6 +1436,10 @@ function clearClientDisplay() {
   refreshCompareDimTable();
   syncPtqLayerReportCard();
   setProgress("已清空本页曲线与图像（WebSocket 未断开；可继续接收后续 step）。");
+  if (connected) {
+    setServerProgressRunVisible(inferHasReceivedStep);
+    if (!inferHasReceivedStep) setInferLoadingBanner(true);
+  }
   purgeAndNewPlotAllChartsSync();
 }
 
@@ -1866,8 +1881,10 @@ function connectInternal() {
     el("btnConnect").disabled = true;
     el("btnDisconnect").disabled = false;
     resetServerLoadSteps();
+    inferHasReceivedStep = false;
     setProgress("WebSocket 已连接，等待服务端 meta / 数据流…");
     setInferLoadingSub("已连接，等待服务端 meta…");
+    setServerProgressRunVisible(false);
     setInferLoadingBanner(true);
     setInferPauseButtons(false);
   };
@@ -1880,6 +1897,8 @@ function connectInternal() {
     el("btnConnect").disabled = false;
     el("btnDisconnect").disabled = true;
     setInferPauseButtons(false);
+    inferHasReceivedStep = false;
+    setServerProgressRunVisible(false);
     setInferLoadingBanner(false);
     if (manualDisconnect) {
       setProgress("已断开（手动 Disconnect）。");
@@ -1928,6 +1947,7 @@ function connectInternal() {
     if (msg.type === "meta") {
       if (msg.phase === "loading") {
         resetServerLoadSteps();
+        inferHasReceivedStep = false;
         el("repoId").textContent = "…";
         el("backend").textContent = "…";
         compareMode = false;
@@ -1940,9 +1960,11 @@ function connectInternal() {
         const te = el("trtEnginesBlock");
         if (te) te.hidden = true;
         el("gpuUtil").textContent = "-";
-        el("prompt").textContent = "—";
+        const pr = el("prompt");
+        if (pr) pr.textContent = "—";
         setProgress(msg.message || "服务端：正在加载数据集与策略…");
         setInferLoadingSub("服务端正在加载数据集与策略，请稍候…");
+        setServerProgressRunVisible(false);
         setInferLoadingBanner(true);
         return;
       }
@@ -1979,6 +2001,7 @@ function connectInternal() {
         );
       }
       setInferLoadingSub("模型与数据已就绪，等待首次推理结果（step）推送…");
+      setServerProgressRunVisible(false);
       setInferLoadingBanner(true);
       queueMicrotask(() => {
         purgeAndNewPlotAllChartsSync();
@@ -1996,6 +2019,7 @@ function connectInternal() {
 
     if (msg.type === "done") {
       setInferLoadingBanner(false);
+      setServerProgressRunVisible(true);
       setProgress(msg.message || `推理已结束 run_id=${msg.run_id ?? "-"}`);
       if (connected) setBadgeRunFinished();
       el("btnPauseInfer").disabled = true;
@@ -2005,6 +2029,7 @@ function connectInternal() {
 
     if (msg.type === "error") {
       setInferLoadingBanner(false);
+      setServerProgressRunVisible(true);
       setProgress(`错误：${msg.message || "服务器推理管线异常"}`);
       el("btnPauseInfer").disabled = true;
       el("btnResumeInfer").disabled = true;
@@ -2012,11 +2037,16 @@ function connectInternal() {
     }
 
     if (msg.type === "step") {
+      inferHasReceivedStep = true;
       setInferLoadingBanner(false);
+      setServerProgressRunVisible(true);
       updateTop(msg);
       updateProgressFromStep(msg);
       updateHzEstimatorsFromStep(msg);
-      if (msg.prompt) el("prompt").textContent = msg.prompt;
+      if (msg.prompt) {
+        const pr = el("prompt");
+        if (pr) pr.textContent = msg.prompt;
+      }
 
       if (msg.images) {
         if (msg.images.base_rgb_jpeg_b64) setImage(el("imgBase"), msg.images.base_rgb_jpeg_b64);
@@ -2051,6 +2081,7 @@ function disconnect() {
   el("btnConnect").disabled = false;
   el("btnDisconnect").disabled = true;
   setInferPauseButtons(false);
+  setServerProgressRunVisible(false);
   setInferLoadingBanner(false);
 }
 

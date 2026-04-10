@@ -66,11 +66,19 @@
       aria-live="polite"
       aria-hidden="true"
     >
-      <span class="inferLoadingBannerIcon" aria-hidden="true">⏳</span>
-      <div class="inferLoadingBannerBody">
-        <span class="inferLoadingBannerTitle">请稍候</span>
-        <span class="inferLoadingBannerSep" aria-hidden="true">·</span>
-        <span class="inferLoadingBannerSub" id="inferLoadingSub">连接后在此等候首次推理结果…</span>
+      <div class="inferLoadingBannerInner">
+        <div class="inferLoadingBannerIdleRow">
+          <span class="inferLoadingBannerIcon" aria-hidden="true">⏳</span>
+          <div class="inferLoadingBannerBody">
+            <span class="inferLoadingBannerTitle">请稍候</span>
+            <span class="inferLoadingBannerSep" aria-hidden="true">·</span>
+            <span class="inferLoadingBannerSub" id="inferLoadingSub">连接后在此等候首次推理结果…</span>
+          </div>
+        </div>
+        <div class="inferLoadingProgressPanel" aria-label="服务端状态与进度">
+          <div id="serverProgress" class="serverProgressLine">-</div>
+          <ul id="serverProgressSteps" class="serverProgressSteps" hidden aria-label="服务端加载步骤"></ul>
+        </div>
       </div>
     </div>
 
@@ -97,6 +105,10 @@
           <div>
             <span class="kv" title="相邻两次 chunk 起点（每次 policy.infer）间隔估计">infer_hz</span>
             <span id="inferHz">-</span>
+          </div>
+          <div id="serverProgressRunWrap" class="serverProgressRunWrap" hidden>
+            <span class="kv" title="加载阶段与「请稍候」横幅同步；推理开始后在此显示 chunk 流状态">状态</span>
+            <span id="serverProgressRun" class="serverProgressRunLine">-</span>
           </div>
           <div>
             <span class="kv" title="最近约 1s 内 step 消息速率（action_horizon 展开后的时间步流）">step_hz</span>
@@ -147,6 +159,7 @@
 
       <div class="card cardRgb">
         <div class="cardTitle">Base RGB</div>
+        <div id="prompt" class="prompt promptOverBase" title="当前任务指令（来自服务端 step）">—</div>
         <img id="imgBase" class="img imgLarge" alt="base rgb" />
       </div>
 
@@ -159,19 +172,6 @@
           </label>
         </div>
         <img id="imgWrist" class="img imgLarge" alt="wrist rgb" style="display: none" />
-      </div>
-
-      <div class="card span2 cardProgress">
-        <div class="cardTitle">Server 进度</div>
-        <div class="progressPanel">
-          <div id="serverProgress" class="serverProgressLine">-</div>
-          <ul id="serverProgressSteps" class="serverProgressSteps" hidden aria-label="服务端加载步骤"></ul>
-        </div>
-      </div>
-
-      <div class="card span2 cardPrompt">
-        <div class="cardTitle">Prompt（任务指令）</div>
-        <div id="prompt" class="prompt promptCompact">—</div>
       </div>
 
       <div id="compareDimTableCard" class="card span4" hidden>

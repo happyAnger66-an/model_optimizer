@@ -207,32 +207,39 @@ code {
   white-space: pre-wrap;
   line-height: 1.4;
   color: var(--text);
-  min-height: 56px;
+  min-height: 0;
 }
 
-.promptCompact {
-  min-height: 0;
-  max-height: 7.5rem;
-  overflow-y: auto;
-  font-size: 0.8125rem;
+/** 叠在 Base RGB 图上方：小号任务指令，不占整行卡片 */
+.promptOverBase {
+  font-size: 0.6875rem;
   line-height: 1.35;
   color: var(--prompt-secondary);
+  max-height: 4.2em;
+  overflow-y: auto;
+  word-break: break-word;
+  margin: 0 0 8px;
 }
 
-.progressPanel {
+/** 嵌入「请稍候」横幅：与漏斗同一区域的进度行 + 分步列表 */
+.inferLoadingProgressPanel {
   white-space: pre-wrap;
   word-break: break-word;
-  min-height: 2.5rem;
-  max-height: 12rem;
+  min-height: 2rem;
+  max-height: 11rem;
   overflow-y: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 0.75rem;
   line-height: 1.45;
-  color: var(--progress-fg);
-  background: var(--progress-bg);
+  color: var(--text);
+  background: var(--panel);
   border-radius: 8px;
   padding: 8px 10px;
-  border: 1px solid var(--progress-border);
+  border: 1px solid var(--border);
+}
+
+.inferLoadingProgressPanel > .serverProgressLine {
+  color: var(--progress-fg);
 }
 
 .serverProgressLine {
@@ -266,14 +273,6 @@ code {
 
 .progressStepItem.done {
   opacity: 0.92;
-}
-
-.cardProgress {
-  min-width: 0;
-}
-
-.cardPrompt {
-  min-width: 0;
 }
 
 .cardRgb {
@@ -527,11 +526,8 @@ html[data-theme="dark"] .btnIcon {
   background: var(--footer-bg);
 }
 
-/* 连接后 ~ 首条 step 前：顶栏下内嵌条，不遮罩、不拦截操作 */
+/* 连接后～首条 step：顶栏下「请稍候」+ 漏斗 + 服务端进度（与下方 Run 中「状态」同源文案） */
 .inferLoadingBanner {
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
   margin: 0 16px 10px;
   padding: 10px 14px;
   border-radius: 10px;
@@ -539,6 +535,20 @@ html[data-theme="dark"] .btnIcon {
   background: var(--progress-bg);
   font-size: 0.875rem;
   line-height: 1.45;
+}
+
+.inferLoadingBannerInner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.inferLoadingBannerIdleRow {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
 }
 
 .inferLoadingBanner[hidden] {
@@ -558,6 +568,19 @@ html[data-theme="dark"] .btnIcon {
   align-items: baseline;
   gap: 0.25rem 0.45rem;
   min-width: 0;
+  flex: 1;
+}
+
+.serverProgressRunWrap {
+  margin-top: 0.15rem;
+}
+
+.serverProgressRunLine {
+  display: inline;
+  font-weight: 600;
+  color: var(--progress-fg);
+  word-break: break-word;
+  white-space: pre-wrap;
 }
 
 .inferLoadingBannerTitle {
