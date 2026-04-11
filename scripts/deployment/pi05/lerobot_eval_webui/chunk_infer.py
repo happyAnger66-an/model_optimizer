@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import time
 from typing import Any
 
 import numpy as np
 from termcolor import colored
 
-from .action_align import align_action_dim
 from .dataset import tree_to_numpy
+from .infer_backends import select_infer_backend
 from .media import encode_jpeg_b64, to_hwc_uint8
 from .protocol import StepEvent, event_to_json
 from .running_stats import (
@@ -68,49 +67,14 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     gt = np.asarray(packed["actions"])
     obs = {k: v for k, v in packed.items() if k != "actions"}
 
-    infer_ms_pt: float
-    infer_ms_second: float | None = None
-    pred_h: np.ndarray
-    gt_h: np.ndarray
-    pred_h_trt: np.ndarray | None = None
-    pred_h_ptq: np.ndarray | None = None
-
-    if policy_trt is not None:
-        t0 = time.monotonic()
-        out_pt = policy.infer(obs)
-        infer_ms_pt = (time.monotonic() - t0) * 1000.0
-        t0 = time.monotonic()
-        out_trt = policy_trt.infer(obs)
-        infer_ms_second = (time.monotonic() - t0) * 1000.0
-        pred_pt = np.asarray(out_pt["actions"])
-        pred_trt_raw = np.asarray(out_trt["actions"])
-        pred_a_pt, gt_a = align_action_dim(pred_pt, gt)
-        pred_a_trt, _gt_a2 = align_action_dim(pred_trt_raw, gt)
-        pred_h = pred_a_pt[:action_horizon]
-        pred_h_trt = pred_a_trt[:action_horizon]
-        gt_h = gt_a[:action_horizon]
-    elif policy_ptq is not None:
-        t0 = time.monotonic()
-        out_pt = policy.infer(obs)
-        infer_ms_pt = (time.monotonic() - t0) * 1000.0
-        t0 = time.monotonic()
-        out_ptq = policy_ptq.infer(obs)
-        infer_ms_second = (time.monotonic() - t0) * 1000.0
-        pred_pt = np.asarray(out_pt["actions"])
-        pred_ptq_raw = np.asarray(out_ptq["actions"])
-        pred_a_pt, gt_a = align_action_dim(pred_pt, gt)
-        pred_a_ptq, _gt_a2 = align_action_dim(pred_ptq_raw, gt)
-        pred_h = pred_a_pt[:action_horizon]
-        pred_h_ptq = pred_a_ptq[:action_horizon]
-        gt_h = gt_a[:action_horizon]
-    else:
-        t0 = time.monotonic()
-        out = policy.infer(obs)
-        infer_ms_pt = (time.monotonic() - t0) * 1000.0
-        pred = np.asarray(out["actions"])
-        pred_a, gt_a = align_action_dim(pred, gt)
-        pred_h = pred_a[:action_horizon]
-        gt_h = gt_a[:action_horizon]
+    backend = select_infer_backend(bundle)
+    pack = backend.predict(policy, policy_trt, policy_ptq, obs, gt, action_horizon)
+    infer_ms_pt = pack.infer_ms_pt
+    infer_ms_second = pack.infer_ms_second
+    pred_h = pack.pred_h
+    gt_h = pack.gt_h
+    pred_h_trt = pack.pred_h_trt
+    pred_h_ptq = pack.pred_h_ptq
 
     if _perf_model is None:
         if hasattr(policy, "_policy"):
@@ -210,9 +174,9 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
         if k == 0:
             if infer_ms_second is not None:
                 timing = {"infer_ms_pt": float(infer_ms_pt), "infer_ms": float(infer_ms_pt + infer_ms_second)}
-                if policy_trt is not None:
+                if pred_h_trt is not None:
                     timing["infer_ms_trt"] = float(infer_ms_second)
-                if policy_ptq is not None:
+                if pred_h_ptq is not None:
                     timing["infer_ms_ptq"] = float(infer_ms_second)
             else:
                 timing = {"infer_ms": float(infer_ms_pt)}

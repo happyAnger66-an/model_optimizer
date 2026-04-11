@@ -67,6 +67,9 @@ class Args:
     max_fps: float = 0.0
     """限制推送帧率（step event/s）。0 表示不限制。"""
 
+    outbound_queue_maxsize: int = 0
+    """推理线程 → WebSocket 的 Janus 队列容量。``0`` 表示无界；正整数时在下游阻塞时反压推理线程。"""
+
     history_size: int = 0
     """缓存最近 N 条消息，新 client 连接后先回放（0 表示不缓存）。"""
 

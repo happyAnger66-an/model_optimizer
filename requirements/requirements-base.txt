@@ -26,6 +26,7 @@ ultralytics>=8.0
 # WebUI
 gradio>=4.0
 websockets>=11.0
+janus>=1.0
 
 # 工具库
 addict
