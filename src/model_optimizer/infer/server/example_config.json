@@ -1,0 +1,50 @@
+{
+  "checkpoint": "/path/to/pi05/checkpoint",
+  "config_name": "pi05_libero",
+  "mode": "pytorch",
+  "device": "cuda",
+  "precision": "bf16",
+  "rel_eps": 1e-8,
+
+  "dataset": {
+    "repo_id": null,
+    "root": null,
+    "num_samples": 500,
+    "start_index": 0
+  },
+
+  "tensorrt": {
+    "engine_path": "",
+    "vit_engine": "",
+    "llm_engine": "",
+    "expert_engine": "",
+    "denoise_engine": "",
+    "embed_prefix_engine": ""
+  },
+
+  "ptq": {
+    "quant_cfg": null,
+    "calib_dir": null,
+    "parts": []
+  },
+
+  "websocket": {
+    "enabled": false,
+    "host": "0.0.0.0",
+    "port": 8765,
+    "path": "/ws",
+    "max_fps": 0,
+    "history_size": 0,
+    "gpu_stats_interval": 1.0,
+    "jpeg_quality": 85,
+    "send_wrist": false,
+    "client_ws_url": null,
+    "outbound_queue_maxsize": 0
+  },
+
+  "calib": {
+    "save_path": null,
+    "max_samples": 0,
+    "item": "all"
+  }
+}
