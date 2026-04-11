@@ -23,6 +23,11 @@
 - [客户端-服务端交互](#客户端-服务端交互)
 - [关键设计](#关键设计)
 - [运行示例](#运行示例)
+- [API 使用方式](#api-使用方式)
+  - [方式一：直接调用 run_inference_loop](#方式一直接调用-run_inference_loop)
+  - [方式二：RobotAgent（ROS2 Action Server）](#方式二robotagentros2-action-server)
+  - [方式三：托管模式（自定义生命周期管理）](#方式三托管模式自定义生命周期管理)
+  - [InferTaskConfig 参数说明](#infertaskconfig-参数说明)
 
 ---
 
@@ -642,3 +647,206 @@ python record_unified.py \
 ```
 
 运行过程中通过键盘切换人工接管（`switch_infer_mode` 快捷键），可随时介入并恢复策略控制。
+
+---
+
+## API 使用方式
+
+`model_optimizer.infer.tasks` 提供 Python API，可在自定义程序中直接调用推理能力，无需通过 `record_unified.py` 命令行入口。
+
+### 核心组件
+
+```
+model_optimizer.infer.tasks
+├── InferTaskConfig           推理任务配置（后端、控制频率、融合、RTC 等）
+├── PolicyInferenceClient     策略推理客户端（local / remote 后端）
+├── ActionBuffer              动作缓冲区（融合、RTC）
+├── InferenceState            异步推理会话管理（线程 + 队列 + buffer）
+├── run_inference_loop        主推理控制循环
+├── extract_robot_state_keys  从 UnifiedRobot 自动提取关节名
+├── extract_camera_keys       从 UnifiedRobot 自动提取相机 key
+└── agents/
+    └── RobotAgent            ROS2 Action Server（接收 prompt 驱动推理）
+```
+
+### 方式一：直接调用 run_inference_loop
+
+适合脚本式一次性执行，函数内部自动创建连接、推理线程，结束后释放。
+
+#### Remote 后端（连接远程 PolicyServer）
+
+```python
+import threading
+from lerobot.robots.unified_robot import UnifiedRobot, UnifiedRobotConfig
+from model_optimizer.infer.tasks import InferTaskConfig, run_inference_loop
+
+# 1. 初始化机器人
+robot = UnifiedRobot(UnifiedRobotConfig(...))
+robot.connect()
+
+# 2. 配置
+config = InferTaskConfig(
+    backend="remote",
+    policy_host="192.168.1.100",
+    policy_port=8000,
+    fps=30.0,
+    action_horizon=30,
+    infer_interval=20,
+    enable_rtc=True,
+)
+
+# 3. 运行推理循环（阻塞，直到 stop_event 被 set 或 Ctrl-C）
+stop_event = threading.Event()
+result = run_inference_loop(robot, config, prompt="Fasten seatbelt", stop_event=stop_event)
+print(f"Completed: {result['total_steps']} steps in {result['elapsed_s']:.1f}s")
+```
+
+#### Local 后端（本进程加载模型，无需 WebSocket）
+
+```python
+config = InferTaskConfig(
+    backend="local",
+    checkpoint="/path/to/checkpoints/cfg_tianji/30000",
+    config_name="cfg_tianji_hard_0408_2.py",
+    device="cuda:0",
+    default_prompt="Fasten seatbelt",
+    robot_type="unified_robot",
+    fps=30.0,
+    action_horizon=30,
+    infer_interval=20,
+)
+
+stop_event = threading.Event()
+result = run_inference_loop(robot, config, prompt="Fasten seatbelt", stop_event=stop_event)
+```
+
+### 方式二：RobotAgent（ROS2 Action Server）
+
+适合长期运行的机器人服务，通过 ROS2 Action 接收任务 prompt。PolicyInferenceClient 和推理线程在 Agent 启动时一次性创建，后续每次 prompt **复用**，避免重复加载模型。
+
+```python
+import rclpy
+from lerobot.robots.unified_robot import UnifiedRobot, UnifiedRobotConfig
+from model_optimizer.infer.tasks import InferTaskConfig
+from model_optimizer.infer.tasks.agents import RobotAgent
+
+rclpy.init()
+
+robot = UnifiedRobot(UnifiedRobotConfig(...))
+robot.connect()
+
+config = InferTaskConfig(
+    backend="local",                    # 或 "remote"
+    checkpoint="/path/to/checkpoint",   # local 模式需要
+    config_name="cfg_tianji_hard_0408_2.py",
+    device="cuda:0",
+    fps=30.0,
+    action_horizon=30,
+    infer_interval=20,
+)
+
+agent = RobotAgent(robot, config)
+agent.spin()  # 阻塞，等待 ROS2 Action 请求
+```
+
+从另一个终端或 ROS2 节点发送任务：
+
+```bash
+# ROS2 Action Client 发送 prompt
+ros2 action send_goal /infer_task model_optimizer_interfaces/action/InferTask \
+    "{prompt: 'Fasten seatbelt'}"
+
+# 取消正在执行的任务
+ros2 action cancel_goal /infer_task
+```
+
+### 方式三：托管模式（自定义生命周期管理）
+
+适合需要自行管理 client/state 生命周期的场景，如在同一进程中多次切换 prompt 但不希望重建推理资源。
+
+```python
+import threading
+from model_optimizer.infer.tasks import (
+    InferTaskConfig, PolicyInferenceClient, InferenceState, run_inference_loop,
+)
+from model_optimizer.infer.tasks.infer_loop import _build_image_key_map, extract_robot_state_keys
+
+config = InferTaskConfig(backend="remote", policy_host="localhost", policy_port=8000)
+
+# 1. 一次性创建 client
+state_joint_names = extract_robot_state_keys(robot)
+client = PolicyInferenceClient(
+    config=config,
+    image_key_map=_build_image_key_map(robot, config),
+    state_joint_names=state_joint_names,
+)
+client.connect()
+
+# 2. warmup 推断 action_dim，创建 InferenceState
+obs = robot.get_observation()
+warmup_obs = client.build_obs_dict(obs, "default prompt")
+warmup_actions = client.get_action(warmup_obs)
+action_dim = warmup_actions.shape[-1]
+
+state = InferenceState(config, client, action_dim)
+state.buffer.update_from_inference(warmup_actions, start_step=0, current_step=0, enable_fusion=False)
+state.start()
+
+# 3. 多次执行不同 prompt，复用 client 和 state
+for prompt in ["Pick up the cup", "Place on the table", "Open the drawer"]:
+    stop_event = threading.Event()
+    result = run_inference_loop(
+        robot, config, prompt, stop_event,
+        client=client, state=state,  # 传入已有资源，不重建
+    )
+    print(f"[{prompt}] {result['total_steps']} steps")
+
+# 4. 全部完成后释放
+state.stop()
+client.close()
+```
+
+### InferTaskConfig 参数说明
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `backend` | `"local"` / `"remote"` | `"remote"` | 推理后端：remote 走 WebSocket，local 在本进程加载模型 |
+| `policy_host` | str | `"localhost"` | remote 模式：PolicyServer 地址 |
+| `policy_port` | int | `8000` | remote 模式：PolicyServer 端口 |
+| `checkpoint` | str | `""` | local 模式：checkpoint 目录路径 |
+| `config_name` | str | `"pi05_libero"` | local 模式：训练配置名（.py 文件或内置名） |
+| `device` | str / None | `None` | local 模式：推理设备，如 `"cuda:0"`，None 自动选择 |
+| `fps` | float | `30.0` | 控制循环频率 |
+| `action_horizon` | int | `30` | 每次推理返回的动作步数 |
+| `infer_interval` | int | `20` | 每隔多少步投递一次推理请求 |
+| `fusion_type` | `"none"` / `"linear"` / `"exponential"` | `"linear"` | 新旧动作融合策略 |
+| `fusion_start_weight` | float | `0.9` | linear 融合：旧值起始权重 |
+| `fusion_end_weight` | float | `0.1` | linear 融合：旧值结束权重 |
+| `fusion_exp_decay` | float | `2.0` | exponential 融合：衰减常数 |
+| `enable_rtc` | bool | `True` | 是否启用 RTC（传入已执行动作前缀） |
+| `default_infer_delay` | int | `5` | RTC 默认延迟步数 |
+| `rtc_max_delay` | int | `8` | RTC 最大允许延迟 |
+| `image_keys` | list / None | `None` | 相机 key 映射，None 时自动探测 |
+| `state_joint_names` | list / None | `None` | 关节名列表，None 时自动从 robot 提取 |
+
+### 资源生命周期对比
+
+```
+方式一（独立模式）                    方式二/三（托管模式）
+─────────────────                    ─────────────────
+每次 prompt:                          Agent 启动时（一次）:
+  connect()                             connect()
+  warmup                                warmup
+  start thread                          start thread
+  ── 控制循环 ──                        │
+  stop thread                         每次 prompt:
+  close()                               reset buffer/queue
+                                        warmup
+                                        ── 控制循环 ──
+                                        │
+                                      Agent 退出时（一次）:
+                                        stop thread
+                                        close()
+```
+
+托管模式避免了每次 prompt 的连接建立和模型加载开销，对 local 后端尤为重要（模型加载通常需要数十秒）。
