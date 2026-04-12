@@ -1,4 +1,4 @@
-"""多路推理策略（Strategy）：PyTorch 单路 / PyTorch+TensorRT / PyTorch+PTQ。"""
+"""多路推理策略（Strategy）：PyTorch 单路 / PyTorch+TensorRT / PyTorch+PTQ / TensorRT+ONNX。"""
 
 from __future__ import annotations
 
@@ -130,7 +130,44 @@ class PtPtqCompareBackend(InferBackend):
         )
 
 
+class TrtOrtCompareBackend(InferBackend):
+    """policy 挂 TensorRT，policy_trt 挂 ONNX Runtime；输出与 PtTrtCompareBackend 同一套 pred 槽位。"""
+
+    def predict(
+        self,
+        policy: Any,
+        policy_trt: Any | None,
+        policy_ptq: Any | None,
+        obs: dict[str, Any],
+        gt: np.ndarray,
+        action_horizon: int,
+    ) -> PredictionPack:
+        del policy_ptq
+        if policy_trt is None:
+            raise RuntimeError("TrtOrtCompareBackend 需要 policy_trt（ORT 路）")
+        t0 = time.monotonic()
+        out_trt = policy.infer(obs)
+        infer_ms_pt = (time.monotonic() - t0) * 1000.0
+        t0 = time.monotonic()
+        out_ort = policy_trt.infer(obs)
+        infer_ms_second = (time.monotonic() - t0) * 1000.0
+        pred_trt = np.asarray(out_trt["actions"])
+        pred_ort_raw = np.asarray(out_ort["actions"])
+        pred_a_trt, gt_a = align_action_dim(pred_trt, gt)
+        pred_a_ort, _ = align_action_dim(pred_ort_raw, gt)
+        return PredictionPack(
+            pred_h=pred_a_trt[:action_horizon],
+            gt_h=gt_a[:action_horizon],
+            pred_h_trt=pred_a_ort[:action_horizon],
+            pred_h_ptq=None,
+            infer_ms_pt=infer_ms_pt,
+            infer_ms_second=infer_ms_second,
+        )
+
+
 def select_infer_backend(bundle: dict[str, Any]) -> InferBackend:
+    if bundle.get("trt_ort_compare"):
+        return TrtOrtCompareBackend()
     if bundle.get("policy_trt") is not None:
         return PtTrtCompareBackend()
     if bundle.get("policy_ptq") is not None:

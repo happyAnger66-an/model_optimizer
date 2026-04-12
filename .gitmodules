@@ -4,3 +4,6 @@
 [submodule "third_party/openpi"]
 	path = third_party/openpi
 	url = git@github.com:happyAnger66-an/openpi.git
+[submodule "third_party/Model-Optimizer"]
+	path = third_party/Model-Optimizer
+	url = git@github.com:happyAnger66-an/Model-Optimizer.git

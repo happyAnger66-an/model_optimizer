@@ -9,13 +9,33 @@ let compareMode = false;
 let ptqCompareMode = false;
 /** 由服务端 meta.ptq_trt_compare 设置：pred1=PTQ(Pytorch) vs pred2=TRT(engine)（与 compare_mode / ptq_compare 互斥） */
 let ptqTrtCompareMode = false;
+/** 由服务端 meta.ort_compare：PyTorch vs ONNX Runtime */
+let ortCompareMode = false;
+/** 由服务端 meta.trt_ort_compare：TensorRT vs ONNX Runtime */
+let trtOrtCompareMode = false;
+
+/** 双路且逐步指标使用 mae_trt / mse_trt / mae_pt_trt（非 PT−PTQ 键） */
+function dualPairUsesTrtMetricKeys() {
+  return (
+    compareMode ||
+    ortCompareMode ||
+    trtOrtCompareMode ||
+    ptqTrtCompareMode
+  );
+}
 
 /** 服务端 load_infer_bundle 阶段：{ stage, message, done }[]，用于 Server 进度分步展示 */
 let serverLoadStepList = [];
 /** 本会话是否已收到过 step：用于「清空显示」后恢复横幅为 idle / live */
 let inferHasReceivedStep = false;
 function dualPredMode() {
-  return compareMode || ptqCompareMode || ptqTrtCompareMode;
+  return (
+    compareMode ||
+    ptqCompareMode ||
+    ptqTrtCompareMode ||
+    ortCompareMode ||
+    trtOrtCompareMode
+  );
 }
 let latestDimMsePctMean = null; // number[] | null
 let latestDimRelP99 = null; // number[] | null
@@ -543,6 +563,28 @@ function applyTensorrtMetaFromMsg(m) {
   set("trtEmbedPrefix", trt.embed_prefix_engine);
 }
 
+/** 根据 meta.onnxrt 显示 ONNX 模型目录与各引擎文件名 */
+function applyOnnxrtMetaFromMsg(m) {
+  const block = el("ortEnginesBlock");
+  if (!block) return;
+  const ort = m && m.onnxrt;
+  if (!ort || typeof ort !== "object") {
+    block.hidden = true;
+    return;
+  }
+  block.hidden = false;
+  const set = (id, v) => {
+    const n = el(id);
+    if (n) n.textContent = metaStr(v);
+  };
+  set("ortEnginePath", ort.engine_path);
+  set("ortVit", ort.vit_engine);
+  set("ortLlm", ort.llm_engine);
+  set("ortExpert", ort.expert_engine);
+  set("ortDenoise", ort.denoise_engine);
+  set("ortEmbedPrefix", ort.embed_prefix_engine);
+}
+
 function setInferLoadingSub(text) {
   const s = el("inferLoadingSub");
   if (s) s.textContent = text;
@@ -622,6 +664,8 @@ function metricsChartYAxisTitle(def) {
   if (!dualPredMode()) return def.yLabel;
   const pn = meta && meta.pair_name ? String(meta.pair_name) : null;
   if (pn) return `${pn} ${def.yLabel}`;
+  if (trtOrtCompareMode) return `TRT−ORT ${def.yLabel}`;
+  if (ortCompareMode) return `PT−ORT ${def.yLabel}`;
   if (ptqTrtCompareMode) return `PTQ−TRT ${def.yLabel}`;
   if (ptqCompareMode) return `PT−PTQ ${def.yLabel}`;
   return `PT−TRT ${def.yLabel}`;
@@ -633,7 +677,15 @@ function updateMetricChartWrapTitles() {
     if (!t) continue;
     const pairLabel =
       (meta && meta.pair_name ? String(meta.pair_name) : null) ||
-      (ptqTrtCompareMode ? "PTQ−TRT" : ptqCompareMode ? "PT−PTQ" : "PT−TRT");
+      (trtOrtCompareMode
+        ? "TRT−ORT"
+        : ortCompareMode
+          ? "PT−ORT"
+          : ptqTrtCompareMode
+            ? "PTQ−TRT"
+            : ptqCompareMode
+              ? "PT−PTQ"
+              : "PT−TRT");
     const base = dualPredMode()
       ? `${pairLabel} ${def.cardTitle} vs global_index`
       : `${def.cardTitle} vs global_index`;
@@ -642,21 +694,35 @@ function updateMetricChartWrapTitles() {
 }
 
 function firstPredLabel() {
+  if (trtOrtCompareMode) return "pred_trt";
   if (ptqTrtCompareMode) return "pred_ptq";
   return "pred_pt";
 }
 
 function secondPredLabel() {
-  return ptqCompareMode ? "pred_ptq" : "pred_trt";
+  if (trtOrtCompareMode || ortCompareMode) return "pred_ort";
+  if (ptqCompareMode) return "pred_ptq";
+  return "pred_trt";
 }
 
 function applyCompareUiLabels() {
-  const pred1 = (meta && meta.pred1_name ? String(meta.pred1_name) : null) || (ptqTrtCompareMode ? "PTQ" : "PT");
+  const pred1 =
+    (meta && meta.pred1_name ? String(meta.pred1_name) : null) ||
+    (trtOrtCompareMode ? "TRT" : ptqTrtCompareMode ? "PTQ" : "PT");
   const pred2 =
-    (meta && meta.pred2_name ? String(meta.pred2_name) : null) || (ptqCompareMode ? "PTQ" : "TRT");
+    (meta && meta.pred2_name ? String(meta.pred2_name) : null) ||
+    (trtOrtCompareMode || ortCompareMode ? "ORT" : ptqCompareMode ? "PTQ" : "TRT");
   const pair =
     (meta && meta.pair_name ? String(meta.pair_name) : null) ||
-    (ptqTrtCompareMode ? "PTQ−TRT" : ptqCompareMode ? "PT−PTQ" : "PT−TRT");
+    (trtOrtCompareMode
+      ? "TRT−ORT"
+      : ortCompareMode
+        ? "PT−ORT"
+        : ptqTrtCompareMode
+          ? "PTQ−TRT"
+          : ptqCompareMode
+            ? "PT−PTQ"
+            : "PT−TRT");
 
   const predLab1 = el("predFirstLabel");
   if (predLab1) predLab1.textContent = firstPredLabel();
@@ -1101,16 +1167,16 @@ function updateTop(event) {
     if (dualPredMode()) {
       setNum("cmpMaePt", m.mae);
       setNum("cmpMsePt", m.mse);
-      if (compareMode) {
-        setNum("cmpMaeTrt", m.mae_trt);
-        setNum("cmpMseTrt", m.mse_trt);
-        setNum("cmpMaePair", m.mae_pt_trt);
-        setNum("cmpMsePair", m.mse_pt_trt);
-      } else {
+      if (ptqCompareMode) {
         setNum("cmpMaeTrt", m.mae_ptq);
         setNum("cmpMseTrt", m.mse_ptq);
         setNum("cmpMaePair", m.mae_pt_ptq);
         setNum("cmpMsePair", m.mse_pt_ptq);
+      } else {
+        setNum("cmpMaeTrt", m.mae_trt);
+        setNum("cmpMseTrt", m.mse_trt);
+        setNum("cmpMaePair", m.mae_pt_trt);
+        setNum("cmpMsePair", m.mse_pt_trt);
       }
     } else {
       if (typeof m.mae === "number") el("mae").textContent = m.mae.toFixed(6);
@@ -1433,6 +1499,7 @@ function clearClientDisplay() {
     el("backend").textContent = meta.backend ?? "-";
   }
   applyTensorrtMetaFromMsg(meta);
+  applyOnnxrtMetaFromMsg(meta);
   refreshCompareDimTable();
   syncPtqLayerReportCard();
   setProgress("已清空本页曲线与图像（WebSocket 未断开；可继续接收后续 step）。");
@@ -1552,7 +1619,7 @@ function updatePerDimMsePctFromStep(event) {
   }
   if (Array.isArray(arr)) latestDimMsePctMean = arr;
   if (Array.isArray(p99)) latestDimRelP99 = p99;
-  if (compareMode) {
+  if (dualPairUsesTrtMetricKeys()) {
     if (Array.isArray(arrTrt)) latestDimMsePctMeanTrt = arrTrt;
     if (Array.isArray(p99Trt)) latestDimRelP99Trt = p99Trt;
     if (Array.isArray(pairDm)) latestDimMsePtTrtDimMean = pairDm;
@@ -1609,7 +1676,7 @@ function downloadDimStatsCsv() {
     return;
   }
   let rows;
-  if (compareMode || ptqCompareMode) {
+  if (dualPredMode()) {
     rows = [
       [
         "dim",
@@ -1661,7 +1728,7 @@ function downloadDimStatsCsv() {
   const ts = new Date().toISOString().replaceAll(":", "-");
   downloadCsv(`pi05_webui_dim_stats_${rid}_${ts}.csv`, rows);
   setProgress(
-    compareMode || ptqCompareMode
+    dualPredMode()
       ? "已下载：各 dim 的双路 mse_pct、rel_p99 及两路预测 mse（CSV）。"
       : "已下载：各 action dim mse_pct_mean / rel_p99（CSV）。"
   );
@@ -1713,7 +1780,7 @@ function pushPoint(event) {
         while (maeP.length > state.windowSize) maeP.shift();
         while (mseP.length > state.windowSize) mseP.shift();
       }
-    } else if (compareMode) {
+    } else if (dualPairUsesTrtMetricKeys()) {
       const ma = met.mae_pt_trt_per_dim;
       const ms = met.mse_pt_trt_per_dim;
       const fallbackMae = typeof met.mae_pt_trt === "number" ? met.mae_pt_trt : null;
@@ -1953,12 +2020,16 @@ function connectInternal() {
         compareMode = false;
         ptqCompareMode = false;
         ptqTrtCompareMode = false;
+        ortCompareMode = false;
+        trtOrtCompareMode = false;
         applyCompareUiLabels();
         setCompareLayoutVisible(false);
         const prc = el("ptqLayerReportCard");
         if (prc) prc.hidden = true;
         const te = el("trtEnginesBlock");
         if (te) te.hidden = true;
+        const ob = el("ortEnginesBlock");
+        if (ob) ob.hidden = true;
         el("gpuUtil").textContent = "-";
         const pr = el("prompt");
         if (pr) pr.textContent = "—";
@@ -1972,6 +2043,8 @@ function connectInternal() {
       compareMode = Boolean(meta.compare_mode);
       ptqCompareMode = Boolean(meta.ptq_compare);
       ptqTrtCompareMode = Boolean(meta.ptq_trt_compare);
+      ortCompareMode = Boolean(meta.ort_compare);
+      trtOrtCompareMode = Boolean(meta.trt_ort_compare);
       applyCompareUiLabels();
       setCompareLayoutVisible(dualPredMode());
       syncPtqLayerReportCard();
@@ -1987,6 +2060,7 @@ function connectInternal() {
       el("repoId").textContent = meta.repo_id ?? "-";
       el("backend").textContent = meta.backend ?? "-";
       applyTensorrtMetaFromMsg(meta);
+      applyOnnxrtMetaFromMsg(meta);
       el("gpuUtil").textContent =
         typeof meta.gpu_stats_interval_sec === "number" && meta.gpu_stats_interval_sec > 0
           ? "…"

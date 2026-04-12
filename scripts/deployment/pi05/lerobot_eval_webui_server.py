@@ -17,6 +17,8 @@ LeRobot 离线评估 WebUI（client-server）：
 
 可选 **PTQ 对比**（``--ptq-compare``）：双路 PyTorch（浮点 vs 选择性 PTQ），协议字段见 ``docs/quantize_ptq_compare.md``。
 
+可选 **TensorRT vs ONNX Runtime**（``--trt-ort-compare``）：双路引擎对比，需同时 ``--engine-path`` 与 ``--ort-engine-path``；与其它 compare 标志互斥。
+
 实现已拆分为 ``lerobot_eval_webui`` 包（同目录下），本文件仅作兼容入口。
 """
 

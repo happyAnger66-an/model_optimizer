@@ -16,8 +16,8 @@ class Args:
     dataset_root: Path | None = None
     device: str | None = None
 
-    # 单后端：pytorch / tensorrt；compare_mode=True 时忽略此项（固定 PyTorch + TensorRT 双路）
-    inference_mode: Literal["pytorch", "tensorrt"] = "pytorch"
+    # 单后端：pytorch / tensorrt / onnxrt；compare_mode=True 时忽略此项（固定 PyTorch + TensorRT 双路）
+    inference_mode: Literal["pytorch", "tensorrt", "onnxrt"] = "pytorch"
     # 双路对比：需 --engine-path 与各 *_engine（同 tensorrt 模式）；与 ptq_compare 互斥
     compare_mode: bool = False
 
@@ -26,6 +26,12 @@ class Args:
 
     # PyTorch PTQ（fake quant） vs TensorRT engine；与 compare_mode / ptq_compare 互斥
     ptq_trt_compare: bool = False
+
+    # PyTorch 浮点 vs ONNX Runtime；与 compare_mode / ptq_compare / ptq_trt_compare / trt_ort_compare 互斥
+    ort_compare: bool = False
+
+    # TensorRT engine vs ONNX Runtime；需同时 ``--engine-path`` 与 ``--ort-engine-path``；与其它 compare 互斥
+    trt_ort_compare: bool = False
     ptq_quant_cfg: Path | None = None
     """ModelOpt 量化配置：``.json`` 或与 ``normalize_quant_cfg`` 一致的 dict；``.py`` 需定义 ``QUANT_CFG``。"""
     ptq_calib_dir: Path | None = None
@@ -50,6 +56,15 @@ class Args:
     expert_engine: str = ""
     denoise_engine: str = ""
     embed_prefix_engine: str = ""
+
+    # ONNX Runtime 引擎（inference_mode=onnxrt 或 ort_compare 时使用）
+    ort_engine_path: str = ""
+    """ONNX 模型目录（包含 vit.onnx / llm.onnx / expert.onnx 等）。"""
+    ort_vit_engine: str = ""
+    ort_llm_engine: str = ""
+    ort_expert_engine: str = ""
+    ort_denoise_engine: str = ""
+    ort_embed_prefix_engine: str = ""
 
     host: str = "0.0.0.0"
     port: int = 8765

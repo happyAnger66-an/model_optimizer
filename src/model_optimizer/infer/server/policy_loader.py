@@ -105,6 +105,26 @@ def _load_ptq_quant_cfg(path: str) -> dict[str, Any]:
     return cfg
 
 
+def _mount_onnxrt_engines(policy: Any, config: ServerConfig, on_progress: ProgressCallback) -> None:
+    """在已有策略上挂载 ONNX Runtime 引擎。"""
+    from model_optimizer.infer.onnxrt.pi05_executor import Pi05OnnxRTExecutor
+
+    import addict
+
+    prec = _resolve_precision(config.precision)
+    on_progress("onnxrt", "加载 ONNX Runtime 引擎 …")
+    executor = Pi05OnnxRTExecutor(policy, prec)
+
+    ort_cfg: dict[str, str] = {"engine_path": config.onnxrt.engine_path}
+    for attr in ("vit_engine", "llm_engine", "expert_engine", "denoise_engine", "embed_prefix_engine"):
+        val = getattr(config.onnxrt, attr, "")
+        if val:
+            ort_cfg[attr] = val
+
+    executor.load_model(addict.Dict(ort_cfg))
+    on_progress("onnxrt", "ONNX Runtime 引擎已就绪")
+
+
 def _apply_selective_ptq(
     policy: Any,
     config: ServerConfig,
@@ -212,6 +232,10 @@ def load_policy_for_serve(
     if config.mode in ("tensorrt", "pt_trt_compare", "ptq_trt_compare"):
         _mount_tensorrt_engines(policy, config, on_progress)
 
+    # ONNX Runtime 引擎挂载（onnxrt / pt_ort_compare 模式）
+    if config.mode in ("onnxrt", "pt_ort_compare"):
+        _mount_onnxrt_engines(policy, config, on_progress)
+
     # PTQ 量化（pt_ptq_compare / ptq_trt_compare 模式）
     if config.mode in ("pt_ptq_compare", "ptq_trt_compare"):
         _apply_selective_ptq(policy, config, on_progress)
@@ -248,6 +272,9 @@ def load_policies(
     if mode == "tensorrt":
         _mount_tensorrt_engines(policy, config, on_progress)
 
+    elif mode == "onnxrt":
+        _mount_onnxrt_engines(policy, config, on_progress)
+
     elif mode == "pt_trt_compare":
         on_progress("policy_trt", "对比模式：加载第二套策略并挂载 TensorRT …")
         policy_trt = policy_config.create_trained_policy(
@@ -257,6 +284,16 @@ def load_policies(
         )
         _mount_tensorrt_engines(policy_trt, config, on_progress)
         on_progress("policy_trt", "PyTorch + TensorRT 双路就绪")
+
+    elif mode == "pt_ort_compare":
+        on_progress("policy_ort", "对比模式：加载第二套策略并挂载 ONNX Runtime …")
+        policy_trt = policy_config.create_trained_policy(
+            train_cfg,
+            config.checkpoint,
+            pytorch_device=config.device,
+        )
+        _mount_onnxrt_engines(policy_trt, config, on_progress)
+        on_progress("policy_ort", "PyTorch + ONNX Runtime 双路就绪")
 
     elif mode == "pt_ptq_compare":
         on_progress("ptq_policy", "对比模式：加载第二套策略并应用 PTQ …")

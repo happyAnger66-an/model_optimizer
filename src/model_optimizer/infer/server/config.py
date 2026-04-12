@@ -10,9 +10,11 @@ from typing import Any, Literal, Sequence
 InferMode = Literal[
     "pytorch",
     "tensorrt",
+    "onnxrt",
     "pt_trt_compare",
     "pt_ptq_compare",
     "ptq_trt_compare",
+    "pt_ort_compare",
 ]
 
 
@@ -26,6 +28,16 @@ class DatasetConfig:
 
 @dataclass
 class TensorRTConfig:
+    engine_path: str = ""
+    vit_engine: str = ""
+    llm_engine: str = ""
+    expert_engine: str = ""
+    denoise_engine: str = ""
+    embed_prefix_engine: str = ""
+
+
+@dataclass
+class OnnxRTConfig:
     engine_path: str = ""
     vit_engine: str = ""
     llm_engine: str = ""
@@ -104,6 +116,7 @@ class ServerConfig:
 
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     tensorrt: TensorRTConfig = field(default_factory=TensorRTConfig)
+    onnxrt: OnnxRTConfig = field(default_factory=OnnxRTConfig)
     ptq: PTQConfig = field(default_factory=PTQConfig)
     websocket: WebSocketConfig = field(default_factory=WebSocketConfig)
     serve: ServeConfig = field(default_factory=ServeConfig)
@@ -123,6 +136,12 @@ class ServerConfig:
             if not self.tensorrt.engine_path:
                 raise ValueError(
                     "mode='tensorrt' requires tensorrt.engine_path"
+                )
+
+        if self.mode in ("onnxrt", "pt_ort_compare"):
+            if not self.onnxrt.engine_path:
+                raise ValueError(
+                    f"mode={self.mode!r} requires onnxrt.engine_path"
                 )
 
         if self.mode in ("pt_ptq_compare", "ptq_trt_compare"):
@@ -175,6 +194,7 @@ def load_config(path: str | Path) -> ServerConfig:
     nested_fields = {
         "dataset": DatasetConfig,
         "tensorrt": TensorRTConfig,
+        "onnxrt": OnnxRTConfig,
         "ptq": PTQConfig,
         "websocket": WebSocketConfig,
         "serve": ServeConfig,
