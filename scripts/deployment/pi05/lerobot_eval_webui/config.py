@@ -32,6 +32,23 @@ class Args:
 
     # TensorRT engine vs ONNX Runtime；需同时 ``--engine-path`` 与 ``--ort-engine-path``；与其它 compare 互斥
     trt_ort_compare: bool = False
+
+    # 以下仅在 ``trt_ort_compare=True`` 时生效：用 Polygraphy 对子图 ONNX 做 TRT vs ORT 逐张量对比（见 ``trt_ort_polygraphy_compare.py``）
+    trt_ort_polygraphy_compare: bool = False
+    """为 True 时在加载阶段对 vit/llm/expert 等 ONNX 跑一次 Polygraphy 对比，结果写入 meta ``trt_ort_polygraphy``。"""
+    trt_ort_polygraphy_mark_all: bool = False
+    """为 True 时用 ``MARK_ALL`` 暴露中间张量；必须同时 ``trt_ort_polygraphy_rebuild_trt``（现场编译 TRT，不用预置 .engine）。"""
+    trt_ort_polygraphy_rebuild_trt: bool = False
+    """与 ``mark_all`` 联用：从 MARK_ALL 后的 ONNX 用 TensorRT builder 编译引擎再与 ORT 对比。"""
+    trt_ort_polygraphy_parts: tuple[str, ...] = dataclasses.field(default_factory=tuple)
+    """非空时仅跑列出的子图，取值 vit / embed_prefix / llm / expert / denoise；空元组表示全部已配置的子图。"""
+    trt_ort_polygraphy_ort_providers: tuple[str, ...] = dataclasses.field(
+        default_factory=lambda: ("CUDAExecutionProvider", "CPUExecutionProvider")
+    )
+    trt_ort_polygraphy_max_report_tensors: int = 256
+    """每个子图写入 meta 的 tensor 摘要条数上限（按 max_abs 降序）。"""
+    trt_ort_polygraphy_seed: int = 0
+    """合成输入的 numpy 随机种子（各子图共用基种子，子图内会偏移以避免完全相同）。"""
     ptq_quant_cfg: Path | None = None
     """ModelOpt 量化配置：``.json`` 或与 ``normalize_quant_cfg`` 一致的 dict；``.py`` 需定义 ``QUANT_CFG``。"""
     ptq_calib_dir: Path | None = None

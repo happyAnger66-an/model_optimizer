@@ -19,6 +19,8 @@ LeRobot 离线评估 WebUI（client-server）：
 
 可选 **TensorRT vs ONNX Runtime**（``--trt-ort-compare``）：双路引擎对比，需同时 ``--engine-path`` 与 ``--ort-engine-path``；与其它 compare 标志互斥。
 
+可选 **Polygraphy 子图按张量对比**（与 ``--trt-ort-compare`` 联用）：``--trt-ort-polygraphy-compare`` 在加载阶段对成对的子图 ONNX / TRT engine 跑 Polygraphy ``Comparator``，将各输出张量的 ``max_abs`` / ``mean_abs`` 等摘要写入 meta 的 ``trt_ort_polygraphy``；若需对齐 ``ReferenceRunner`` 的逐层暴露，可再加 ``--trt-ort-polygraphy-mark-all --trt-ort-polygraphy-rebuild-trt``（从 MARK_ALL 后的 ONNX 现场编译 TRT，不用预置 ``.engine``）。依赖需自行安装 ``polygraphy``、``onnx``、``onnxruntime-gpu`` 等。
+
 实现已拆分为 ``lerobot_eval_webui`` 包（同目录下），本文件仅作兼容入口。
 """
 

@@ -42,6 +42,7 @@ optional_deps = {
         "datasets>=3.0",
         "av>=15.0.0,<16.0.0",
         "gcsfs",
+        "polygraphy>=0.49.22",
     ],
     "dev-test": [
         "pytest>=7.0",

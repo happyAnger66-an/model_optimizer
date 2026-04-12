@@ -464,6 +464,22 @@ def load_infer_bundle(
             "embed_prefix_engine": getattr(args, "ort_embed_prefix_engine", "") or "",
         }
 
+    trt_ort_polygraphy_report: dict[str, Any] | None = None
+    if getattr(args, "trt_ort_compare", False) and getattr(args, "trt_ort_polygraphy_compare", False):
+        from .trt_ort_polygraphy_compare import build_trt_ort_polygraphy_report
+
+        _p("trt_ort_polygraphy", "Polygraphy：子图 TRT vs ORT 对比（可能较慢）…")
+        trt_ort_polygraphy_report = build_trt_ort_polygraphy_report(args)
+        ok_pg = bool(trt_ort_polygraphy_report.get("ok")) if isinstance(trt_ort_polygraphy_report, dict) else False
+        _p(
+            "trt_ort_polygraphy",
+            "Polygraphy：对比完成（"
+            + ("全部子图通过" if ok_pg else "存在失败、缺依赖或未配置子图；见 meta.trt_ort_polygraphy")
+            + "）",
+        )
+    if trt_ort_polygraphy_report is not None:
+        meta_payload["trt_ort_polygraphy"] = trt_ort_polygraphy_report
+
     _p("ready", "组装 meta、运行态统计器 …")
     meta_msg = event_to_json(meta_payload)
     _p("ready", "加载阶段完成，即将推送 meta 与 step 流")
