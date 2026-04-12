@@ -16,6 +16,10 @@ class ResumeInference:
     """恢复推理。"""
 
 
+# server.py 等调用方使用的简短名称（与 PauseInference / ResumeInference 为同一类型）
+ControlPause = PauseInference
+ControlResume = ResumeInference
+
 ControlCommand = PauseInference | ResumeInference
 
 

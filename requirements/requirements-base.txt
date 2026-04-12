@@ -48,3 +48,6 @@ matplotlib>=3.5
 # 构建
 setuptools>=65
 setuptools-scm>=8.0
+
+
+janus
