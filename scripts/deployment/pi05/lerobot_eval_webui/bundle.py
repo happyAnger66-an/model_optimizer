@@ -32,6 +32,25 @@ from .onnxrt_backend import load_onnxrt_engines
 from .tensorrt_backend import load_tensorrt_engines
 
 
+def _trt_trt_second_engine_filenames(args: Args) -> dict[str, str]:
+    """第二路引擎文件名：``trt_trt_second_*`` 非空优先，否则回退到主路 ``*_engine``。"""
+
+    def _coalesce(second: str, primary: str) -> str:
+        s = (second or "").strip()
+        return s if s else (primary or "")
+
+    return {
+        "vit_engine": _coalesce(str(getattr(args, "trt_trt_second_vit_engine", "")), args.vit_engine),
+        "llm_engine": _coalesce(str(getattr(args, "trt_trt_second_llm_engine", "")), args.llm_engine),
+        "expert_engine": _coalesce(str(getattr(args, "trt_trt_second_expert_engine", "")), args.expert_engine),
+        "denoise_engine": _coalesce(str(getattr(args, "trt_trt_second_denoise_engine", "")), args.denoise_engine),
+        "embed_prefix_engine": _coalesce(
+            str(getattr(args, "trt_trt_second_embed_prefix_engine", "")),
+            args.embed_prefix_engine,
+        ),
+    }
+
+
 def load_infer_bundle(
     args: Args,
     run_id: str,
@@ -53,13 +72,16 @@ def load_infer_bundle(
         bool(getattr(args, "ptq_trt_compare", False)),
         bool(getattr(args, "ort_compare", False)),
         bool(getattr(args, "trt_ort_compare", False)),
+        bool(getattr(args, "trt_trt_compare", False)),
     ]
     if sum(1 for x in modes if x) > 1:
         raise ValueError(
-            "compare_mode / ptq_compare / ptq_trt_compare / ort_compare / trt_ort_compare 互斥，请勿同时开启。"
+            "compare_mode / ptq_compare / ptq_trt_compare / ort_compare / trt_ort_compare / trt_trt_compare 互斥，请勿同时开启。"
         )
     if (args.ptq_compare or getattr(args, "ptq_trt_compare", False)) and args.inference_mode != "pytorch":
         raise ValueError("ptq_compare / ptq_trt_compare 仅支持 inference_mode=pytorch。")
+    if getattr(args, "trt_trt_compare", False) and args.inference_mode != "tensorrt":
+        raise ValueError("trt_trt_compare=True 时必须设置 --inference-mode tensorrt（双路均为 TensorRT 引擎）。")
 
     print(colored("[infer] get_config + data_config ...", "cyan"), flush=True)
     _p("config", "读取训练配置与 data_config …")
@@ -85,7 +107,62 @@ def load_infer_bundle(
     policy_trt: Any | None = None
     policy_ptq: Any | None = None
 
-    if getattr(args, "trt_ort_compare", False):
+    if getattr(args, "trt_trt_compare", False):
+        if not args.engine_path:
+            raise ValueError("trt_trt_compare=True 时必须设置 --engine-path（第一路 TensorRT 引擎目录，如 FP16）。")
+        sec = str(getattr(args, "trt_trt_second_engine_path", "") or "").strip()
+        if not sec:
+            raise ValueError(
+                "trt_trt_compare=True 时必须设置 --trt-trt-second-engine-path（第二路引擎目录，如 NVFP4）。"
+                "第二路文件名默认与主路相同；若不同请设 --trt-trt-second-llm-engine 等覆盖项。",
+            )
+        print(colored("[infer] trt_trt_compare：加载第一路 TensorRT（参考）…", "cyan"), flush=True)
+        _p("policy_trt_ref", "trt_trt：创建 policy 并挂载第一路 TensorRT …")
+        policy = policy_config.create_trained_policy(
+            train_cfg,
+            args.checkpoint,
+            pytorch_device=args.device,
+        )
+        load_tensorrt_engines(
+            policy,
+            engine_path=args.engine_path,
+            precision=args.precision,
+            vit_engine=args.vit_engine,
+            llm_engine=args.llm_engine,
+            expert_engine=args.expert_engine,
+            denoise_engine=args.denoise_engine,
+            embed_prefix_engine=args.embed_prefix_engine,
+        )
+        print(colored("[infer] trt_trt_compare：加载第二路 TensorRT …", "cyan"), flush=True)
+        _p("policy_trt_target", "trt_trt：创建第二套 policy 并挂载第二路 TensorRT …")
+        policy_trt = policy_config.create_trained_policy(
+            train_cfg,
+            args.checkpoint,
+            pytorch_device=args.device,
+        )
+        sec_names = _trt_trt_second_engine_filenames(args)
+        load_tensorrt_engines(
+            policy_trt,
+            engine_path=sec,
+            precision=args.precision,
+            vit_engine=sec_names["vit_engine"],
+            llm_engine=sec_names["llm_engine"],
+            expert_engine=sec_names["expert_engine"],
+            denoise_engine=sec_names["denoise_engine"],
+            embed_prefix_engine=sec_names["embed_prefix_engine"],
+        )
+        print(colored("[infer] trt_trt_compare：双 TensorRT 策略已就绪", "cyan"), flush=True)
+        _p("policy_trt_target", "第二路 TensorRT 已挂载（双 TRT 就绪）")
+        try:
+            pd = getattr(policy, "_pytorch_device", None)
+            is_pt = getattr(policy, "_is_pytorch_model", None)
+            print(
+                colored(f"[infer] policy(TRT ref) 就绪 is_pytorch={is_pt} device={pd!r}", "cyan"),
+                flush=True,
+            )
+        except Exception:
+            pass
+    elif getattr(args, "trt_ort_compare", False):
         if not args.engine_path:
             raise ValueError("trt_ort_compare=True 时必须设置 --engine-path（TensorRT 引擎目录）。")
         ort_ep = getattr(args, "ort_engine_path", "")
@@ -123,6 +200,7 @@ def load_infer_bundle(
             expert_engine=getattr(args, "ort_expert_engine", ""),
             denoise_engine=getattr(args, "ort_denoise_engine", ""),
             embed_prefix_engine=getattr(args, "ort_embed_prefix_engine", ""),
+            ort_providers=tuple(getattr(args, "ort_providers", ())),
         )
         print(colored("[infer] trt_ort_compare：TensorRT + ONNX Runtime 双策略已就绪", "cyan"), flush=True)
         _p("policy_ort_second", "ONNX Runtime 已挂载（TRT vs ORT 双路就绪）")
@@ -265,10 +343,15 @@ def load_infer_bundle(
             expert_engine=getattr(args, "ort_expert_engine", ""),
             denoise_engine=getattr(args, "ort_denoise_engine", ""),
             embed_prefix_engine=getattr(args, "ort_embed_prefix_engine", ""),
+            ort_providers=tuple(getattr(args, "ort_providers", ())),
         )
         print(colored("[infer] ort_compare：PyTorch + ONNX Runtime 双策略已就绪", "cyan"), flush=True)
         _p("policy_ort", "ONNX Runtime 引擎已挂载（compare 双路就绪）")
-    elif not getattr(args, "trt_ort_compare", False) and args.inference_mode == "tensorrt":
+    elif (
+        not getattr(args, "trt_ort_compare", False)
+        and not getattr(args, "trt_trt_compare", False)
+        and args.inference_mode == "tensorrt"
+    ):
         if not args.engine_path:
             raise ValueError("inference_mode=tensorrt 时必须设置 --engine-path（引擎目录）。")
         print(colored("[infer] 加载 TensorRT 引擎 ...", "cyan"), flush=True)
@@ -299,6 +382,7 @@ def load_infer_bundle(
             expert_engine=getattr(args, "ort_expert_engine", ""),
             denoise_engine=getattr(args, "ort_denoise_engine", ""),
             embed_prefix_engine=getattr(args, "ort_embed_prefix_engine", ""),
+            ort_providers=tuple(getattr(args, "ort_providers", ())),
         )
         print(colored("[infer] ONNX Runtime 引擎已就绪", "cyan"), flush=True)
         _p("onnxrt", "ONNX Runtime 引擎已就绪")
@@ -371,6 +455,8 @@ def load_infer_bundle(
         backend = "pytorch_ptq+tensorrt"
     elif getattr(args, "trt_ort_compare", False):
         backend = "tensorrt+onnxrt"
+    elif getattr(args, "trt_trt_compare", False):
+        backend = "tensorrt+tensorrt"
     elif getattr(args, "ort_compare", False):
         backend = "pytorch+onnxrt"
     else:
@@ -385,6 +471,7 @@ def load_infer_bundle(
         "ptq_trt_compare": bool(getattr(args, "ptq_trt_compare", False)),
         "ort_compare": bool(getattr(args, "ort_compare", False)),
         "trt_ort_compare": bool(getattr(args, "trt_ort_compare", False)),
+        "trt_trt_compare": bool(getattr(args, "trt_trt_compare", False)),
         "action_horizon": int(action_horizon),
         "start_index": int(args.start_index),
         "end_index_exclusive": int(end),
@@ -433,12 +520,17 @@ def load_infer_bundle(
         meta_payload["pred1_name"] = "TRT"
         meta_payload["pred2_name"] = "ORT"
         meta_payload["pair_name"] = "TRT−ORT"
+    elif getattr(args, "trt_trt_compare", False):
+        meta_payload["pred1_name"] = "TRT_ref"
+        meta_payload["pred2_name"] = "TRT_tgt"
+        meta_payload["pair_name"] = "TRT_ref−TRT_tgt"
 
     if (
         args.inference_mode == "tensorrt"
         or args.compare_mode
         or getattr(args, "ptq_trt_compare", False)
         or getattr(args, "trt_ort_compare", False)
+        or getattr(args, "trt_trt_compare", False)
     ):
         meta_payload["tensorrt"] = {
             "precision": args.precision,
@@ -449,6 +541,16 @@ def load_infer_bundle(
             "denoise_engine": args.denoise_engine or "",
             "embed_prefix_engine": args.embed_prefix_engine or "",
         }
+        if getattr(args, "trt_trt_compare", False):
+            sec_nm = _trt_trt_second_engine_filenames(args)
+            meta_payload["tensorrt"]["trt_trt_second_engine_path"] = str(
+                getattr(args, "trt_trt_second_engine_path", "") or "",
+            )
+            meta_payload["tensorrt"]["trt_trt_second_vit_engine"] = sec_nm["vit_engine"] or ""
+            meta_payload["tensorrt"]["trt_trt_second_llm_engine"] = sec_nm["llm_engine"] or ""
+            meta_payload["tensorrt"]["trt_trt_second_expert_engine"] = sec_nm["expert_engine"] or ""
+            meta_payload["tensorrt"]["trt_trt_second_denoise_engine"] = sec_nm["denoise_engine"] or ""
+            meta_payload["tensorrt"]["trt_trt_second_embed_prefix_engine"] = sec_nm["embed_prefix_engine"] or ""
 
     if (
         args.inference_mode == "onnxrt"
@@ -503,11 +605,13 @@ def load_infer_bundle(
         "running_per_dim_mse_pct": RunningPerDimMsePctStats(),
         "running_per_dim_rel_p99": RunningPerDimRelP99Stats(),
         "trt_ort_compare": bool(getattr(args, "trt_ort_compare", False)),
+        "trt_trt_compare": bool(getattr(args, "trt_trt_compare", False)),
     }
     _second_path_trt_style_stats = (
         bool(args.compare_mode)
         or bool(getattr(args, "ort_compare", False))
         or bool(getattr(args, "trt_ort_compare", False))
+        or bool(getattr(args, "trt_trt_compare", False))
         or bool(getattr(args, "ptq_trt_compare", False))
     )
     if _second_path_trt_style_stats:

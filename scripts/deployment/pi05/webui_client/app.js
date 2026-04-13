@@ -13,6 +13,8 @@ let ptqTrtCompareMode = false;
 let ortCompareMode = false;
 /** 由服务端 meta.trt_ort_compare：TensorRT vs ONNX Runtime */
 let trtOrtCompareMode = false;
+/** 由服务端 meta.trt_trt_compare：双 TensorRT（如 FP16 vs NVFP4） */
+let trtTrtCompareMode = false;
 
 /** 双路且逐步指标使用 mae_trt / mse_trt / mae_pt_trt（非 PT−PTQ 键） */
 function dualPairUsesTrtMetricKeys() {
@@ -20,6 +22,7 @@ function dualPairUsesTrtMetricKeys() {
     compareMode ||
     ortCompareMode ||
     trtOrtCompareMode ||
+    trtTrtCompareMode ||
     ptqTrtCompareMode
   );
 }
@@ -34,7 +37,8 @@ function dualPredMode() {
     ptqCompareMode ||
     ptqTrtCompareMode ||
     ortCompareMode ||
-    trtOrtCompareMode
+    trtOrtCompareMode ||
+    trtTrtCompareMode
   );
 }
 let latestDimMsePctMean = null; // number[] | null
@@ -555,12 +559,28 @@ function applyTensorrtMetaFromMsg(m) {
     if (n) n.textContent = metaStr(v);
   };
   set("trtPrecision", trt.precision);
-  set("trtEnginePath", trt.engine_path);
-  set("trtVit", trt.vit_engine);
-  set("trtLlm", trt.llm_engine);
-  set("trtExpert", trt.expert_engine);
-  set("trtDenoise", trt.denoise_engine);
-  set("trtEmbedPrefix", trt.embed_prefix_engine);
+  const secPath = trt.trt_trt_second_engine_path;
+  set(
+    "trtEnginePath",
+    secPath
+      ? `${metaStr(trt.engine_path)}  ·  tgt: ${metaStr(secPath)}`
+      : trt.engine_path,
+  );
+  const dualTrt = Boolean(m && m.trt_trt_compare && secPath);
+  const fmtRefTgt = (refKey, secKey) => {
+    const ref = trt[refKey];
+    const tgt = trt[secKey];
+    const r = metaStr(ref);
+    if (!dualTrt) return r;
+    const t =
+      tgt !== undefined && tgt !== null && String(tgt).trim() !== "" ? metaStr(tgt) : r;
+    return t !== r ? `${r} · tgt: ${t}` : r;
+  };
+  set("trtVit", fmtRefTgt("vit_engine", "trt_trt_second_vit_engine"));
+  set("trtLlm", fmtRefTgt("llm_engine", "trt_trt_second_llm_engine"));
+  set("trtExpert", fmtRefTgt("expert_engine", "trt_trt_second_expert_engine"));
+  set("trtDenoise", fmtRefTgt("denoise_engine", "trt_trt_second_denoise_engine"));
+  set("trtEmbedPrefix", fmtRefTgt("embed_prefix_engine", "trt_trt_second_embed_prefix_engine"));
 }
 
 /** 根据 meta.onnxrt 显示 ONNX 模型目录与各引擎文件名 */
@@ -665,6 +685,7 @@ function metricsChartYAxisTitle(def) {
   const pn = meta && meta.pair_name ? String(meta.pair_name) : null;
   if (pn) return `${pn} ${def.yLabel}`;
   if (trtOrtCompareMode) return `TRT−ORT ${def.yLabel}`;
+  if (trtTrtCompareMode) return `TRT−TRT ${def.yLabel}`;
   if (ortCompareMode) return `PT−ORT ${def.yLabel}`;
   if (ptqTrtCompareMode) return `PTQ−TRT ${def.yLabel}`;
   if (ptqCompareMode) return `PT−PTQ ${def.yLabel}`;
@@ -679,6 +700,8 @@ function updateMetricChartWrapTitles() {
       (meta && meta.pair_name ? String(meta.pair_name) : null) ||
       (trtOrtCompareMode
         ? "TRT−ORT"
+        : trtTrtCompareMode
+          ? "TRT−TRT"
         : ortCompareMode
           ? "PT−ORT"
           : ptqTrtCompareMode
@@ -695,12 +718,14 @@ function updateMetricChartWrapTitles() {
 
 function firstPredLabel() {
   if (trtOrtCompareMode) return "pred_trt";
+  if (trtTrtCompareMode) return "pred_trt_ref";
   if (ptqTrtCompareMode) return "pred_ptq";
   return "pred_pt";
 }
 
 function secondPredLabel() {
   if (trtOrtCompareMode || ortCompareMode) return "pred_ort";
+  if (trtTrtCompareMode) return "pred_trt_tgt";
   if (ptqCompareMode) return "pred_ptq";
   return "pred_trt";
 }
@@ -708,15 +733,23 @@ function secondPredLabel() {
 function applyCompareUiLabels() {
   const pred1 =
     (meta && meta.pred1_name ? String(meta.pred1_name) : null) ||
-    (trtOrtCompareMode ? "TRT" : ptqTrtCompareMode ? "PTQ" : "PT");
+    (trtOrtCompareMode ? "TRT" : trtTrtCompareMode ? "TRT_ref" : ptqTrtCompareMode ? "PTQ" : "PT");
   const pred2 =
     (meta && meta.pred2_name ? String(meta.pred2_name) : null) ||
-    (trtOrtCompareMode || ortCompareMode ? "ORT" : ptqCompareMode ? "PTQ" : "TRT");
+    (trtOrtCompareMode || ortCompareMode
+      ? "ORT"
+      : trtTrtCompareMode
+        ? "TRT_tgt"
+        : ptqCompareMode
+          ? "PTQ"
+          : "TRT");
   const pair =
     (meta && meta.pair_name ? String(meta.pair_name) : null) ||
     (trtOrtCompareMode
       ? "TRT−ORT"
-      : ortCompareMode
+      : trtTrtCompareMode
+        ? "TRT−TRT"
+        : ortCompareMode
         ? "PT−ORT"
         : ptqTrtCompareMode
           ? "PTQ−TRT"
@@ -2022,6 +2055,7 @@ function connectInternal() {
         ptqTrtCompareMode = false;
         ortCompareMode = false;
         trtOrtCompareMode = false;
+        trtTrtCompareMode = false;
         applyCompareUiLabels();
         setCompareLayoutVisible(false);
         const prc = el("ptqLayerReportCard");
@@ -2045,6 +2079,7 @@ function connectInternal() {
       ptqTrtCompareMode = Boolean(meta.ptq_trt_compare);
       ortCompareMode = Boolean(meta.ort_compare);
       trtOrtCompareMode = Boolean(meta.trt_ort_compare);
+      trtTrtCompareMode = Boolean(meta.trt_trt_compare);
       applyCompareUiLabels();
       setCompareLayoutVisible(dualPredMode());
       syncPtqLayerReportCard();

@@ -11,6 +11,9 @@
         "denoise_engine": "denoise.onnx",
     }))
     # 之后 policy.infer(obs) 透明走 ORT
+
+可选：在 ``addict.Dict`` 中传入 ``ort_providers``（字符串元组/列表）以覆盖 ONNX Runtime EP 顺序；
+NVFP4（dtype 23）建议在环境中启用 ``TensorRTExecutionProvider``。
 """
 
 from __future__ import annotations
@@ -80,6 +83,16 @@ class Pi05OnnxRTExecutor(Executor):
                 raise TypeError(f"Unexpected past_key_values[{i}] type: {type(entry)}")
         return torch.cat(keys, dim=0), torch.cat(vals, dim=0)
 
+    def _ort_providers(self) -> list[str] | None:
+        """来自配置的 ORT EP 顺序；未配置时由 ``OrtEngine`` 使用内置默认（含 TensorRT EP，若可用）。"""
+        if not self.config:
+            return None
+        raw = getattr(self.config, "ort_providers", None)
+        if raw is None:
+            return None
+        lst = [str(x) for x in raw]
+        return lst if lst else None
+
     def _setup_ort_engines(self) -> None:
         """按配置替换各子模块 forward 为 OrtEngine 调用。"""
         if not self.config.engine_path:
@@ -107,7 +120,7 @@ class Pi05OnnxRTExecutor(Executor):
         def vit_return_wrap(output: dict) -> torch.Tensor:
             return output["image_features"]
 
-        vit_engine = OrtEngine(onnx_path, return_wrap=vit_return_wrap, perf=True)
+        vit_engine = OrtEngine(onnx_path, return_wrap=vit_return_wrap, perf=True, providers=self._ort_providers())
 
         def get_image_features(pixel_values: torch.Tensor) -> torch.Tensor:
             return vit_engine(pixel_values)
@@ -118,7 +131,7 @@ class Pi05OnnxRTExecutor(Executor):
         onnx_path = os.path.join(self.config.engine_path, self.config.embed_prefix_engine)
         print(colored(f"[ORT] replace embed_prefix with {self.config.embed_prefix_engine}", "green"))
 
-        embed_prefix_engine = OrtEngine(onnx_path, perf=True)
+        embed_prefix_engine = OrtEngine(onnx_path, perf=True, providers=self._ort_providers())
 
         def embed_prefix_ort(
             self_m: Any,
@@ -146,7 +159,7 @@ class Pi05OnnxRTExecutor(Executor):
         onnx_path = os.path.join(self.config.engine_path, self.config.llm_engine)
         print(colored(f"[ORT] replace language_model with {self.config.llm_engine}", "green"))
 
-        llm_engine = OrtEngine(onnx_path, perf=True)
+        llm_engine = OrtEngine(onnx_path, perf=True, providers=self._ort_providers())
         executor_self = self
 
         def llm_forward(
@@ -207,7 +220,7 @@ class Pi05OnnxRTExecutor(Executor):
                 last_hidden_state=output["last_hidden_state"],
             )
 
-        expert_engine = OrtEngine(onnx_path, return_wrap=expert_return_wrap, perf=True)
+        expert_engine = OrtEngine(onnx_path, return_wrap=expert_return_wrap, perf=True, providers=self._ort_providers())
 
         def expert_forward(
             inputs_ids: Any = None,
@@ -239,7 +252,7 @@ class Pi05OnnxRTExecutor(Executor):
         onnx_path = os.path.join(self.config.engine_path, self.config.denoise_engine)
         print(colored(f"[ORT] replace denoise_step with {self.config.denoise_engine}", "green"))
 
-        denoise_engine = OrtEngine(onnx_path, perf=True)
+        denoise_engine = OrtEngine(onnx_path, perf=True, providers=self._ort_providers())
         executor_self = self
 
         def denoise_step_ort(

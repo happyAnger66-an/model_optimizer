@@ -131,7 +131,10 @@ class PtPtqCompareBackend(InferBackend):
 
 
 class TrtOrtCompareBackend(InferBackend):
-    """policy 挂 TensorRT，policy_trt 挂 ONNX Runtime；输出与 PtTrtCompareBackend 同一套 pred 槽位。"""
+    """policy 先 ``infer``，policy_trt 后 ``infer``；输出与 ``PtTrtCompareBackend`` 同一套 pred 槽位。
+
+    用于 **TensorRT vs ONNX Runtime**（``trt_ort_compare``）或 **双 TensorRT**（``trt_trt_compare``，如 FP16 vs NVFP4）。
+    """
 
     def predict(
         self,
@@ -166,7 +169,7 @@ class TrtOrtCompareBackend(InferBackend):
 
 
 def select_infer_backend(bundle: dict[str, Any]) -> InferBackend:
-    if bundle.get("trt_ort_compare"):
+    if bundle.get("trt_ort_compare") or bundle.get("trt_trt_compare"):
         return TrtOrtCompareBackend()
     if bundle.get("policy_trt") is not None:
         return PtTrtCompareBackend()

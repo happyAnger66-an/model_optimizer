@@ -54,14 +54,21 @@ def _torch_dtype_from_numpy(np_dtype: np.dtype) -> torch.dtype:
 
 
 def _select_providers(providers: list[str] | None = None) -> list[str]:
-    """选择可用的 Execution Provider，优先 CUDA。"""
+    """选择可用的 Execution Provider。
+
+    默认顺序：TensorRT（若 ORT 构建带 TensorRTExecutionProvider）> CUDA > CPU。
+    NVFP4 / FLOAT4E2M1FN（ONNX dtype 23）等通常需 TensorRT EP 或较新 ORT；纯 CUDA EP 常无法加载。
+    """
     import onnxruntime as ort
 
     available = ort.get_available_providers()
     if providers is not None:
         return [p for p in providers if p in available]
-    # 自动选择：CUDA > CPU
-    preferred = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    preferred = [
+        "TensorRTExecutionProvider",
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider",
+    ]
     return [p for p in preferred if p in available]
 
 
@@ -78,7 +85,7 @@ class OrtEngine:
         onnx_path: ONNX 模型文件路径。
         return_wrap: 对输出 dict 的后处理函数。
         perf: 是否记录推理耗时。
-        providers: ORT Execution Provider 列表。None 时自动选择。
+        providers: ORT Execution Provider 列表。None 时使用默认顺序（含 TensorRT EP，若已安装）。
     """
 
     def __init__(
@@ -102,9 +109,22 @@ class OrtEngine:
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-        self._session = ort.InferenceSession(
-            onnx_path, sess_options=sess_options, providers=selected_providers,
-        )
+        try:
+            self._session = ort.InferenceSession(
+                onnx_path,
+                sess_options=sess_options,
+                providers=selected_providers,
+            )
+        except Exception as exc:
+            msg = str(exc)
+            if "data type 23" in msg or "Invalid tensor data type" in msg:
+                raise RuntimeError(
+                    "ONNX Runtime 无法加载该 ONNX（常见原因：图内含 FLOAT4E2M1FN / NVFP4，即 dtype 23）。"
+                    "请确认已安装带 TensorRTExecutionProvider 的 onnxruntime-gpu，且 TensorRT 版本支持该模型；"
+                    "或升级 onnxruntime/onnx 至支持该类型的版本。"
+                    "若仍失败，请改用 inference_mode=tensorrt 与预编译 .plan/.engine（Pi05TensorRTExecutor 路径）。"
+                ) from exc
+            raise
 
         # 缓存输入/输出元信息
         self.in_meta = [

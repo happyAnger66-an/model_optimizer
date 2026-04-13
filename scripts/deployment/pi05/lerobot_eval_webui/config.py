@@ -33,6 +33,17 @@ class Args:
     # TensorRT engine vs ONNX Runtime；需同时 ``--engine-path`` 与 ``--ort-engine-path``；与其它 compare 互斥
     trt_ort_compare: bool = False
 
+    # 双 TensorRT：主路 ``--engine-path`` 与第二路 ``--trt-trt-second-engine-path``；需 ``--inference-mode tensorrt``；与其它 compare 互斥
+    trt_trt_compare: bool = False
+    trt_trt_second_engine_path: str = ""
+    """第二套 TensorRT 引擎根目录。"""
+    # 第二路各子图文件名；留空则沿用主路 ``--vit-engine`` / ``--llm-engine`` 等
+    trt_trt_second_vit_engine: str = ""
+    trt_trt_second_llm_engine: str = ""
+    trt_trt_second_expert_engine: str = ""
+    trt_trt_second_denoise_engine: str = ""
+    trt_trt_second_embed_prefix_engine: str = ""
+
     # 以下仅在 ``trt_ort_compare=True`` 时生效：用 Polygraphy 对子图 ONNX 做 TRT vs ORT 逐张量对比（见 ``trt_ort_polygraphy_compare.py``）
     trt_ort_polygraphy_compare: bool = False
     """为 True 时在加载阶段对 vit/llm/expert 等 ONNX 跑一次 Polygraphy 对比，结果写入 meta ``trt_ort_polygraphy``。"""
@@ -82,6 +93,17 @@ class Args:
     ort_expert_engine: str = ""
     ort_denoise_engine: str = ""
     ort_embed_prefix_engine: str = ""
+
+    ort_providers: tuple[str, ...] = (
+        "TensorRTExecutionProvider",
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider",
+    )
+    """ONNX Runtime Execution Provider 顺序（仅保留当前环境 ``ort.get_available_providers()`` 中存在的项）。
+
+    NVFP4（ONNX dtype 23）等通常需要 ``TensorRTExecutionProvider``；若未安装带 TensorRT 的 ORT 构建，将自动跳过该项。
+    调试纯 CUDA EP 时可设为 ``--ort-providers CUDAExecutionProvider CPUExecutionProvider``。
+    """
 
     host: str = "0.0.0.0"
     port: int = 8765
