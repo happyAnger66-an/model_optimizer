@@ -103,11 +103,10 @@ async def run_server(args: Args) -> None:
         interval = max(0.2, interval)
         dev_idx = int(effective_gpu_index(args))
         while True:
-            try:
-                await asyncio.wait_for(pump_task, timeout=interval)
+            # 不能用 wait_for(pump_task, timeout=…)：超时会取消 pump_task，导致 drain 在 get() 上 CancelledError。
+            done, _pending = await asyncio.wait((pump_task,), timeout=interval, return_when=asyncio.FIRST_COMPLETED)
+            if pump_task in done:
                 return
-            except asyncio.TimeoutError:
-                pass
             try:
                 stats = await loop.run_in_executor(None, sample_gpu_util, dev_idx)
             except Exception:  # pragma: no cover
