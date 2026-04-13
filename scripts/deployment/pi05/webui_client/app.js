@@ -118,6 +118,10 @@ const METRIC_DIM_COLORS = [
 
 const el = (id) => document.getElementById(id);
 
+function isPlotlyLoaded() {
+  return typeof Plotly !== "undefined" && Plotly && typeof Plotly.newPlot === "function";
+}
+
 function metricDimLineColor(i) {
   return METRIC_DIM_COLORS[i % METRIC_DIM_COLORS.length];
 }
@@ -730,7 +734,7 @@ function secondPredLabel() {
   return "pred_trt";
 }
 
-/** 各 dim 子图 Plotly 图例名：优先用服务端 meta 的 pred*_name（如 TRT_ref / TRT_tgt）。"""
+/** 各 dim 子图 Plotly 图例名：优先用服务端 meta 的 pred*_name（如 TRT_ref / TRT_tgt）。 */
 function firstPredLegendName() {
   if (dualPredMode() && meta && meta.pred1_name) return String(meta.pred1_name);
   return firstPredLabel();
@@ -1606,9 +1610,13 @@ async function initMetricsChartsInContainer() {
   }
   if (!isMetricsFoldCollapsed()) {
     await raf();
-    for (const [id, traces, layout] of jobs) {
-      Plotly.newPlot(id, traces, layout, { displayModeBar: false, responsive: true });
-      await raf();
+    if (isPlotlyLoaded()) {
+      for (const [id, traces, layout] of jobs) {
+        Plotly.newPlot(id, traces, layout, { displayModeBar: false, responsive: true });
+        await raf();
+      }
+    } else {
+      console.warn("Plotly 未加载：已跳过误差曲线 newPlot（检查 vendor/plotly 路径）");
     }
   } else {
     purgeMetricsPlotDivsOnly();
@@ -1622,6 +1630,14 @@ async function initChart() {
   metricsLayouts.clear();
   await initMetricsChartsInContainer();
   const container = el("chartsContainer");
+  if (!container) {
+    console.warn("缺少 #chartsContainer，跳过各 dim 子图初始化");
+    setDimTraceToggleUi();
+    renderMetricDimToggles();
+    applyChartsCols();
+    refreshCompareDimTable();
+    return;
+  }
   container.innerHTML = "";
 
   const jobs = [];
@@ -1647,9 +1663,13 @@ async function initChart() {
 
   if (!isDimChartsFoldCollapsed()) {
     await raf();
-    for (const [id, traces, layout] of jobs) {
-      Plotly.newPlot(id, traces, layout, { displayModeBar: false, responsive: true });
-      await raf();
+    if (isPlotlyLoaded()) {
+      for (const [id, traces, layout] of jobs) {
+        Plotly.newPlot(id, traces, layout, { displayModeBar: false, responsive: true });
+        await raf();
+      }
+    } else {
+      console.warn("Plotly 未加载：已跳过各 dim 子图 newPlot");
     }
   } else {
     purgeDimPlotDivsOnly();
@@ -1886,7 +1906,7 @@ function pushPoint(event) {
 
   const xArr = [...state.x];
 
-  if (!isDimChartsFoldCollapsed()) {
+  if (!isDimChartsFoldCollapsed() && isPlotlyLoaded()) {
     const needTracesDim = dualPredMode() ? 3 : 2;
     for (const d of state.dims) {
       const id = chartDivId(d);
@@ -1919,7 +1939,7 @@ function pushPoint(event) {
     }
   }
 
-  if (!isMetricsFoldCollapsed()) {
+  if (!isMetricsFoldCollapsed() && isPlotlyLoaded()) {
     const needTracesMet = state.dims.length;
     for (const def of METRIC_CHART_DEFS) {
       const gd = document.getElementById(def.id);
@@ -2239,32 +2259,44 @@ async function applyDims() {
   await initChart();
 }
 
-async function setup() {
-  setBadge(false);
-  loadChartsColsPreference();
-  applyFoldPreferencesFromStorage();
-  await initChart();
+/** 绑定主题 / WebSocket / 折叠等与 Plotly 无关的控件。必须在 initChart 之前调用，避免图表初始化抛错导致整页无响应。 */
+function registerStaticUiHandlers() {
+  const btnConnect = el("btnConnect");
+  if (btnConnect) btnConnect.addEventListener("click", () => connect());
+  const btnDisconnect = el("btnDisconnect");
+  if (btnDisconnect) btnDisconnect.addEventListener("click", () => disconnect());
 
-  el("btnConnect").addEventListener("click", () => connect());
-  el("btnDisconnect").addEventListener("click", () => disconnect());
-  el("btnPauseInfer").addEventListener("click", () => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ type: "control", action: "pause" }));
-  });
-  el("btnResumeInfer").addEventListener("click", () => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ type: "control", action: "resume" }));
-  });
-  el("btnApplyDims").addEventListener("click", () => void applyDims());
-  el("btnResetDisplay").addEventListener("click", () => clearClientDisplay());
+  const btnPause = el("btnPauseInfer");
+  if (btnPause) {
+    btnPause.addEventListener("click", () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "control", action: "pause" }));
+    });
+  }
+  const btnResume = el("btnResumeInfer");
+  if (btnResume) {
+    btnResume.addEventListener("click", () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "control", action: "resume" }));
+    });
+  }
+
+  const btnApplyDims = el("btnApplyDims");
+  if (btnApplyDims) btnApplyDims.addEventListener("click", () => void applyDims());
+  const btnReset = el("btnResetDisplay");
+  if (btnReset) btnReset.addEventListener("click", () => clearClientDisplay());
+
   const ptqFilt = el("ptqLayerReportFilter");
   if (ptqFilt) {
     ptqFilt.addEventListener("input", () => refreshPtqLayerReportFilteredTable());
   }
   ensurePtqReportBodyClickDelegate();
-  el("btnDownloadStats").addEventListener("click", () => downloadDimStatsCsv());
 
-  el("chartsCols").addEventListener("change", () => applyChartsCols());
+  const btnDl = el("btnDownloadStats");
+  if (btnDl) btnDl.addEventListener("click", () => downloadDimStatsCsv());
+
+  const chartsCols = el("chartsCols");
+  if (chartsCols) chartsCols.addEventListener("change", () => applyChartsCols());
 
   for (const id of ["dimShowGt", "dimShowPredPt", "dimShowPredTrt"]) {
     const inp = el(id);
@@ -2301,14 +2333,40 @@ async function setup() {
     }
   }
 
-  el("themeSelect").addEventListener("change", () => {
-    applyTheme(el("themeSelect").value);
-  });
+  const themeSelect = el("themeSelect");
+  if (themeSelect) {
+    themeSelect.addEventListener("change", () => {
+      applyTheme(themeSelect.value);
+    });
+  }
 
-  el("toggleWrist").addEventListener("change", () => {
-    const show = el("toggleWrist").checked;
-    el("imgWrist").style.display = show ? "block" : "none";
-  });
+  const tw = el("toggleWrist");
+  if (tw) {
+    tw.addEventListener("change", () => {
+      const show = tw.checked;
+      const imgW = el("imgWrist");
+      if (imgW) imgW.style.display = show ? "block" : "none";
+    });
+  }
+}
+
+async function setup() {
+  setBadge(false);
+  loadChartsColsPreference();
+  applyFoldPreferencesFromStorage();
+  registerStaticUiHandlers();
+  try {
+    await initChart();
+  } catch (err) {
+    console.error("initChart 失败:", err);
+    try {
+      setProgress(
+        "图表初始化失败（常见：Plotly 未加载或路径错误）。可照常切换主题、修改 ws_url 后点 Connect。",
+      );
+    } catch (_) {
+      /* ignore */
+    }
+  }
 }
 
 async function bootstrap() {
@@ -2319,5 +2377,11 @@ async function bootstrap() {
   await hint;
 }
 
-bootstrap();
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => {
+    void bootstrap();
+  });
+} else {
+  void bootstrap();
+}
 
