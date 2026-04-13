@@ -1,0 +1,10 @@
+checkpoint: /srcs/openpi/pytorch_pi05_libero/
+config: pi05_libero
+inference_mode: tensorrt
+engine_path: /tmp/build/pi05/
+llm_engine: llm.engine
+host: 0.0.0.0
+port: 8765
+trt_trt_compare: true
+trt_trt_second_engine_path: /tmp/build/pi05/
+trt_trt_second_llm_engine: llm_nvfp4_full.engine

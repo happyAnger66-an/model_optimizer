@@ -10,7 +10,6 @@ import uuid
 from typing import Any
 
 import janus
-import tyro
 from termcolor import colored
 
 from .broadcaster import WebsocketBroadcaster
@@ -182,5 +181,7 @@ async def run_server(args: Args) -> None:
 
 
 def main() -> None:
-    args = tyro.cli(Args)
+    from .cli_config import parse_args_with_optional_config_file
+
+    args = parse_args_with_optional_config_file(Args)
     asyncio.run(run_server(args))

@@ -730,6 +730,37 @@ function secondPredLabel() {
   return "pred_trt";
 }
 
+/** 各 dim 子图 Plotly 图例名：优先用服务端 meta 的 pred*_name（如 TRT_ref / TRT_tgt）。"""
+function firstPredLegendName() {
+  if (dualPredMode() && meta && meta.pred1_name) return String(meta.pred1_name);
+  return firstPredLabel();
+}
+
+function secondPredLegendName() {
+  if (dualPredMode() && meta && meta.pred2_name) return String(meta.pred2_name);
+  return secondPredLabel();
+}
+
+const DEFAULT_DIM_CHARTS_SUBTITLE =
+  "每维单独子图（gt / pred；勾选可隐藏曲线）";
+
+function syncDimChartsFoldSubtitle() {
+  const sub = el("dimChartsSubtitle");
+  if (!sub) return;
+  if (!dualPredMode()) {
+    sub.textContent = DEFAULT_DIM_CHARTS_SUBTITLE;
+    return;
+  }
+  if (trtTrtCompareMode) {
+    const p1 = (meta && meta.pred1_name) || firstPredLegendName();
+    const p2 = (meta && meta.pred2_name) || secondPredLegendName();
+    sub.textContent = `每维子图含 3 条曲线：gt、${p1}、${p2}（与「显示曲线」勾选一致）`;
+    return;
+  }
+  sub.textContent =
+    "每维子图含 3 条曲线：gt、第一路预测、第二路预测（与「显示曲线」勾选一致）";
+}
+
 function applyCompareUiLabels() {
   const pred1 =
     (meta && meta.pred1_name ? String(meta.pred1_name) : null) ||
@@ -778,6 +809,7 @@ function applyCompareUiLabels() {
   if (dm2) dm2.textContent = `${pred2} mse%`;
   if (dp2) dp2.textContent = `${pred2} p99`;
   if (dpair) dpair.textContent = `${pair} mse`;
+  syncDimChartsFoldSubtitle();
 }
 
 function buildPlotlyLayout() {
@@ -1394,14 +1426,14 @@ function traceTemplatesEmpty() {
   const p = getPlotlyPalette();
   const traces = [
     { x: [], y: [], mode: "lines", name: "gt", line: { width: 2, color: p.gt } },
-    { x: [], y: [], mode: "lines", name: firstPredLabel(), line: { width: 2, dash: "dot", color: p.pred } },
+    { x: [], y: [], mode: "lines", name: firstPredLegendName(), line: { width: 2, dash: "dot", color: p.pred } },
   ];
   if (dualPredMode()) {
     traces.push({
       x: [],
       y: [],
       mode: "lines",
-      name: secondPredLabel(),
+      name: secondPredLegendName(),
       line: { width: 2, dash: "dash", color: p.predTrt },
     });
   }
@@ -1534,6 +1566,7 @@ function clearClientDisplay() {
   applyTensorrtMetaFromMsg(meta);
   applyOnnxrtMetaFromMsg(meta);
   refreshCompareDimTable();
+  syncDimChartsFoldSubtitle();
   syncPtqLayerReportCard();
   setProgress("已清空本页曲线与图像（WebSocket 未断开；可继续接收后续 step）。");
   if (connected) {
@@ -1782,14 +1815,17 @@ function pushPoint(event) {
     const gArr = state.gt.get(d);
     const pArr = state.pred.get(d);
     if (!gArr || !pArr) continue;
-    gArr.push(gtAction[d] ?? null);
-    pArr.push(predAction[d] ?? null);
+    const gv = d < gtAction.length ? gtAction[d] : null;
+    const pv = d < predAction.length ? predAction[d] : null;
+    const sv = d < predSecond.length ? predSecond[d] : null;
+    gArr.push(gv ?? null);
+    pArr.push(pv ?? null);
     while (gArr.length > state.windowSize) gArr.shift();
     while (pArr.length > state.windowSize) pArr.shift();
     if (dualPredMode()) {
       const tArr = state.pred_trt.get(d);
       if (tArr) {
-        tArr.push(predSecond[d] ?? null);
+        tArr.push(sv ?? null);
         while (tArr.length > state.windowSize) tArr.shift();
       }
     }
@@ -1931,7 +1967,7 @@ function buildTracesForDim(d) {
       x: [...state.x],
       y: [...(state.pred.get(d) || [])],
       mode: "lines",
-      name: firstPredLabel(),
+      name: firstPredLegendName(),
       line: { width: 2, dash: "dot", color: p.pred },
     },
   ];
@@ -1940,7 +1976,7 @@ function buildTracesForDim(d) {
       x: [...state.x],
       y: [...(state.pred_trt.get(d) || [])],
       mode: "lines",
-      name: secondPredLabel(),
+      name: secondPredLegendName(),
       line: { width: 2, dash: "dash", color: p.predTrt },
     });
   }
