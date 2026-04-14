@@ -40,7 +40,7 @@ class CalibrationDataset(Dataset):
         repo_id = config_obj.data.repo_id
 
         # LeRobot is optional; fall back to dummy calibration if unavailable.
-        from lerobot.common.datasets.lerobot_dataset import LeRobotDataset  # type: ignore
+        from lerobot.datasets.lerobot_dataset import LeRobotDataset  # type: ignore
 
         self.lerobot_dataset = LeRobotDataset(repo_id)
         step_size = max(len(self.lerobot_dataset) // num_samples, 1)
