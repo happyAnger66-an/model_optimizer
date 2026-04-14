@@ -26,6 +26,35 @@ from openpi.models.model import IMAGE_KEYS, IMAGE_RESOLUTION
 from .calibration_data import load_calibration_data
 
 
+def _resolve_attention_mask_neg_cap() -> float | None:
+    """Clamp too-negative additive attention masks to avoid NaN in fused kernels.
+
+    PI0/Pi0.5 sometimes uses extremely negative additive masks (~-2.38e38). While
+    PyTorch softmax can often handle this in float32, export/quantized paths may
+    trigger fused kernels (or TensorRT later) that overflow to NaN. We pre-clamp
+    the mask to a configurable negative cap (default: -1e4).
+
+    Set env ``PI05_WHOLE_ATTN_MASK_NEG_CAP`` to override; set to ``none`` to disable.
+    """
+
+    raw = os.environ.get("PI05_WHOLE_ATTN_MASK_NEG_CAP", "-1e4").strip().lower()
+    if raw in ("none", "null", "disable", "off"):
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return -1e4
+
+
+def _sanitize_additive_attention_mask(attention_mask: torch.Tensor | None, neg_cap: float | None) -> torch.Tensor | None:
+    if attention_mask is None or neg_cap is None:
+        return attention_mask
+    if not torch.is_floating_point(attention_mask):
+        return attention_mask
+    # Only clamp the very negative values; keep semantics.
+    return attention_mask.clamp(min=float(neg_cap))
+
+
 class QuantizedMatMul(torch.nn.Module):
     """Quantized matrix multiplication with QDQ nodes.
 
@@ -219,6 +248,7 @@ def patch_model_for_export(model, compute_dtype=torch.float16):
     import types
 
     model.compute_dtype = compute_dtype
+    neg_cap = _resolve_attention_mask_neg_cap()
 
     def make_att_2d_masks_hook(pad_masks, att_masks):
         if att_masks.ndim != 2:
@@ -257,6 +287,7 @@ def patch_model_for_export(model, compute_dtype=torch.float16):
         prefix_position_ids = torch.cumsum(prefix_pad_masks.to(dtype=torch.int64), dim=1) - 1
 
         prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
+        prefix_att_2d_masks_4d = _sanitize_additive_attention_mask(prefix_att_2d_masks_4d, neg_cap)
         self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"
 
         _, past_key_values = self.paligemma_with_expert.forward(
@@ -300,6 +331,7 @@ def patch_model_for_export(model, compute_dtype=torch.float16):
         position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks.to(dtype=torch.int64), dim=1) - 1
 
         full_att_2d_masks_4d = self._prepare_attention_masks_4d(full_att_2d_masks)
+        full_att_2d_masks_4d = _sanitize_additive_attention_mask(full_att_2d_masks_4d, neg_cap)
         self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"
 
         outputs_embeds, _ = self.paligemma_with_expert.forward(
