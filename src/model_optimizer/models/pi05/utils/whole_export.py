@@ -143,7 +143,7 @@ def replace_attention_with_quantized_version():
     if not hasattr(modeling_gemma, "_original_eager_attention_forward"):
         modeling_gemma._original_eager_attention_forward = modeling_gemma.eager_attention_forward
 
-    modeling_gemma.eager_attention_forward = quantized_eager_attention_forward
+#    modeling_gemma.eager_attention_forward = quantized_eager_attention_forward
 
 
 def _create_observation_from_inputs(images, img_masks, state, lang_tokens, lang_masks):
