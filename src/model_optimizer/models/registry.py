@@ -12,6 +12,9 @@ def init_registry():
     from .pi05.model_pi05 import Pi05Model
     register_model_cls("pi05_libero", Pi05Model)
     
+    from .pi05.pi05_wrapper import Pi05Wrapper
+    register_model_cls("pi05_libero/wrapper", Pi05Wrapper)
+    
     from .pi05.vit import Vit
     register_model_cls("pi05_libero/vit", Vit)
     

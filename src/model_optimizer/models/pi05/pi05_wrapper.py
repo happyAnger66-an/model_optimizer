@@ -1,0 +1,212 @@
+"""Whole-graph Pi0.5 (PI0Pytorch) FP8/NVFP4 quantization and ONNX export.
+
+Delegates to ``third_party/openpi_on_thor/pytorch_to_onnx.py`` (same pipeline as the
+OpenPI Thor one-shot export): patch → ModelOpt FP8 → optional NVFP4 LLM → ONNX.
+This complements :class:`Pi05Model` sub-model (ViT / LLM / expert / denoise) exports.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+from pathlib import Path
+from typing import Any, Optional, Union
+
+import torch
+
+from model_optimizer.models.model import Model
+
+
+def _find_pytorch_to_onnx_path() -> Path:
+    here = Path(__file__).resolve()
+    for _ in range(12):
+        candidate = here / "third_party" / "openpi_on_thor" / "pytorch_to_onnx.py"
+        if candidate.is_file():
+            return candidate
+        here = here.parent
+    raise ImportError(
+        "Cannot locate third_party/openpi_on_thor/pytorch_to_onnx.py; "
+        "clone the repo with third_party or install openpi_on_thor."
+    )
+
+
+def _load_pytorch_to_onnx():
+    """Load pytorch_to_onnx module (package import or file path)."""
+    try:
+        import openpi_on_thor.pytorch_to_onnx as pto  # type: ignore
+
+        return pto
+    except ImportError:
+        pass
+    path = _find_pytorch_to_onnx_path()
+    name = "model_optimizer_vendor_openpi_pytorch_to_onnx"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Failed to load spec for {path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class Pi05Wrapper(torch.nn.Module, Model):
+    """Wraps ``PI0Pytorch`` for end-to-end FP8 quantization and single ONNX export."""
+
+    def __init__(
+        self,
+        pi05_model: torch.nn.Module,
+        *,
+        config_obj: Any = None,
+        checkpoint_dir: Optional[str] = None,
+        model_name: str = "pi05_droid",
+        model_path: str = "",
+    ):
+        torch.nn.Module.__init__(self)
+        Model.__init__(self, model_name, model_path or (checkpoint_dir or ""))
+        self.pi05_model = pi05_model
+        self._config_obj = config_obj
+        self._checkpoint_dir = checkpoint_dir
+
+    @property
+    def model(self) -> torch.nn.Module:
+        return self.pi05_model
+
+    @classmethod
+    def from_checkpoint(
+        cls,
+        checkpoint_dir: str,
+        config_name: str = "pi05_droid",
+    ) -> Pi05Wrapper:
+        from openpi.policies import policy_config
+        from openpi.training import config as _config
+
+        config = _config.get_config(config_name)
+        policy = policy_config.create_trained_policy(config, checkpoint_dir)
+        return cls(
+            policy._model,
+            config_obj=config,
+            checkpoint_dir=checkpoint_dir,
+            model_name=config_name,
+            model_path=checkpoint_dir,
+        )
+
+    def forward(
+        self,
+        images: torch.Tensor,
+        img_masks: torch.Tensor,
+        lang_tokens: torch.Tensor,
+        lang_masks: torch.Tensor,
+        state: torch.Tensor,
+        noise: torch.Tensor,
+        num_steps: int = 10,
+    ) -> torch.Tensor:
+        """Same I/O contract as Thor ``ONNXWrapper`` (flat tensors → ``sample_actions``)."""
+        pto = _load_pytorch_to_onnx()
+        return pto.ONNXWrapper(self.pi05_model, num_steps)(
+            images, img_masks, lang_tokens, lang_masks, state, noise
+        )
+
+    def quantize(
+        self,
+        *,
+        num_steps: int = 10,
+        precision: str = "fp8",
+        config_obj: Any = None,
+        checkpoint_dir: Optional[str] = None,
+        num_calibration_samples: int = 32,
+        enable_llm_nvfp4: bool = False,
+        quantize_attention_matmul: bool = True,
+    ) -> Pi05Wrapper:
+        """FP8 (+ optional NVFP4 LLM) quantization via ModelOpt; matches ``pytorch_to_onnx``."""
+        pto = _load_pytorch_to_onnx()
+        cfg = config_obj if config_obj is not None else self._config_obj
+        ckpt = checkpoint_dir if checkpoint_dir is not None else self._checkpoint_dir
+
+        device = next(self.pi05_model.parameters()).device
+        dummy_inputs = pto._create_dummy_inputs(device, self.pi05_model.config, torch.float16)
+
+        self.pi05_model = pto._prepare_model_for_export(
+            self.pi05_model,
+            precision=precision,
+            dummy_inputs=dummy_inputs,
+            config_obj=cfg,
+            checkpoint_dir=ckpt,
+            num_calibration_samples=num_calibration_samples,
+            num_steps=num_steps,
+            enable_llm_nvfp4=enable_llm_nvfp4,
+            quantize_attention_matmul=quantize_attention_matmul,
+        )
+        self.is_quantized = True
+        return self
+
+    def export(
+        self,
+        output_path: Union[str, Path],
+        *,
+        num_steps: int = 10,
+        precision: str = "fp8",
+        config_obj: Any = None,
+        checkpoint_dir: Optional[str] = None,
+        num_calibration_samples: int = 32,
+        enable_llm_nvfp4: bool = False,
+        quantize_attention_matmul: bool = True,
+    ) -> torch.nn.Module:
+        """Export a single end-to-end ONNX under ``output_path/onnx/`` (quantizes if needed)."""
+        pto = _load_pytorch_to_onnx()
+        if not getattr(self, "is_quantized", False):
+            self.quantize(
+                num_steps=num_steps,
+                precision=precision,
+                config_obj=config_obj if config_obj is not None else self._config_obj,
+                checkpoint_dir=checkpoint_dir if checkpoint_dir is not None else self._checkpoint_dir,
+                num_calibration_samples=num_calibration_samples,
+                enable_llm_nvfp4=enable_llm_nvfp4,
+                quantize_attention_matmul=quantize_attention_matmul,
+            )
+
+        output_dir = Path(output_path)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        onnx_dir = output_dir / "onnx"
+        onnx_dir.mkdir(parents=True, exist_ok=True)
+
+        if enable_llm_nvfp4 and precision.lower() == "fp8":
+            onnx_filename = f"model_{precision.lower()}_nvfp4.onnx"
+        else:
+            onnx_filename = f"model_{precision.lower()}.onnx"
+        onnx_path = onnx_dir / onnx_filename
+
+        device = next(self.pi05_model.parameters()).device
+        dummy_inputs = pto._create_dummy_inputs(device, self.pi05_model.config, torch.float16)
+        wrapped_model = pto.ONNXWrapper(self.pi05_model, num_steps)
+
+        print(f"\nExporting whole Pi05 model to: {onnx_path}")
+        with torch.no_grad():
+            torch.onnx.export(
+                wrapped_model,
+                dummy_inputs,
+                str(onnx_path),
+                opset_version=19,
+                dynamo=False,
+                do_constant_folding=True,
+                input_names=[
+                    "images",
+                    "img_masks",
+                    "lang_tokens",
+                    "lang_masks",
+                    "state",
+                    "noise",
+                ],
+                output_names=["actions"],
+                dynamic_axes={
+                    "images": {0: "batch_size"},
+                    "img_masks": {0: "batch_size"},
+                    "lang_tokens": {0: "batch_size", 1: "seq_len"},
+                    "lang_masks": {0: "batch_size", 1: "seq_len"},
+                    "state": {0: "batch_size"},
+                    "noise": {0: "batch_size"},
+                    "actions": {0: "batch_size"},
+                },
+            )
+            pto.postprocess_onnx_model(str(onnx_path), enable_llm_nvfp4)
+
+        return self.pi05_model
