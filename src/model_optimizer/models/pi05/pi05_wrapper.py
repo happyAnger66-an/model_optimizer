@@ -8,6 +8,7 @@ This complements :class:`Pi05Model` sub-model (ViT / LLM / expert / denoise) exp
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -15,6 +16,23 @@ from typing import Any, Optional, Union
 import torch
 
 from model_optimizer.models.model import Model
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "y", "on")
 
 
 def _find_pytorch_to_onnx_path() -> Path:
@@ -72,23 +90,34 @@ class Pi05Wrapper(torch.nn.Module, Model):
         return self.pi05_model
 
     @classmethod
+    def construct_from_name_path(cls, model_name: str, model_path: str) -> Pi05Wrapper:
+        """Used by ``model-opt export --model_name pi05_libero/wrapper --model_path ...``.
+
+        ``model_name`` must be ``<config_prefix>/wrapper`` (e.g. ``pi05_libero/wrapper``);
+        ``model_path`` is the OpenPI PyTorch checkpoint directory.
+        """
+        from openpi.policies import policy_config
+        from openpi.training import config as _config
+
+        real_name = model_name.split("/")[0]
+        print(f"pi05 wrapper: loading config {real_name} from {model_path}")
+        config = _config.get_config(real_name)
+        policy = policy_config.create_trained_policy(config, model_path)
+        return cls(
+            policy._model,
+            config_obj=config,
+            checkpoint_dir=model_path,
+            model_name=real_name,
+            model_path=model_path,
+        )
+
+    @classmethod
     def from_checkpoint(
         cls,
         checkpoint_dir: str,
         config_name: str = "pi05_droid",
     ) -> Pi05Wrapper:
-        from openpi.policies import policy_config
-        from openpi.training import config as _config
-
-        config = _config.get_config(config_name)
-        policy = policy_config.create_trained_policy(config, checkpoint_dir)
-        return cls(
-            policy._model,
-            config_obj=config,
-            checkpoint_dir=checkpoint_dir,
-            model_name=config_name,
-            model_path=checkpoint_dir,
-        )
+        return cls.construct_from_name_path(f"{config_name}/wrapper", checkpoint_dir)
 
     def forward(
         self,
@@ -141,17 +170,39 @@ class Pi05Wrapper(torch.nn.Module, Model):
 
     def export(
         self,
-        output_path: Union[str, Path],
+        export_dir: Union[str, Path],
+        mode: str = "native_per_layer",
         *,
-        num_steps: int = 10,
-        precision: str = "fp8",
+        num_steps: Optional[int] = None,
+        precision: Optional[str] = None,
         config_obj: Any = None,
         checkpoint_dir: Optional[str] = None,
-        num_calibration_samples: int = 32,
-        enable_llm_nvfp4: bool = False,
-        quantize_attention_matmul: bool = True,
-    ) -> torch.nn.Module:
-        """Export a single end-to-end ONNX under ``output_path/onnx/`` (quantizes if needed)."""
+        num_calibration_samples: Optional[int] = None,
+        enable_llm_nvfp4: Optional[bool] = None,
+        quantize_attention_matmul: Optional[bool] = None,
+    ) -> str:
+        """Export a single end-to-end ONNX under ``export_dir/onnx/`` (quantizes if needed).
+
+        Matches ``model-opt export`` / ``convert_model``: first positional argument is
+        ``export_dir``; ``mode`` is accepted for CLI compatibility (sub-model exporters use
+        it; whole-graph export ignores it).
+
+        Optional tuning via environment (defaults match Thor ``pytorch_to_onnx``):
+        ``PI05_WHOLE_NUM_STEPS``, ``PI05_WHOLE_PRECISION``, ``PI05_WHOLE_NUM_CALIB_SAMPLES``,
+        ``PI05_WHOLE_ENABLE_LLM_NVFP4``, ``PI05_WHOLE_QUANTIZE_ATTN_MATMUL`` (0/1).
+        """
+        _ = mode  # same signature as pi05 vit/llm/expert; not used for single ONNX graph
+
+        num_steps = num_steps if num_steps is not None else _env_int("PI05_WHOLE_NUM_STEPS", 10)
+        precision = precision if precision is not None else (os.environ.get("PI05_WHOLE_PRECISION") or "fp8")
+        num_calibration_samples = num_calibration_samples if num_calibration_samples is not None else _env_int(
+            "PI05_WHOLE_NUM_CALIB_SAMPLES", 32
+        )
+        if enable_llm_nvfp4 is None:
+            enable_llm_nvfp4 = _env_bool("PI05_WHOLE_ENABLE_LLM_NVFP4", True)
+        if quantize_attention_matmul is None:
+            quantize_attention_matmul = _env_bool("PI05_WHOLE_QUANTIZE_ATTN_MATMUL", True)
+
         pto = _load_pytorch_to_onnx()
         if not getattr(self, "is_quantized", False):
             self.quantize(
@@ -164,15 +215,15 @@ class Pi05Wrapper(torch.nn.Module, Model):
                 quantize_attention_matmul=quantize_attention_matmul,
             )
 
-        output_dir = Path(output_path)
+        output_dir = Path(export_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         onnx_dir = output_dir / "onnx"
         onnx_dir.mkdir(parents=True, exist_ok=True)
 
-        if enable_llm_nvfp4 and precision.lower() == "fp8":
-            onnx_filename = f"model_{precision.lower()}_nvfp4.onnx"
+        if enable_llm_nvfp4 and str(precision).lower() == "fp8":
+            onnx_filename = f"model_{str(precision).lower()}_nvfp4.onnx"
         else:
-            onnx_filename = f"model_{precision.lower()}.onnx"
+            onnx_filename = f"model_{str(precision).lower()}.onnx"
         onnx_path = onnx_dir / onnx_filename
 
         device = next(self.pi05_model.parameters()).device
@@ -209,4 +260,4 @@ class Pi05Wrapper(torch.nn.Module, Model):
             )
             pto.postprocess_onnx_model(str(onnx_path), enable_llm_nvfp4)
 
-        return self.pi05_model
+        return str(onnx_path.resolve())
