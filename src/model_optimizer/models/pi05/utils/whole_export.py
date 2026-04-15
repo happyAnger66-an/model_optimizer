@@ -55,6 +55,61 @@ def _sanitize_additive_attention_mask(attention_mask: torch.Tensor | None, neg_c
     return attention_mask.clamp(min=float(neg_cap))
 
 
+def _debug_nan_enabled() -> bool:
+    return os.environ.get("PI05_WHOLE_DEBUG_NAN", "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _debug_layer_hooks_enabled() -> bool:
+    return os.environ.get("PI05_WHOLE_DEBUG_LAYER_HOOKS", "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _raise_if_nan_inf(name: str, x):
+    """Recursively check tensors (and simple containers) for NaN/Inf."""
+    if x is None:
+        return
+    if torch.is_tensor(x):
+        if not torch.is_floating_point(x):
+            return
+        if torch.isnan(x).any().item() or torch.isinf(x).any().item():
+            # Avoid calling min/max on all-NaN tensors; use nan_to_num for stats.
+            safe = torch.nan_to_num(x.detach(), nan=0.0, posinf=0.0, neginf=0.0)
+            raise RuntimeError(
+                f"[PI05_WHOLE_DEBUG_NAN] {name} has NaN/Inf; "
+                f"shape={tuple(x.shape)} dtype={x.dtype} "
+                f"min={safe.min().item():.6g} max={safe.max().item():.6g}"
+            )
+        return
+    if isinstance(x, dict):
+        for k, v in x.items():
+            _raise_if_nan_inf(f"{name}.{k}", v)
+        return
+    if isinstance(x, (list, tuple)):
+        for i, v in enumerate(x):
+            _raise_if_nan_inf(f"{name}[{i}]", v)
+        return
+
+
+def _install_nan_hooks(root: torch.nn.Module, prefix: str):
+    """Install forward hooks to catch the first module producing NaN/Inf.
+
+    Controlled by env `PI05_WHOLE_DEBUG_LAYER_HOOKS=1`.
+    """
+    handles: list[torch.utils.hooks.RemovableHandle] = []
+    if not _debug_layer_hooks_enabled():
+        return handles
+
+    def hook_fn(mod, _inputs, outputs, *, _name: str):
+        _raise_if_nan_inf(_name, outputs)
+
+    for name, mod in root.named_modules():
+        # Hook only leaf-ish modules (avoid too much noise on containers).
+        if len(list(mod.children())) != 0:
+            continue
+        full_name = f"{prefix}.{name}" if name else prefix
+        handles.append(mod.register_forward_hook(lambda m, i, o, _n=full_name: hook_fn(m, i, o, _name=_n)))
+    return handles
+
+
 class QuantizedMatMul(torch.nn.Module):
     """Quantized matrix multiplication with QDQ nodes.
 
@@ -249,6 +304,7 @@ def patch_model_for_export(model, compute_dtype=torch.float16):
 
     model.compute_dtype = compute_dtype
     neg_cap = _resolve_attention_mask_neg_cap()
+    debug_nan = _debug_nan_enabled()
 
     def make_att_2d_masks_hook(pad_masks, att_masks):
         if att_masks.ndim != 2:
@@ -290,6 +346,30 @@ def patch_model_for_export(model, compute_dtype=torch.float16):
         prefix_att_2d_masks_4d = _sanitize_additive_attention_mask(prefix_att_2d_masks_4d, neg_cap)
         self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"
 
+        if debug_nan:
+            _raise_if_nan_inf("prefix_embs", prefix_embs)
+            _raise_if_nan_inf("prefix_pad_masks", prefix_pad_masks)
+            _raise_if_nan_inf("prefix_att_2d_masks_4d", prefix_att_2d_masks_4d)
+            _raise_if_nan_inf("prefix_position_ids", prefix_position_ids)
+            try:
+                print(
+                    f"[PI05_WHOLE_DEBUG_NAN] prefix_att_mask stats: dtype={prefix_att_2d_masks_4d.dtype} "
+                    f"min={prefix_att_2d_masks_4d.min().item():.6g} max={prefix_att_2d_masks_4d.max().item():.6g} "
+                    f"neg_cap={neg_cap}"
+                )
+            except Exception:
+                pass
+
+        hook_handles = []
+        if debug_nan:
+            try:
+                hook_handles.extend(
+                    _install_nan_hooks(self.paligemma_with_expert.paligemma.language_model, "paligemma.language_model")
+                )
+            except Exception:
+                # Hooks are best-effort; don't break export if something is not hookable.
+                hook_handles = []
+
         _, past_key_values = self.paligemma_with_expert.forward(
             attention_mask=prefix_att_2d_masks_4d,
             position_ids=prefix_position_ids,
@@ -297,6 +377,14 @@ def patch_model_for_export(model, compute_dtype=torch.float16):
             inputs_embeds=[prefix_embs, None],
             use_cache=True,
         )
+
+        if debug_nan:
+            _raise_if_nan_inf("past_key_values", past_key_values)
+            for h in hook_handles:
+                try:
+                    h.remove()
+                except Exception:
+                    pass
 
         dt = -1.0 / num_steps
         dt_f32 = torch.tensor(dt, dtype=torch.float32, device=device)
@@ -334,6 +422,20 @@ def patch_model_for_export(model, compute_dtype=torch.float16):
         full_att_2d_masks_4d = _sanitize_additive_attention_mask(full_att_2d_masks_4d, neg_cap)
         self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"
 
+        if debug_nan:
+            _raise_if_nan_inf("suffix_embs", suffix_embs)
+            _raise_if_nan_inf("full_att_2d_masks_4d", full_att_2d_masks_4d)
+            _raise_if_nan_inf("position_ids", position_ids)
+
+        hook_handles = []
+        if debug_nan:
+            try:
+                hook_handles.extend(
+                    _install_nan_hooks(self.paligemma_with_expert.gemma_expert.model, "gemma_expert.model")
+                )
+            except Exception:
+                hook_handles = []
+
         outputs_embeds, _ = self.paligemma_with_expert.forward(
             attention_mask=full_att_2d_masks_4d,
             position_ids=position_ids,
@@ -342,6 +444,14 @@ def patch_model_for_export(model, compute_dtype=torch.float16):
             use_cache=False,
             adarms_cond=[None, adarms_cond],
         )
+
+        if debug_nan:
+            _raise_if_nan_inf("outputs_embeds", outputs_embeds)
+            for h in hook_handles:
+                try:
+                    h.remove()
+                except Exception:
+                    pass
 
         suffix_out = outputs_embeds[1]
         suffix_out = suffix_out[:, -self.config.action_horizon :]
