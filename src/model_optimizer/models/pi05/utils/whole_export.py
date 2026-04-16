@@ -63,6 +63,35 @@ def _debug_layer_hooks_enabled() -> bool:
     return os.environ.get("PI05_WHOLE_DEBUG_LAYER_HOOKS", "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _debug_embed_hooks_enabled() -> bool:
+    """Hook modules used by `PI0Pytorch.embed_suffix` (action/time MLP path)."""
+    return os.environ.get("PI05_WHOLE_DEBUG_EMBED_HOOKS", "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _shape_str(t: torch.Tensor) -> str:
+    """Pretty-print shapes for both static and symbolic dims."""
+    try:
+        return str(tuple(int(s) for s in t.size()))
+    except Exception:
+        return str(tuple(str(s) for s in t.size()))
+
+
+def _fp_stats_str(t: torch.Tensor) -> str:
+    """Summarize NaN/Inf counts and finite min/max for floating tensors."""
+    if not torch.is_tensor(t) or not torch.is_floating_point(t):
+        return f"non_fp_tensor dtype={getattr(t, 'dtype', None)}"
+    detached = t.detach()
+    nan_n = int(torch.isnan(detached).sum().item())
+    inf_n = int(torch.isinf(detached).sum().item())
+    finite = detached[torch.isfinite(detached)]
+    if finite.numel() == 0:
+        return f"nan={nan_n} inf={inf_n} finite_min/max=NA"
+    return (
+        f"nan={nan_n} inf={inf_n} "
+        f"finite_min={finite.min().item():.6g} finite_max={finite.max().item():.6g}"
+    )
+
+
 def _raise_if_nan_inf(name: str, x):
     """Recursively check tensors (and simple containers) for NaN/Inf."""
     if x is None:
@@ -71,12 +100,9 @@ def _raise_if_nan_inf(name: str, x):
         if not torch.is_floating_point(x):
             return
         if torch.isnan(x).any().item() or torch.isinf(x).any().item():
-            # Avoid calling min/max on all-NaN tensors; use nan_to_num for stats.
-            safe = torch.nan_to_num(x.detach(), nan=0.0, posinf=0.0, neginf=0.0)
             raise RuntimeError(
                 f"[PI05_WHOLE_DEBUG_NAN] {name} has NaN/Inf; "
-                f"shape={tuple(x.shape)} dtype={x.dtype} "
-                f"min={safe.min().item():.6g} max={safe.max().item():.6g}"
+                f"shape={_shape_str(x)} dtype={x.dtype} stats=({_fp_stats_str(x)})"
             )
         return
     if isinstance(x, dict):
@@ -87,6 +113,39 @@ def _raise_if_nan_inf(name: str, x):
         for i, v in enumerate(x):
             _raise_if_nan_inf(f"{name}[{i}]", v)
         return
+
+
+def _raise_if_nan_inf_past_key_values(name: str, pkv):
+    """Traverse common HF cache layouts for NaN/Inf in K/V tensors."""
+    if pkv is None:
+        return
+
+    # transformers DynamicCache (newer)
+    if hasattr(pkv, "key_cache") and hasattr(pkv, "value_cache"):
+        kc = getattr(pkv, "key_cache")
+        vc = getattr(pkv, "value_cache")
+        if isinstance(kc, (list, tuple)) and isinstance(vc, (list, tuple)):
+            for i, (k, v) in enumerate(zip(kc, vc)):
+                if k is None or v is None:
+                    continue
+                _raise_if_nan_inf(f"{name}.layer{i}.key", k)
+                _raise_if_nan_inf(f"{name}.layer{i}.value", v)
+            return
+
+    # Legacy tuple/list of (k, v) per layer
+    if isinstance(pkv, (list, tuple)) and len(pkv) > 0:
+        first = pkv[0]
+        if isinstance(first, (list, tuple)) and len(first) >= 2 and torch.is_tensor(first[0]):
+            for i, kv in enumerate(pkv):
+                if kv is None:
+                    continue
+                k, v = kv[0], kv[1]
+                _raise_if_nan_inf(f"{name}.layer{i}.key", k)
+                _raise_if_nan_inf(f"{name}.layer{i}.value", v)
+            return
+
+    # Fallback: try generic traversal
+    _raise_if_nan_inf(name, pkv)
 
 
 def _install_nan_hooks(root: torch.nn.Module, prefix: str):
@@ -379,7 +438,7 @@ def patch_model_for_export(model, compute_dtype=torch.bfloat16):
         )
 
         if debug_nan:
-            _raise_if_nan_inf("past_key_values", past_key_values)
+            _raise_if_nan_inf_past_key_values("past_key_values", past_key_values)
             for h in hook_handles:
                 try:
                     h.remove()
@@ -405,7 +464,30 @@ def patch_model_for_export(model, compute_dtype=torch.bfloat16):
         return x_t.to(self.compute_dtype)
 
     def denoise_step_hook(self, state, prefix_pad_masks, past_key_values, x_t, timestep):
+        if debug_nan:
+            # `embed_suffix` only depends on (state, x_t, timestep). If `suffix_embs` is NaN,
+            # almost always one of these inputs is already NaN/Inf, or prefix KV cache is bad.
+            _raise_if_nan_inf_past_key_values("denoise.past_key_values", past_key_values)
+            _raise_if_nan_inf("denoise.state", state)
+            _raise_if_nan_inf("denoise.x_t", x_t)
+            _raise_if_nan_inf("denoise.timestep", timestep)
+
+        embed_handles: list = []
+        if debug_nan and _debug_embed_hooks_enabled():
+            # These live on `PI0Pytorch` and are exercised inside `embed_suffix`.
+            for subname in ("action_in_proj", "time_mlp_in", "time_mlp_out"):
+                sub = getattr(self, subname, None)
+                if isinstance(sub, torch.nn.Module):
+                    embed_handles.extend(_install_nan_hooks(sub, subname))
+
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, timestep)
+
+        if debug_nan and embed_handles:
+            for h in embed_handles:
+                try:
+                    h.remove()
+                except Exception:
+                    pass
 
         suffix_len = suffix_pad_masks.shape[1]
         batch_size = prefix_pad_masks.shape[0]
