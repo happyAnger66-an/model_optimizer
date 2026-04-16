@@ -12,6 +12,7 @@ Debug / mitigation env vars (optional):
 - ``PI05_WHOLE_DEBUG_EMBED_DECOMPOSE``: manually step through Pi0.5 ``embed_suffix`` math
   (more reliable than hooks when ModelOpt wraps/replaces submodules)
 - ``PI05_WHOLE_EMBED_SUFFIX_FORCE_FP32``: run ``embed_suffix`` in fp32, cast back
+- ``PI05_WHOLE_EMBED_PREFIX_FORCE_FP32``: run ``embed_prefix`` image tensors in fp32, cast ``prefix_embs`` back
 - ``PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP``: disable FP8 on Pi0.5 denoise head Linears via standard
   ``quant_cfg`` filters (wildcards + explicit quantizer names as printed by ``mtq.print_quant_summary``)
 - ``PI05_WHOLE_ATTN_MASK_NEG_CAP``: additive mask clamp (default ``-1e4``, ``none`` disables)
@@ -94,6 +95,11 @@ def _embed_suffix_force_fp32_enabled() -> bool:
     `torch.onnx.export` tracing on some stacks.
     """
     return os.environ.get("PI05_WHOLE_EMBED_SUFFIX_FORCE_FP32", "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _embed_prefix_force_fp32_enabled() -> bool:
+    """Run SigLIP/vision part of ``embed_prefix`` in float32, then cast ``prefix_embs`` back."""
+    return os.environ.get("PI05_WHOLE_EMBED_PREFIX_FORCE_FP32", "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
 def _skip_quant_action_time_mlp_enabled() -> bool:
@@ -373,7 +379,7 @@ def replace_attention_with_quantized_version():
     if not hasattr(modeling_gemma, "_original_eager_attention_forward"):
         modeling_gemma._original_eager_attention_forward = modeling_gemma.eager_attention_forward
 
-#    modeling_gemma.eager_attention_forward = quantized_eager_attention_forward
+    modeling_gemma.eager_attention_forward = quantized_eager_attention_forward
 
 
 def _create_observation_from_inputs(images, img_masks, state, lang_tokens, lang_masks):
@@ -457,13 +463,18 @@ def create_dummy_inputs(
     action_dim = model_config.action_dim
     max_token_len = model_config.max_token_len
 
+    # Sample Gaussian noise in float32 then cast. Direct ``randn(..., dtype=bfloat16)`` can be
+    # numerically harsher for vision stacks under FP8/bf16 export tracing.
+    def _randn_bf16(shape: tuple[int, ...]) -> torch.Tensor:
+        return torch.randn(shape, device=model_device, dtype=torch.float32).to(compute_dtype)
+
     dummy_inputs = (
-        torch.randn(1, num_images * 3, image_size, image_size, dtype=compute_dtype, device=model_device),
+        _randn_bf16((1, num_images * 3, image_size, image_size)),
         torch.ones(1, num_images, dtype=torch.bool, device=model_device),
         torch.randint(0, PALIGEMMA_VOCAB_SIZE, (1, max_token_len), dtype=torch.long, device=model_device),
         torch.ones(1, max_token_len, dtype=torch.bool, device=model_device),
-        torch.randn(1, action_dim, dtype=compute_dtype, device=model_device),
-        torch.randn(1, action_horizon, action_dim, dtype=compute_dtype, device=model_device),
+        _randn_bf16((1, action_dim)),
+        _randn_bf16((1, action_horizon, action_dim)),
     )
     print(
         f"  Dummy inputs created: images={dummy_inputs[0].shape} (dtype={compute_dtype}), "
@@ -511,9 +522,17 @@ def patch_model_for_export(model, compute_dtype=torch.bfloat16):
 
         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
 
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
-            images, img_masks, lang_tokens, lang_masks
-        )
+        if _embed_prefix_force_fp32_enabled():
+            images_f = [img.to(torch.float32) for img in images]
+            prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
+                images_f, img_masks, lang_tokens, lang_masks
+            )
+            if torch.is_tensor(prefix_embs):
+                prefix_embs = prefix_embs.to(dtype=self.compute_dtype)
+        else:
+            prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
+                images, img_masks, lang_tokens, lang_masks
+            )
         prefix_att_2d_masks = make_att_2d_masks_hook(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks.to(dtype=torch.int64), dim=1) - 1
 

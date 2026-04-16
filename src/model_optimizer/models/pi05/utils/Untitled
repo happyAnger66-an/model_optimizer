@@ -1,0 +1,32 @@
+  File "/usr/local/lib/python3.12/dist-packages/torch/jit/_trace.py", line 1432, in _get_trace_graph
+    outs = ONNXTracedModule(
+           ^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/jit/_trace.py", line 140, in forward
+    graph, _out = torch._C._create_graph_by_tracing(
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/jit/_trace.py", line 131, in wrapper
+    outs.append(self.inner(*trace_inputs))
+                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py", line 1766, in _slow_forward
+    result = self.forward(*input, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/model_optimizer/models/pi05/utils/whole_export.py", line 446, in forward
+    return self.model.sample_actions(images.device, observation, noise=noise, num_steps=self.num_steps)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/model_optimizer/models/pi05/utils/whole_export.py", line 525, in sample_actions_hook
+    _raise_if_nan_inf("prefix_embs", prefix_embs)
+  File "/usr/local/lib/python3.12/dist-packages/model_optimizer/models/pi05/utils/whole_export.py", line 183, in _raise_if_nan_inf
+    raise RuntimeError(
+RuntimeError: [PI05_WHOLE_DEBUG_NAN] prefix_embs has NaN/Inf; shape=(1, 968, 2048) dtype=torch.bfloat16 stats=(nan=524288 inf=0 finite_min=-188 finite_max=122.5)
