@@ -12,7 +12,8 @@ Debug / mitigation env vars (optional):
 - ``PI05_WHOLE_DEBUG_EMBED_DECOMPOSE``: manually step through Pi0.5 ``embed_suffix`` math
   (more reliable than hooks when ModelOpt wraps/replaces submodules)
 - ``PI05_WHOLE_EMBED_SUFFIX_FORCE_FP32``: run ``embed_suffix`` in fp32, cast back
-- ``PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP``: keep action/time MLP layers unquantized (fp16)
+- ``PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP``: disable FP8 on Pi0.5 denoise head Linears via standard
+  ``quant_cfg`` filters (wildcards + explicit quantizer names as printed by ``mtq.print_quant_summary``)
 - ``PI05_WHOLE_ATTN_MASK_NEG_CAP``: additive mask clamp (default ``-1e4``, ``none`` disables)
 - ``PI05_WHOLE_DEBUG_PREFIX_MASK_EVERY``: if enabled, log prefix additive mask stats on every ``sample_actions`` call
   (default: log once per model instance to avoid spam during calibration loops)
@@ -98,6 +99,48 @@ def _embed_suffix_force_fp32_enabled() -> bool:
 def _skip_quant_action_time_mlp_enabled() -> bool:
     """Disable ModelOpt quantization for Pi0.5 action/time projection MLPs."""
     return os.environ.get("PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP", "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+_PI05_DENOISE_QUANTIZER_SKIP_NAMES: tuple[str, ...] = (
+    # As printed by ``mtq.print_quant_summary`` for PI0Pytorch (Pi0.5).
+    "action_in_proj.input_quantizer",
+    "action_in_proj.output_quantizer",
+    "action_in_proj.weight_quantizer",
+    "action_out_proj.input_quantizer",
+    "action_out_proj.output_quantizer",
+    "action_out_proj.weight_quantizer",
+    "time_mlp_in.input_quantizer",
+    "time_mlp_in.output_quantizer",
+    "time_mlp_in.weight_quantizer",
+    "time_mlp_out.input_quantizer",
+    "time_mlp_out.output_quantizer",
+    "time_mlp_out.weight_quantizer",
+)
+
+
+def _apply_skip_quant_action_time_fp8_cfg(quant_cfg: dict) -> None:
+    """Disable FP8 on Pi0.5 denoise head Linears using ModelOpt ``quant_cfg`` filters.
+
+    ModelOpt matches ``quant_cfg`` keys against module FQNs reported by ``mtq.print_quant_summary``.
+    We follow the same style as ``model_optimizer/quantization/cfg.py`` (wildcard + ``{"enable": False}``),
+    and also set explicit quantizer names for robustness across ModelOpt versions.
+    """
+    wildcard_patterns = (
+        "*action_in_proj*",
+        "*action_out_proj*",
+        "*time_mlp_in*",
+        "*time_mlp_out*",
+    )
+    for p in wildcard_patterns:
+        quant_cfg["quant_cfg"][p] = {"enable": False}
+
+    for name in _PI05_DENOISE_QUANTIZER_SKIP_NAMES:
+        quant_cfg["quant_cfg"][name] = {"enable": False}
+
+    print(
+        "  MTQ: disabling FP8 for Pi0.5 denoise Linears via quant_cfg wildcards + explicit quantizer names "
+        f"({len(wildcard_patterns)} patterns, {len(_PI05_DENOISE_QUANTIZER_SKIP_NAMES)} exact entries)"
+    )
 
 
 def _debug_prefix_mask_every_call_enabled() -> bool:
@@ -671,11 +714,8 @@ def quantize_model(
     quant_cfg["quant_cfg"]["nn.Conv2d"] = {"*": {"enable": False}}
 
     if _skip_quant_action_time_mlp_enabled():
-        # These modules are shallow MLPs on the denoise path; keeping them in higher precision
-        # avoids hard-to-calibrate FP8 NaNs that show up as all-NaN `suffix_embs`.
-        print("  Disabling FP8 quantization for Pi0.5 action/time MLPs (PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP=1)")
-        for mod_name in ("action_in_proj", "action_out_proj", "time_mlp_in", "time_mlp_out"):
-            quant_cfg["quant_cfg"][mod_name] = {"*": {"enable": False}}
+        print("  Skipping FP8 quantization for Pi0.5 denoise Linears (PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP=1)")
+        _apply_skip_quant_action_time_fp8_cfg(quant_cfg)
 
     if enable_llm_nvfp4:
         print("  Enabling NVFP4 quantization for LLM layers...")
@@ -739,12 +779,15 @@ def quantize_model(
         from modelopt.torch.quantization.utils import is_quantized_linear
 
         for module in quantized_model.modules():
-            assert not isinstance(module, torch.nn.Linear) or is_quantized_linear(module)
-            if isinstance(module, torch.nn.Linear):
-                module.input_quantizer._trt_high_precision_dtype = "Half"
-                module.input_quantizer._onnx_quantizer_type = "dynamic"
-                module.output_quantizer._onnx_quantizer_type = "dynamic"
-                module.weight_quantizer._onnx_quantizer_type = "static"
+            if not isinstance(module, torch.nn.Linear):
+                continue
+            if not is_quantized_linear(module):
+                # FP8 disabled for this Linear (e.g. via ``PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP``).
+                continue
+            module.input_quantizer._trt_high_precision_dtype = "Half"
+            module.input_quantizer._onnx_quantizer_type = "dynamic"
+            module.output_quantizer._onnx_quantizer_type = "dynamic"
+            module.weight_quantizer._onnx_quantizer_type = "static"
 
     return quantized_model
 
