@@ -8,10 +8,14 @@ Debug / mitigation env vars (optional):
 
 - ``PI05_WHOLE_DEBUG_NAN``: enable NaN/Inf checks + extra diagnostics
 - ``PI05_WHOLE_DEBUG_LAYER_HOOKS``: per-leaf forward hooks (slow)
-- ``PI05_WHOLE_DEBUG_EMBED_HOOKS``: hooks on ``action_in_proj`` / ``time_mlp_*``
+- ``PI05_WHOLE_DEBUG_EMBED_HOOKS``: hooks on ``action_in_proj`` / ``time_mlp_*`` (independent of ``PI05_WHOLE_DEBUG_LAYER_HOOKS``)
+- ``PI05_WHOLE_DEBUG_EMBED_DECOMPOSE``: manually step through Pi0.5 ``embed_suffix`` math
+  (more reliable than hooks when ModelOpt wraps/replaces submodules)
 - ``PI05_WHOLE_EMBED_SUFFIX_FORCE_FP32``: run ``embed_suffix`` in fp32, cast back
 - ``PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP``: keep action/time MLP layers unquantized (fp16)
 - ``PI05_WHOLE_ATTN_MASK_NEG_CAP``: additive mask clamp (default ``-1e4``, ``none`` disables)
+- ``PI05_WHOLE_DEBUG_PREFIX_MASK_EVERY``: if enabled, log prefix additive mask stats on every ``sample_actions`` call
+  (default: log once per model instance to avoid spam during calibration loops)
 """
 
 from __future__ import annotations
@@ -77,6 +81,11 @@ def _debug_embed_hooks_enabled() -> bool:
     return os.environ.get("PI05_WHOLE_DEBUG_EMBED_HOOKS", "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _debug_embed_decompose_enabled() -> bool:
+    """Manually mirror Pi0.5 ``embed_suffix`` tensor ops to pinpoint NaNs."""
+    return os.environ.get("PI05_WHOLE_DEBUG_EMBED_DECOMPOSE", "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
 def _embed_suffix_force_fp32_enabled() -> bool:
     """Run `embed_suffix` math in float32, then cast embeddings back to `compute_dtype`.
 
@@ -89,6 +98,11 @@ def _embed_suffix_force_fp32_enabled() -> bool:
 def _skip_quant_action_time_mlp_enabled() -> bool:
     """Disable ModelOpt quantization for Pi0.5 action/time projection MLPs."""
     return os.environ.get("PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP", "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _debug_prefix_mask_every_call_enabled() -> bool:
+    """If true, log prefix additive mask stats on every ``sample_actions`` invocation."""
+    return os.environ.get("PI05_WHOLE_DEBUG_PREFIX_MASK_EVERY", "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
 def _shape_str(t: torch.Tensor) -> str:
@@ -171,13 +185,14 @@ def _raise_if_nan_inf_past_key_values(name: str, pkv):
     _raise_if_nan_inf(name, pkv)
 
 
-def _install_nan_hooks(root: torch.nn.Module, prefix: str):
+def _install_nan_hooks(root: torch.nn.Module, prefix: str, *, enabled: bool) -> list:
     """Install forward hooks to catch the first module producing NaN/Inf.
 
-    Controlled by env `PI05_WHOLE_DEBUG_LAYER_HOOKS=1`.
+    Note: this used to be gated only on ``PI05_WHOLE_DEBUG_LAYER_HOOKS``, which made
+    ``PI05_WHOLE_DEBUG_EMBED_HOOKS`` ineffective. Callers must pass the correct flag.
     """
     handles: list[torch.utils.hooks.RemovableHandle] = []
-    if not _debug_layer_hooks_enabled():
+    if not enabled:
         return handles
 
     def hook_fn(mod, _inputs, outputs, *, _name: str):
@@ -190,6 +205,41 @@ def _install_nan_hooks(root: torch.nn.Module, prefix: str):
         full_name = f"{prefix}.{name}" if name else prefix
         handles.append(mod.register_forward_hook(lambda m, i, o, _n=full_name: hook_fn(m, i, o, _name=_n)))
     return handles
+
+
+def _debug_decompose_pi05_embed_suffix(model: torch.nn.Module, x_t: torch.Tensor, timestep: torch.Tensor) -> None:
+    """Mirror ``PI0Pytorch.embed_suffix`` Pi0.5 branch with explicit NaN checks.
+
+    ``nn.Module`` forward hooks are not always reliable after ModelOpt replacements
+    or when calls happen inside closures; this function checks the actual tensors
+    produced by the same ops OpenPI uses.
+    """
+    from openpi.models_pytorch.pi0_pytorch import create_sinusoidal_pos_embedding
+    import torch.nn.functional as F
+
+    if not getattr(model, "pi05", False):
+        return
+
+    time_emb = create_sinusoidal_pos_embedding(
+        timestep,
+        model.action_in_proj.out_features,
+        min_period=4e-3,
+        max_period=4.0,
+        device=timestep.device,
+    )
+    time_emb = time_emb.type(dtype=timestep.dtype)
+    _raise_if_nan_inf("decompose.pi05.sinusoidal_time_emb", time_emb)
+
+    x = model.time_mlp_in(time_emb)
+    _raise_if_nan_inf("decompose.pi05.time_mlp_in", x)
+    x = F.silu(x)
+    x = model.time_mlp_out(x)
+    _raise_if_nan_inf("decompose.pi05.time_mlp_out_pre_final_silu", x)
+    x = F.silu(x)
+    _raise_if_nan_inf("decompose.pi05.adarms_cond(time_mlp_out)", x)
+
+    action_emb = model.action_in_proj(x_t)
+    _raise_if_nan_inf("decompose.pi05.action_emb(action_in_proj)", action_emb)
 
 
 class QuantizedMatMul(torch.nn.Module):
@@ -433,20 +483,28 @@ def patch_model_for_export(model, compute_dtype=torch.bfloat16):
             _raise_if_nan_inf("prefix_pad_masks", prefix_pad_masks)
             _raise_if_nan_inf("prefix_att_2d_masks_4d", prefix_att_2d_masks_4d)
             _raise_if_nan_inf("prefix_position_ids", prefix_position_ids)
-            try:
-                print(
-                    f"[PI05_WHOLE_DEBUG_NAN] prefix_att_mask stats: dtype={prefix_att_2d_masks_4d.dtype} "
-                    f"min={prefix_att_2d_masks_4d.min().item():.6g} max={prefix_att_2d_masks_4d.max().item():.6g} "
-                    f"neg_cap={neg_cap}"
-                )
-            except Exception:
-                pass
+            # `sample_actions` runs many times during ModelOpt calibration; avoid log spam by default.
+            if _debug_prefix_mask_every_call_enabled() or not getattr(self, "_pi05_whole_prefix_mask_stats_logged", False):
+                try:
+                    print(
+                        f"[PI05_WHOLE_DEBUG_NAN] prefix_att_mask stats: dtype={prefix_att_2d_masks_4d.dtype} "
+                        f"min={prefix_att_2d_masks_4d.min().item():.6g} max={prefix_att_2d_masks_4d.max().item():.6g} "
+                        f"neg_cap={neg_cap}"
+                    )
+                except Exception:
+                    pass
+                if not _debug_prefix_mask_every_call_enabled():
+                    setattr(self, "_pi05_whole_prefix_mask_stats_logged", True)
 
         hook_handles = []
         if debug_nan:
             try:
                 hook_handles.extend(
-                    _install_nan_hooks(self.paligemma_with_expert.paligemma.language_model, "paligemma.language_model")
+                    _install_nan_hooks(
+                        self.paligemma_with_expert.paligemma.language_model,
+                        "paligemma.language_model",
+                        enabled=_debug_layer_hooks_enabled(),
+                    )
                 )
             except Exception:
                 # Hooks are best-effort; don't break export if something is not hookable.
@@ -501,7 +559,10 @@ def patch_model_for_export(model, compute_dtype=torch.bfloat16):
             for subname in ("action_in_proj", "time_mlp_in", "time_mlp_out"):
                 sub = getattr(self, subname, None)
                 if isinstance(sub, torch.nn.Module):
-                    embed_handles.extend(_install_nan_hooks(sub, subname))
+                    embed_handles.extend(_install_nan_hooks(sub, subname, enabled=True))
+
+        if debug_nan and _debug_embed_decompose_enabled():
+            _debug_decompose_pi05_embed_suffix(self, x_t, timestep)
 
         if _embed_suffix_force_fp32_enabled():
             # `create_sinusoidal_pos_embedding` + small MLPs can be sensitive in bf16 under some export stacks.
@@ -552,7 +613,11 @@ def patch_model_for_export(model, compute_dtype=torch.bfloat16):
         if debug_nan:
             try:
                 hook_handles.extend(
-                    _install_nan_hooks(self.paligemma_with_expert.gemma_expert.model, "gemma_expert.model")
+                    _install_nan_hooks(
+                        self.paligemma_with_expert.gemma_expert.model,
+                        "gemma_expert.model",
+                        enabled=_debug_layer_hooks_enabled(),
+                    )
                 )
             except Exception:
                 hook_handles = []
