@@ -22,7 +22,7 @@ class CalibrationDataset(Dataset):
         checkpoint_dir: str,
         num_samples: int = 32,
         device: str = "cuda",
-        compute_dtype=torch.float16,
+        compute_dtype=torch.bfloat16,
     ):
         print("  Initializing calibration dataset...")
 
@@ -105,7 +105,7 @@ def load_calibration_data(
     num_samples: int = 32,
     device: str = "cuda",
     batch_size: int = 1,
-    compute_dtype=torch.float16,
+    compute_dtype=torch.bfloat16,
 ):
     """Load calibration data from dataset for FP8/NVFP4 quantization.
 
