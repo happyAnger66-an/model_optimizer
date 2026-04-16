@@ -16,6 +16,8 @@ Debug / mitigation env vars (optional):
 - ``PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP``: disable FP8 on Pi0.5 denoise head Linears via standard
   ``quant_cfg`` filters (wildcards + explicit quantizer names as printed by ``mtq.print_quant_summary``)
 - ``PI05_WHOLE_ATTN_MASK_NEG_CAP``: additive mask clamp (default ``-1e4``, ``none`` disables)
+- ``PI05_WHOLE_TRT_HP_DTYPE``: override ModelOpt ``_trt_high_precision_dtype`` for ONNX FP8 export
+  (default: ``BFloat16`` if model params are bf16, ``Half`` if fp16, else ``Float``)
 - ``PI05_WHOLE_DEBUG_PREFIX_MASK_EVERY``: if enabled, log prefix additive mask stats on every ``sample_actions`` call
   (default: log once per model instance to avoid spam during calibration loops)
 """
@@ -147,6 +149,42 @@ def _apply_skip_quant_action_time_fp8_cfg(quant_cfg: dict) -> None:
         "  MTQ: disabling FP8 for Pi0.5 denoise Linears via quant_cfg wildcards + explicit quantizer names "
         f"({len(wildcard_patterns)} patterns, {len(_PI05_DENOISE_QUANTIZER_SKIP_NAMES)} exact entries)"
     )
+
+
+def _default_trt_high_precision_dtype_name(param_dtype: torch.dtype) -> str:
+    """Map PyTorch activations dtype to ModelOpt ONNX FP8 exporter TRT high-precision dtype names."""
+    if param_dtype == torch.float16:
+        return "Half"
+    if param_dtype == torch.bfloat16:
+        return "BFloat16"
+    return "Float"
+
+
+def _patch_modelopt_quantizers_trt_high_precision_for_onnx(model: torch.nn.Module) -> None:
+    """Align ModelOpt quantizer ONNX export metadata with activation dtype (TRT strongly typed FP8).
+
+    Without this, ``torch.onnx.export`` can fail in ModelOpt's FP8 symbolic with:
+    ``TRT StronglyType requires both weights and amax to be in the BF16/FP16, or the QDQ in Float``.
+    """
+    override = os.environ.get("PI05_WHOLE_TRT_HP_DTYPE", "").strip()
+    if override:
+        hp = override
+    else:
+        try:
+            hp = _default_trt_high_precision_dtype_name(next(model.parameters()).dtype)
+        except StopIteration:
+            hp = "Float"
+
+    patched = 0
+    for mod in model.modules():
+        for qn in ("input_quantizer", "output_quantizer", "weight_quantizer"):
+            q = getattr(mod, qn, None)
+            if q is None:
+                continue
+            if hasattr(q, "_trt_high_precision_dtype"):
+                setattr(q, "_trt_high_precision_dtype", hp)
+                patched += 1
+    print(f"  ModelOpt ONNX FP8: patched _trt_high_precision_dtype={hp!r} on {patched} quantizer(s)")
 
 
 def _debug_prefix_mask_every_call_enabled() -> bool:
@@ -777,6 +815,9 @@ def quantize_model(
     print("  Running quantization with calibration...")
     quantized_model = mtq.quantize(model, quant_cfg, forward_loop=forward_loop)
 
+    # Required for ModelOpt FP8 ONNX export when activations are bf16/fp16 (TRT strongly typed QDQ).
+    _patch_modelopt_quantizers_trt_high_precision_for_onnx(quantized_model)
+
     print("\n  Quantization Summary:")
     mtq.print_quant_summary(quantized_model)
     print("  FP8 quantization completed")
@@ -803,7 +844,7 @@ def quantize_model(
             if not is_quantized_linear(module):
                 # FP8 disabled for this Linear (e.g. via ``PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP``).
                 continue
-            module.input_quantizer._trt_high_precision_dtype = "Half"
+            module.input_quantizer._trt_high_precision_dtype = "BFloat16"
             module.input_quantizer._onnx_quantizer_type = "dynamic"
             module.output_quantizer._onnx_quantizer_type = "dynamic"
             module.weight_quantizer._onnx_quantizer_type = "static"
