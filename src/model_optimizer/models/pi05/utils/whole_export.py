@@ -272,7 +272,7 @@ class ONNXWrapper(torch.nn.Module):
 
 
 def create_dummy_inputs(
-    model_device: torch.device, model_config, compute_dtype: torch.dtype = torch.float16
+    model_device: torch.device, model_config, compute_dtype: torch.dtype = torch.bfloat16
 ) -> Tuple:
     """Create dummy inputs for ONNX export/calibration based on config/constants."""
 
@@ -297,7 +297,7 @@ def create_dummy_inputs(
     return dummy_inputs
 
 
-def patch_model_for_export(model, compute_dtype=torch.float16):
+def patch_model_for_export(model, compute_dtype=torch.bfloat16):
     """Patch PI0Pytorch to be more ONNX/TensorRT export friendly."""
 
     import types
@@ -559,8 +559,8 @@ def prepare_model_for_export(
     import openpi.models_pytorch.pi0_pytorch
 
     model.eval()
-    model = patch_model_for_export(model, compute_dtype=torch.float16)
-    model = model.to(torch.float16)
+    model = patch_model_for_export(model, compute_dtype=torch.bfloat16)
+    model = model.to(torch.bfloat16)
 
     if precision.lower() != "fp8":
         raise ValueError(
@@ -578,7 +578,7 @@ def prepare_model_for_export(
             checkpoint_dir,
             num_calibration_samples,
             str(device),
-            compute_dtype=torch.float16,
+            compute_dtype=torch.bfloat16,
         )
 
     model = quantize_model(model, dummy_inputs, calibration_data, num_steps, enable_llm_nvfp4, quantize_attention_matmul)
@@ -616,7 +616,7 @@ def export_whole_model_to_onnx(
     onnx_path = onnx_dir / onnx_filename
 
     device = next(model.parameters()).device
-    dummy_inputs = create_dummy_inputs(device, model.config, torch.float16)
+    dummy_inputs = create_dummy_inputs(device, model.config, torch.bfloat16)
     model = prepare_model_for_export(
         model,
         precision=precision,
