@@ -3,6 +3,15 @@
 
 This is vendored from `third_party/openpi_on_thor/pytorch_to_onnx.py` to avoid
 runtime dependency on `openpi_on_thor` for `model-opt export pi05_libero/wrapper`.
+
+Debug / mitigation env vars (optional):
+
+- ``PI05_WHOLE_DEBUG_NAN``: enable NaN/Inf checks + extra diagnostics
+- ``PI05_WHOLE_DEBUG_LAYER_HOOKS``: per-leaf forward hooks (slow)
+- ``PI05_WHOLE_DEBUG_EMBED_HOOKS``: hooks on ``action_in_proj`` / ``time_mlp_*``
+- ``PI05_WHOLE_EMBED_SUFFIX_FORCE_FP32``: run ``embed_suffix`` in fp32, cast back
+- ``PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP``: keep action/time MLP layers unquantized (fp16)
+- ``PI05_WHOLE_ATTN_MASK_NEG_CAP``: additive mask clamp (default ``-1e4``, ``none`` disables)
 """
 
 from __future__ import annotations
@@ -66,6 +75,20 @@ def _debug_layer_hooks_enabled() -> bool:
 def _debug_embed_hooks_enabled() -> bool:
     """Hook modules used by `PI0Pytorch.embed_suffix` (action/time MLP path)."""
     return os.environ.get("PI05_WHOLE_DEBUG_EMBED_HOOKS", "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _embed_suffix_force_fp32_enabled() -> bool:
+    """Run `embed_suffix` math in float32, then cast embeddings back to `compute_dtype`.
+
+    This is a pragmatic workaround for bf16/FP8-sensitive ops producing NaNs during
+    `torch.onnx.export` tracing on some stacks.
+    """
+    return os.environ.get("PI05_WHOLE_EMBED_SUFFIX_FORCE_FP32", "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _skip_quant_action_time_mlp_enabled() -> bool:
+    """Disable ModelOpt quantization for Pi0.5 action/time projection MLPs."""
+    return os.environ.get("PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP", "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
 def _shape_str(t: torch.Tensor) -> str:
@@ -480,7 +503,23 @@ def patch_model_for_export(model, compute_dtype=torch.bfloat16):
                 if isinstance(sub, torch.nn.Module):
                     embed_handles.extend(_install_nan_hooks(sub, subname))
 
-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, timestep)
+        if _embed_suffix_force_fp32_enabled():
+            # `create_sinusoidal_pos_embedding` + small MLPs can be sensitive in bf16 under some export stacks.
+            # Forcing fp32 here keeps numerics stable while still allowing the rest of the model to use `compute_dtype`.
+            x_t32 = x_t.to(torch.float32)
+            ts32 = timestep.to(torch.float32)
+            st32 = (
+                state.to(torch.float32)
+                if torch.is_tensor(state) and torch.is_floating_point(state)
+                else state
+            )
+            suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(st32, x_t32, ts32)
+            if torch.is_tensor(suffix_embs):
+                suffix_embs = suffix_embs.to(dtype=self.compute_dtype)
+            if torch.is_tensor(adarms_cond):
+                adarms_cond = adarms_cond.to(dtype=self.compute_dtype)
+        else:
+            suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, timestep)
 
         if debug_nan and embed_handles:
             for h in embed_handles:
@@ -566,6 +605,13 @@ def quantize_model(
     quant_cfg = mtq.FP8_DEFAULT_CFG
     quant_cfg["quant_cfg"]["nn.Conv2d"] = {"*": {"enable": False}}
 
+    if _skip_quant_action_time_mlp_enabled():
+        # These modules are shallow MLPs on the denoise path; keeping them in higher precision
+        # avoids hard-to-calibrate FP8 NaNs that show up as all-NaN `suffix_embs`.
+        print("  Disabling FP8 quantization for Pi0.5 action/time MLPs (PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP=1)")
+        for mod_name in ("action_in_proj", "action_out_proj", "time_mlp_in", "time_mlp_out"):
+            quant_cfg["quant_cfg"][mod_name] = {"*": {"enable": False}}
+
     if enable_llm_nvfp4:
         print("  Enabling NVFP4 quantization for LLM layers...")
         quant_cfg["quant_cfg"]["paligemma_with_expert.paligemma.model.language_model.layers.*"] = {
@@ -610,6 +656,19 @@ def quantize_model(
     print("\n  Quantization Summary:")
     mtq.print_quant_summary(quantized_model)
     print("  FP8 quantization completed")
+
+    if _debug_nan_enabled():
+        # Catch "silent" bad quant params early (common when calibration doesn't cover denoise path well).
+        for mod_name in ("action_in_proj", "action_out_proj", "time_mlp_in", "time_mlp_out"):
+            sub = getattr(quantized_model, mod_name, None)
+            if sub is None:
+                continue
+            for p_name, p in sub.named_parameters(recurse=True):
+                if torch.is_tensor(p) and torch.is_floating_point(p):
+                    if torch.isnan(p).any().item() or torch.isinf(p).any().item():
+                        raise RuntimeError(
+                            f"[PI05_WHOLE_DEBUG_NAN] quantized parameter has NaN/Inf: {mod_name}.{p_name}"
+                        )
 
     if enable_llm_nvfp4:
         from modelopt.torch.quantization.utils import is_quantized_linear
