@@ -147,6 +147,7 @@ class Pi05Wrapper(torch.nn.Module, Model):
         num_calibration_samples: Optional[int] = None,
         enable_llm_nvfp4: Optional[bool] = None,
         quantize_attention_matmul: Optional[bool] = None,
+        quantize: Optional[bool] = None,
     ) -> str:
         """Export a single end-to-end ONNX under ``export_dir/onnx/`` (quantizes if needed).
 
@@ -156,7 +157,8 @@ class Pi05Wrapper(torch.nn.Module, Model):
 
         Optional tuning via environment (defaults match Thor ``pytorch_to_onnx``):
         ``PI05_WHOLE_NUM_STEPS``, ``PI05_WHOLE_PRECISION``, ``PI05_WHOLE_NUM_CALIB_SAMPLES``,
-        ``PI05_WHOLE_ENABLE_LLM_NVFP4``, ``PI05_WHOLE_QUANTIZE_ATTN_MATMUL`` (0/1).
+        ``PI05_WHOLE_ENABLE_LLM_NVFP4``, ``PI05_WHOLE_QUANTIZE_ATTN_MATMUL`` (0/1),
+        ``PI05_WHOLE_EXPORT_NO_QUANT`` (1 = ONNX export only, skip ModelOpt FP8 quantization).
         """
         _ = mode  # same signature as pi05 vit/llm/expert; not used for single ONNX graph
 
@@ -169,6 +171,8 @@ class Pi05Wrapper(torch.nn.Module, Model):
             enable_llm_nvfp4 = _env_bool("PI05_WHOLE_ENABLE_LLM_NVFP4", True)
         if quantize_attention_matmul is None:
             quantize_attention_matmul = _env_bool("PI05_WHOLE_QUANTIZE_ATTN_MATMUL", True)
+        if quantize is None:
+            quantize = not _env_bool("PI05_WHOLE_EXPORT_NO_QUANT", False)
 
         onnx_path = export_whole_model_to_onnx(
             self.pi05_model,
@@ -180,7 +184,8 @@ class Pi05Wrapper(torch.nn.Module, Model):
             num_calibration_samples=num_calibration_samples,
             enable_llm_nvfp4=enable_llm_nvfp4,
             quantize_attention_matmul=quantize_attention_matmul,
+            quantize=quantize,
         )
-        self.is_quantized = True
+        self.is_quantized = bool(quantize)
         self.pi05_model = self.pi05_model  # explicit for clarity
         return str(onnx_path.resolve())

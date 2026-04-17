@@ -18,6 +18,7 @@ Debug / mitigation env vars (optional):
 - ``PI05_WHOLE_ATTN_MASK_NEG_CAP``: additive mask clamp (default ``-1e4``, ``none`` disables)
 - ``PI05_WHOLE_TRT_HP_DTYPE``: override ModelOpt ``_trt_high_precision_dtype`` for ONNX FP8 export
   (default: ``BFloat16`` if model params are bf16, ``Half`` if fp16, else ``Float``)
+- ``export_whole_model_to_onnx(..., quantize=False)``: patch + bf16 ONNX only, skip ``mtq.quantize``
 - ``PI05_WHOLE_DEBUG_PREFIX_MASK_EVERY``: if enabled, log prefix additive mask stats on every ``sample_actions`` call
   (default: log once per model instance to avoid spam during calibration loops)
 """
@@ -862,8 +863,10 @@ def prepare_model_for_export(
     num_steps: int = 10,
     enable_llm_nvfp4: bool = False,
     quantize_attention_matmul: bool = True,
+    *,
+    quantize: bool = True,
 ) -> torch.nn.Module:
-    """Prepare model for ONNX export by quantizing to FP8 (optional NVFP4 LLM)."""
+    """Prepare model for ONNX export: patch + bf16, optionally ModelOpt FP8 (optional NVFP4 LLM)."""
 
     import openpi.models_pytorch.pi0_pytorch
 
@@ -871,26 +874,31 @@ def prepare_model_for_export(
     model = patch_model_for_export(model, compute_dtype=torch.bfloat16)
     model = model.to(torch.bfloat16)
 
-    if precision.lower() != "fp8":
-        raise ValueError(
-            "Only FP8 precision is supported. The Pi0.5 model uses BF16 natively and "
-            "FP16 has insufficient dynamic range. Use FP8."
-        )
-    if dummy_inputs is None:
-        raise ValueError("dummy_inputs required for FP8 quantization")
+    if quantize:
+        if precision.lower() != "fp8":
+            raise ValueError(
+                "Only FP8 precision is supported. The Pi0.5 model uses BF16 natively and "
+                "FP16 has insufficient dynamic range. Use FP8."
+            )
+        if dummy_inputs is None:
+            raise ValueError("dummy_inputs required for FP8 quantization")
 
-    device = next(model.parameters()).device
-    calibration_data = None
-    if config_obj is not None and checkpoint_dir is not None:
-        calibration_data = load_calibration_data(
-            config_obj,
-            checkpoint_dir,
-            num_calibration_samples,
-            str(device),
-            compute_dtype=torch.bfloat16,
-        )
+        device = next(model.parameters()).device
+        calibration_data = None
+        if config_obj is not None and checkpoint_dir is not None:
+            calibration_data = load_calibration_data(
+                config_obj,
+                checkpoint_dir,
+                num_calibration_samples,
+                str(device),
+                compute_dtype=torch.bfloat16,
+            )
 
-    model = quantize_model(model, dummy_inputs, calibration_data, num_steps, enable_llm_nvfp4, quantize_attention_matmul)
+        model = quantize_model(
+            model, dummy_inputs, calibration_data, num_steps, enable_llm_nvfp4, quantize_attention_matmul
+        )
+    else:
+        print("  prepare_model_for_export: quantize=False — skipping ModelOpt calibration/FP8 quantization")
 
     if hasattr(model.sample_actions, "_torchdynamo_inline"):
         uncompiled = openpi.models_pytorch.pi0_pytorch.PI0Pytorch.sample_actions
@@ -910,15 +918,18 @@ def export_whole_model_to_onnx(
     enable_llm_nvfp4: bool = False,
     quantize_attention_matmul: bool = True,
     opset_version: int = 19,
+    quantize: bool = True,
 ) -> Path:
-    """Quantize (if needed) and export a single end-to-end ONNX graph."""
+    """Prepare model (patch + bf16, optional FP8 quant) and export a single end-to-end ONNX graph."""
 
     export_dir = Path(export_dir)
     export_dir.mkdir(parents=True, exist_ok=True)
     onnx_dir = export_dir / "onnx"
     onnx_dir.mkdir(parents=True, exist_ok=True)
 
-    if enable_llm_nvfp4 and precision.lower() == "fp8":
+    if not quantize:
+        onnx_filename = "model_bf16.onnx"
+    elif enable_llm_nvfp4 and precision.lower() == "fp8":
         onnx_filename = f"model_{precision.lower()}_nvfp4.onnx"
     else:
         onnx_filename = f"model_{precision.lower()}.onnx"
@@ -929,13 +940,14 @@ def export_whole_model_to_onnx(
     model = prepare_model_for_export(
         model,
         precision=precision,
-        dummy_inputs=dummy_inputs,
+        dummy_inputs=dummy_inputs if quantize else None,
         config_obj=config_obj,
         checkpoint_dir=checkpoint_dir,
         num_calibration_samples=num_calibration_samples,
         num_steps=num_steps,
         enable_llm_nvfp4=enable_llm_nvfp4,
         quantize_attention_matmul=quantize_attention_matmul,
+        quantize=quantize,
     )
 
     wrapped_model = ONNXWrapper(model, num_steps)
@@ -960,7 +972,7 @@ def export_whole_model_to_onnx(
                 "actions": {0: "batch_size"},
             },
         )
-        postprocess_onnx_model(str(onnx_path), enable_llm_nvfp4)
+        postprocess_onnx_model(str(onnx_path), enable_llm_nvfp4 and quantize)
 
     return onnx_path
 
