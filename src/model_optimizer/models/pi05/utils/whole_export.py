@@ -865,14 +865,15 @@ def prepare_model_for_export(
     quantize_attention_matmul: bool = True,
     *,
     quantize: bool = True,
+    compute_dtype: torch.dtype = torch.bfloat16,
 ) -> torch.nn.Module:
     """Prepare model for ONNX export: patch + bf16, optionally ModelOpt FP8 (optional NVFP4 LLM)."""
 
     import openpi.models_pytorch.pi0_pytorch
 
     model.eval()
-    model = patch_model_for_export(model, compute_dtype=torch.bfloat16)
-    model = model.to(torch.bfloat16)
+    model = patch_model_for_export(model, compute_dtype=compute_dtype)
+    model = model.to(compute_dtype)
 
     if quantize:
         if precision.lower() != "fp8":
@@ -936,7 +937,8 @@ def export_whole_model_to_onnx(
     onnx_path = onnx_dir / onnx_filename
 
     device = next(model.parameters()).device
-    dummy_inputs = create_dummy_inputs(device, model.config, torch.bfloat16)
+    compute_dtype = torch.float16
+    dummy_inputs = create_dummy_inputs(device, model.config, compute_dtype)
     model = prepare_model_for_export(
         model,
         precision=precision,
@@ -948,6 +950,7 @@ def export_whole_model_to_onnx(
         enable_llm_nvfp4=enable_llm_nvfp4,
         quantize_attention_matmul=quantize_attention_matmul,
         quantize=quantize,
+        compute_dtype=compute_dtype,
     )
 
     wrapped_model = ONNXWrapper(model, num_steps)
