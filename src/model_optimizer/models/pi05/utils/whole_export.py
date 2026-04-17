@@ -937,7 +937,7 @@ def export_whole_model_to_onnx(
     onnx_path = onnx_dir / onnx_filename
 
     device = next(model.parameters()).device
-    compute_dtype = torch.bfloat16
+    compute_dtype = torch.float16
     dummy_inputs = create_dummy_inputs(device, model.config, compute_dtype)
     model = prepare_model_for_export(
         model,
@@ -961,7 +961,7 @@ def export_whole_model_to_onnx(
             dummy_inputs,
             str(onnx_path),
             opset_version=opset_version,
-            dynamo=True,
+            dynamo=False,
             do_constant_folding=True,
             input_names=["images", "img_masks", "lang_tokens", "lang_masks", "state", "noise"],
             output_names=["actions"],
