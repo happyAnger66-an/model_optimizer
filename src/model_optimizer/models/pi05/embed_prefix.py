@@ -207,6 +207,9 @@ class Pi05EmbedPrefix(nn.Module, Model):
         os.makedirs(output_dir, exist_ok=True)
         start = time.time()
         max_token_len = self.max_token_len
+        # torch.export / Dim：示例序列长若取满 max_token_len，常把 token 维 specialize 成常数，
+        # 与 ``Dim(..., min=1, max=max_token_len)`` 冲突（ConstraintViolationError）。用 (1, S) 且 S < max。
+        trace_lang_len = max(1, min(max_token_len - 1, 128)) if max_token_len > 1 else 1
 
         dummy: list[torch.Tensor] = []
         input_names: list[str] = []
@@ -218,17 +221,14 @@ class Pi05EmbedPrefix(nn.Module, Model):
             input_names.extend([f"image_{i}", f"image_mask_{i}"])
 
         dummy.append(
-            torch.zeros((1, max_token_len), dtype=torch.int64, device="cuda"),
+            torch.zeros((1, trace_lang_len), dtype=torch.int64, device="cuda"),
         )
-        dummy.append(torch.ones((1, max_token_len), dtype=torch.bool, device="cuda"))
+        dummy.append(torch.ones((1, trace_lang_len), dtype=torch.bool, device="cuda"))
         input_names.extend(["lang_tokens", "lang_masks"])
 
-        output_path = f"{output_dir}/embed_prefix.onnx"
-        fallback_order = [dynamo]
-        if not dynamo:
-            fallback_order.append(True)
-        else:
-            fallback_order.append(False)
+        output_path = f"{export_dir}/embed_prefix.onnx"
+        # 仅按用户选择尝试：未显式要 dynamo 时不自动再跑 dynamo=True（避免无意义告警与二次失败）。
+        fallback_order = [True, False] if dynamo else [False]
 
         def _export_kwargs(use_dynamo: bool) -> dict:
             if use_dynamo:
