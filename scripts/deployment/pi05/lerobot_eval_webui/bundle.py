@@ -90,6 +90,9 @@ def load_infer_bundle(
     if not data_config.repo_id:
         raise ValueError("当前配置未设置 repo_id，无法加载 LeRobot 数据。")
     action_horizon = train_cfg.model.action_horizon
+    action_dim = int(getattr(train_cfg.model, "action_dim", 0) or 0)
+    if action_dim <= 0:
+        raise ValueError("train_cfg.model 缺少有效的 action_dim，无法构建流匹配噪声形状。")
     action_keys = tuple(data_config.action_sequence_keys)
 
     print(colored(f"[infer] LeRobotDataset(repo={data_config.repo_id!r}) ...", "cyan"), flush=True)
@@ -600,6 +603,7 @@ def load_infer_bundle(
         "end": end,
         "start_index": int(args.start_index),
         "action_horizon": int(action_horizon),
+        "action_dim": int(action_dim),
         "ep_per_frame": ep_per_frame,
         "run_id": run_id,
         "args": args,

@@ -35,23 +35,26 @@ def _policy_torch_model(policy: Any) -> Any:
     return None
 
 
-def flow_match_noise_for_chunk(policy: Any, args: Any, dataset_chunk_idx: int) -> np.ndarray | None:
-    """若 ``args.noise == "fixed"``，返回 ``(action_horizon, action_dim)`` 的 float32 高斯初值；否则 ``None``。"""
+def flow_match_noise_for_chunk(bundle: dict[str, Any], dataset_chunk_idx: int) -> np.ndarray | None:
+    """若 ``args.noise == "fixed"``，返回 ``(action_horizon, action_dim)`` 的 float32 高斯初值；否则 ``None``。
+
+    形状来自 ``bundle``（与 ``train_cfg.model`` 一致），不依赖 ``policy._model``，以便 **纯 TensorRT / ONNXRT** 等路径也能用 ``--noise fixed``。
+    """
+    args = bundle["args"]
     if getattr(args, "noise", "random") != "fixed":
         return None
-    model = _policy_torch_model(policy)
-    if model is None or not hasattr(model, "config"):
-        raise RuntimeError(
-            "noise=fixed 需要可解析的 PyTorch 模型（policy._model 或 policy._policy._model）且带 .config（含 action_horizon / action_dim）。"
-        )
-    try:
+    h = int(bundle["action_horizon"])
+    d = int(bundle.get("action_dim", 0))
+    if d <= 0:
+        policy = bundle["policy"]
+        model = _policy_torch_model(policy)
+        if model is None or not hasattr(model, "config"):
+            raise RuntimeError(
+                "noise=fixed 需要 bundle['action_dim']（推荐）或可解析的 policy._model.config.action_dim。"
+            )
         cfg = model.config
         h = int(cfg.action_horizon)
         d = int(cfg.action_dim)
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "noise=fixed 需要模型 config 上存在 action_horizon 与 action_dim（PI0 PyTorch）。"
-        ) from exc
     seed = int(args.noise_seed)
     ss = np.random.SeedSequence([seed, int(dataset_chunk_idx)])
     rng = np.random.default_rng(ss)
@@ -101,7 +104,7 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     gt = np.asarray(packed["actions"])
     obs = {k: v for k, v in packed.items() if k != "actions"}
 
-    flow_noise = flow_match_noise_for_chunk(policy, args, idx)
+    flow_noise = flow_match_noise_for_chunk(bundle, idx)
     backend = select_infer_backend(bundle)
     pack = backend.predict(
         policy, policy_trt, policy_ptq, obs, gt, action_horizon, flow_noise=flow_noise
