@@ -200,7 +200,12 @@ class Pi05EmbedPrefix(nn.Module, Model):
         dynamo: bool = False,
         mode = None
     ):
-        """导出 ``embed_prefix.onnx``；输入输出与 ``forward`` 一致。"""
+        """导出 ``embed_prefix.onnx``；输入输出与 ``forward`` 一致。
+
+        若已 **ModelOpt 量化**（``is_quantized``），Vision 中含 ``QuantConv2d`` / ``TRT_FP8DequantizeLinear``，
+        TorchScript ONNX（``dynamo=False``）会报 ``Unsupported: ONNX export of convolution for kernel of unknown shape``，
+        因此会 **优先走 ``dynamo=True``**（与 ``quantize`` 后导出一致）。
+        """
         self.eval().cuda()
 
         output_dir = export_dir
@@ -227,8 +232,17 @@ class Pi05EmbedPrefix(nn.Module, Model):
         input_names.extend(["lang_tokens", "lang_masks"])
 
         output_path = f"{export_dir}/embed_prefix.onnx"
-        # 仅按用户选择尝试：未显式要 dynamo 时不自动再跑 dynamo=True（避免无意义告警与二次失败）。
-        fallback_order = [True, False] if dynamo else [False]
+        quantized = bool(getattr(self, "is_quantized", False))
+        if quantized:
+            # 见类文档：量化后必须 torch.export / dynamo 路径；再尝试 legacy 作兜底。
+            fallback_order = [True, False]
+            if not dynamo:
+                logger.info(
+                    "embed_prefix 已量化：ONNX 先使用 dynamo=True（TorchScript 不支持 QDQ Vision Conv）。"
+                )
+        else:
+            # 未量化：仅按用户选择；不自动 dynamo=True，避免无谓告警。
+            fallback_order = [True, False] if dynamo else [False]
 
         def _export_kwargs(use_dynamo: bool) -> dict:
             if use_dynamo:
@@ -317,7 +331,7 @@ class Pi05EmbedPrefix(nn.Module, Model):
         self.is_quantized = True
         set_dynamic_quant(self, "bf16")
 
-        self.export(export_dir, dynamo=False)
+        self.export(export_dir, dynamo=False)  # 已量化时 export() 内会改走 dynamo=True
         onnx_path = f"{export_dir}/embed_prefix.onnx"
         if is_nvfp4_quantized(quant_cfg):
             print(colored("nvfp4 quantization detected, post processing...", "green"))
