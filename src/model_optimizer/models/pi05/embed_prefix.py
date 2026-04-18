@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import os
@@ -16,6 +17,7 @@ from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quanti
 from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
 from model_optimizer.quantization.quantization_utils import quantize_model
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
+from modelopt.torch.quantization.utils import export_torch_mode
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +207,8 @@ class Pi05EmbedPrefix(nn.Module, Model):
         若已 **ModelOpt 量化**（``is_quantized``），Vision 中含 ``QuantConv2d`` / ``TRT_FP8DequantizeLinear``，
         TorchScript ONNX（``dynamo=False``）会报 ``Unsupported: ONNX export of convolution for kernel of unknown shape``，
         因此会 **优先走 ``dynamo=True``**（与 ``quantize`` 后导出一致）。
+        量化导出会在 ``modelopt.torch.quantization.utils.export_torch_mode()`` 内执行，避免
+        ``torch.export`` 将量化器状态误提升为 fake constant（``lifted_tensor_*`` / constant list 报错）。
 
         **Dynamo / torch.export**：语言序列维若声明 ``Dim("token_len", …)`` 与示例长度组合，易触发
         ``ConstraintViolationError``（图把 ``L`` specialize 成常数与可变约束矛盾）。此处对 **dynamo 路径**
@@ -290,18 +294,25 @@ class Pi05EmbedPrefix(nn.Module, Model):
                             idx,
                             use_dynamo,
                         )
-                    torch.onnx.export(
-                        self,
-                        tuple(dummy),
-                        output_path,
-                        export_params=True,
-                        input_names=input_names,
-                        output_names=["prefix_embs", "prefix_pad_masks", "prefix_att_masks"],
-                        opset_version=19,
-                        dynamo=use_dynamo,
-                        do_constant_folding=True,
-                        **export_kw,
+                    # ModelOpt：torch.export/dynamo 下须开启 export_torch_mode，否则 TensorQuantizer
+                    # 会把 amax 等提升为 fake constant，触发
+                    # "fake tensor in the exported program constant's list"（见 ModelOpt test_torch_export.py）。
+                    export_ctx = (
+                        export_torch_mode() if quantized else contextlib.nullcontext()
                     )
+                    with export_ctx:
+                        torch.onnx.export(
+                            self,
+                            tuple(dummy),
+                            output_path,
+                            export_params=True,
+                            input_names=input_names,
+                            output_names=["prefix_embs", "prefix_pad_masks", "prefix_att_masks"],
+                            opset_version=19,
+                            dynamo=use_dynamo,
+                            do_constant_folding=True,
+                            **export_kw,
+                        )
                     used_dynamo = use_dynamo
                     break
                 except Exception as err:
