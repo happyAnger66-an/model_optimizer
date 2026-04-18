@@ -28,6 +28,7 @@ def start_pi05_calib_collectors(
 ) -> list[Any]:
     from model_optimizer.calibrate.collector.pi05 import (
         Pi05DenoiseCalibCollector,
+        Pi05EmbedPrefixCalibCollector,
         Pi05ExpertCalibCollector,
         Pi05LLMCalibCollector,
         Pi05VitCalibCollector,
@@ -38,8 +39,10 @@ def start_pi05_calib_collectors(
         raise RuntimeError("无法从 policy 解析 _model（无 _policy._model / _model），无法挂 Pi0.5 calib。")
     save_str = str(save_dir.expanduser().resolve())
     item = str(calib_item).strip().lower()
-    if item not in ("all", "vit", "llm", "expert", "denoise"):
-        raise ValueError(f"非法 calib_item={calib_item!r}（仅允许 all/vit/llm/expert/denoise）")
+    if item not in ("all", "vit", "llm", "expert", "denoise", "embed_prefix"):
+        raise ValueError(
+            f"非法 calib_item={calib_item!r}（仅允许 all/vit/llm/expert/denoise/embed_prefix）"
+        )
 
     collectors: list[Any] = []
     if item in ("all", "llm"):
@@ -50,6 +53,8 @@ def start_pi05_calib_collectors(
         collectors.append(Pi05VitCalibCollector(torch_model, save_str, max_samples=max_samples))
     if item in ("all", "denoise"):
         collectors.append(Pi05DenoiseCalibCollector(torch_model, save_str, max_samples=max_samples))
+    if item in ("all", "embed_prefix"):
+        collectors.append(Pi05EmbedPrefixCalibCollector(torch_model, save_str, max_samples=max_samples))
     print(colored(f"[infer] Pi0.5 calib 收集已启用 → {save_str}", "green"), flush=True)
     return collectors
 

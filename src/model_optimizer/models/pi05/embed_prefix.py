@@ -9,8 +9,11 @@ import time
 import torch
 import torch.nn as nn
 from termcolor import colored
+from tqdm import tqdm
 
 from ..model import Model
+from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
+from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
 from model_optimizer.quantization.quantization_utils import quantize_model
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
@@ -53,10 +56,44 @@ class Pi05EmbedPrefix(nn.Module, Model):
         """与 Vit / LLM 一致，供量化后 NVFP4 等路径使用。"""
         return self.vision_tower
 
+    def get_calibrate_dataset(self, calib_data):
+        return open_pi05_calib_for_quantize(calib_data, component="pi05_embed_prefix")
+
     def val(self, val_data, batch_size, output_dir):
-        raise NotImplementedError(
-            "Pi05EmbedPrefix.val 未实现：需提供 prefix 嵌入校准/对比数据与指标。"
-        )
+        val_datas = self.get_calibrate_dataset(val_data)
+
+        def val_loop(model: torch.nn.Module, output_datas: list) -> None:
+            try:
+                n = len(val_datas)
+            except TypeError:
+                n = None
+            if n is not None:
+                print(f"Val embed_prefix on {n} samples...")
+            else:
+                print("Val embed_prefix (streaming calib data, total unknown)...")
+            pbar = tqdm(val_datas, total=n, desc="Val embed_prefix", unit="num_samples")
+            for data in pbar:
+                if not isinstance(data, dict):
+                    raise TypeError("embed_prefix calib 样本应为 dict（含 image_* / lang_*）。")
+                batch = {k: v.to(model.device) for k, v in data.items()}
+                out = model(**batch)
+                output_datas.append(
+                    {
+                        "prefix_embs": out[0].to(torch.float32).detach().cpu().numpy(),
+                        "prefix_pad_masks": out[1].to(torch.float32).detach().cpu().numpy(),
+                        "prefix_att_masks": out[2].to(torch.float32).detach().cpu().numpy(),
+                    }
+                )
+
+        if getattr(self, "is_quantized", False):
+            print(colored("Quantized embed_prefix val", "green"))
+            self.val_datas_after = []
+            val_loop(self, self.val_datas_after)
+            return Pi05Metric(self.val_datas_after)
+        print(colored("Original embed_prefix val", "green"))
+        self.val_datas_before = []
+        val_loop(self, self.val_datas_before)
+        return Pi05Metric(self.val_datas_before)
 
     def embed_prefix(
         self,
@@ -122,18 +159,39 @@ class Pi05EmbedPrefix(nn.Module, Model):
         att_t = att_t[None, :].expand(bsize, att_t.shape[0])
         return out_embs, out_pad, att_t
 
-    def forward(self, *inputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        *inputs: torch.Tensor,
+        **batch: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """ONNX 导出：位置参数 ``*inputs``；ModelOpt 量化：``model(**dict)`` 与校准分片字段一致。"""
+        if batch:
+            return self._forward_keyword_batch(batch)
         n = 2 * self.num_image_views + 2
         if len(inputs) != n:
             raise ValueError(
-                f"Pi05EmbedPrefix.forward 需要 {n} 个输入 "
-                f"(每路 image + mask，再加 lang_tokens、lang_masks)，得到 {len(inputs)}"
+                f"Pi05EmbedPrefix.forward 需要 {n} 个位置参数张量 "
+                f"(每路 image + mask，再加 lang_tokens、lang_masks)，得到 {len(inputs)}；"
+                f"或使用关键字参数 image_0, image_mask_0, …, lang_tokens, lang_masks。"
             )
         images = [inputs[2 * i] for i in range(self.num_image_views)]
         img_masks = [inputs[2 * i + 1] for i in range(self.num_image_views)]
         lang_tokens = inputs[-2]
         lang_masks = inputs[-1]
         return self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+
+    def _forward_keyword_batch(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        n = self.num_image_views
+        missing = [f"image_{i}" for i in range(n) if f"image_{i}" not in batch]
+        missing += [f"image_mask_{i}" for i in range(n) if f"image_mask_{i}" not in batch]
+        for k in ("lang_tokens", "lang_masks"):
+            if k not in batch:
+                missing.append(k)
+        if missing:
+            raise KeyError(f"embed_prefix 量化 forward 缺少键: {missing}")
+        images = [batch[f"image_{i}"] for i in range(n)]
+        img_masks = [batch[f"image_mask_{i}"] for i in range(n)]
+        return self.embed_prefix(images, img_masks, batch["lang_tokens"], batch["lang_masks"])
 
     def export(
         self,
@@ -257,7 +315,7 @@ class Pi05EmbedPrefix(nn.Module, Model):
         calib_dataloader = self.get_calibrate_dataset(calib_data)
         quantize_model(self, quant_cfg, calib_dataloader)
         self.is_quantized = True
-        set_dynamic_quant(self, "fp16")
+        set_dynamic_quant(self, "bf16")
 
         self.export(export_dir, dynamo=False)
         onnx_path = f"{export_dir}/embed_prefix.onnx"

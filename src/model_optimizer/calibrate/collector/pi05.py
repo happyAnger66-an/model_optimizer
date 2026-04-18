@@ -1,5 +1,6 @@
 import json
 import os
+import types
 from abc import ABC, abstractmethod
 
 import torch
@@ -114,6 +115,42 @@ class Pi05CalibCollector(ABC):
             flush=True,
         )
         self.unregister_hooks()
+
+
+class Pi05EmbedPrefixCalibCollector(Pi05CalibCollector):
+    """收集 ``PI0Pytorch.embed_prefix`` 调用时的输入，供 ``Pi05EmbedPrefix`` 量化。
+
+    每条样本为 dict：``image_{i}`` / ``image_mask_{i}`` / ``lang_tokens`` / ``lang_masks``，
+    与 :meth:`model_optimizer.models.pi05.embed_prefix.Pi05EmbedPrefix.forward` 的 keyword 形式一致。
+    """
+
+    name = "pi05_embed_prefix"
+
+    def __init__(self, pi05_model, save_dir, *, max_samples: int = 0):
+        super().__init__(pi05_model, save_dir, set(), max_samples=max_samples)
+
+    def register_hooks(self) -> None:
+        if not hasattr(self.model, "embed_prefix"):
+            raise AttributeError("pi05_model 无 embed_prefix，无法收集 embed_prefix 校准数据。")
+        collector = self
+        self.old_forward = self.model.embed_prefix
+
+        def hooked(self_m, images, img_masks, lang_tokens, lang_masks):
+            one_input: dict = {}
+            for i, t in enumerate(images):
+                one_input[f"image_{i}"] = t.clone().cpu()
+            for i, t in enumerate(img_masks):
+                one_input[f"image_mask_{i}"] = t.clone().cpu()
+            one_input["lang_tokens"] = lang_tokens.clone().cpu()
+            one_input["lang_masks"] = lang_masks.clone().cpu()
+            collector._append_sample(one_input)
+            return collector.old_forward(images, img_masks, lang_tokens, lang_masks)
+
+        self.model.embed_prefix = types.MethodType(hooked, self.model)
+        print(colored("hook embed_prefix", "green"), flush=True)
+
+    def unregister_hooks(self) -> None:
+        self.model.embed_prefix = self.old_forward
 
 
 class Pi05LLMCalibCollector(Pi05CalibCollector):

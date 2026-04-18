@@ -189,11 +189,16 @@ def run_single_trajectory(
     output_data_list = []
 
     if args.calib_save_path:
-        from model_optimizer.calibrate.collector.pi05 import Pi05LLMCalibCollector, Pi05ExpertCalibCollector, \
-            Pi05VitCalibCollector
+        from model_optimizer.calibrate.collector.pi05 import (
+            Pi05EmbedPrefixCalibCollector,
+            Pi05ExpertCalibCollector,
+            Pi05LLMCalibCollector,
+            Pi05VitCalibCollector,
+        )
         llm_calib_collector = Pi05LLMCalibCollector(policy._model, args.calib_save_path)
         expert_calib_collector = Pi05ExpertCalibCollector(policy._model, args.calib_save_path)
         vit_calib_collector = Pi05VitCalibCollector(policy._model, args.calib_save_path)
+        embed_prefix_calib_collector = Pi05EmbedPrefixCalibCollector(policy._model, args.calib_save_path)
 
     model = None
     if perf:
@@ -226,6 +231,7 @@ def run_single_trajectory(
         llm_calib_collector.stop_collect()
         expert_calib_collector.stop_collect()
         vit_calib_collector.stop_collect()
+        embed_prefix_calib_collector.stop_collect()
 
     if perf:
         if time_results:

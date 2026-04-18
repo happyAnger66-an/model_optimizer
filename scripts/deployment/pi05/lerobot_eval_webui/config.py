@@ -137,8 +137,8 @@ class Args:
     calib_max_samples: int = 0
     """校准数据收集上限（每个 component 单独计数）。0 表示不限制；1 表示每个 component 仅收集 1 条样本。"""
 
-    calib_item: Literal["all", "vit", "llm", "expert", "denoise"] = "all"
-    """仅收集指定子模型的 calib 数据（默认 all）。"""
+    calib_item: Literal["all", "vit", "llm", "expert", "denoise", "embed_prefix"] = "all"
+    """仅收集指定子模型的 calib 数据（默认 all）；``embed_prefix`` 对应 ``PI0Pytorch.embed_prefix`` 输入。"""
 
     gpu_stats_interval_sec: float = 1.0
     """周期向 client 推送 ``type=gpu_stats``（需本机 ``nvidia-smi``）。``0`` 表示关闭。"""

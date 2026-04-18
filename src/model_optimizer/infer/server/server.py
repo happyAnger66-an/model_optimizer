@@ -331,6 +331,7 @@ class InferServer:
         try:
             from model_optimizer.calibrate.collector.pi05 import (
                 Pi05DenoiseCalibCollector,
+                Pi05EmbedPrefixCalibCollector,
                 Pi05ExpertCalibCollector,
                 Pi05LLMCalibCollector,
                 Pi05VitCalibCollector,
@@ -356,6 +357,8 @@ class InferServer:
                 collectors.append(Pi05VitCalibCollector(torch_model, save_dir, max_samples=max_s))
             if item in ("all", "denoise"):
                 collectors.append(Pi05DenoiseCalibCollector(torch_model, save_dir, max_samples=max_s))
+            if item in ("all", "embed_prefix"):
+                collectors.append(Pi05EmbedPrefixCalibCollector(torch_model, save_dir, max_samples=max_s))
 
             self._calib_collectors = collectors
             on_progress("calib", f"calib 收集器已启动 → {save_dir}")

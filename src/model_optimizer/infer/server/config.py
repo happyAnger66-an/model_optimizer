@@ -95,7 +95,7 @@ class ServeConfig:
 class CalibConfig:
     save_path: str | None = None
     max_samples: int = 0
-    item: Literal["all", "vit", "llm", "expert", "denoise"] = "all"
+    item: Literal["all", "vit", "llm", "expert", "denoise", "embed_prefix"] = "all"
 
 
 @dataclass
