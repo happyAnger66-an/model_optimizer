@@ -205,16 +205,21 @@ class Pi05EmbedPrefix(nn.Module, Model):
         若已 **ModelOpt 量化**（``is_quantized``），Vision 中含 ``QuantConv2d`` / ``TRT_FP8DequantizeLinear``，
         TorchScript ONNX（``dynamo=False``）会报 ``Unsupported: ONNX export of convolution for kernel of unknown shape``，
         因此会 **优先走 ``dynamo=True``**（与 ``quantize`` 后导出一致）。
+
+        **Dynamo / torch.export**：语言序列维若声明 ``Dim("token_len", …)`` 与示例长度组合，易触发
+        ``ConstraintViolationError``（图把 ``L`` specialize 成常数与可变约束矛盾）。此处对 **dynamo 路径**
+        仅将 **batch（维 0）** 标为动态，**``lang_*`` 第 2 维固定为 ``max_token_len``**（与 Pi0.5 配置一致）；
+        传统 ``dynamo=False`` 仍可用 ``dynamic_axes`` 标 ``token_len``（浮点导出）。
         """
         self.eval().cuda()
 
         output_dir = export_dir
         os.makedirs(output_dir, exist_ok=True)
         start = time.time()
-        max_token_len = self.max_token_len
-        # torch.export / Dim：示例序列长若取满 max_token_len，常把 token 维 specialize 成常数，
-        # 与 ``Dim(..., min=1, max=max_token_len)`` 冲突（ConstraintViolationError）。用 (1, S) 且 S < max。
-        trace_lang_len = max(1, min(max_token_len - 1, 128)) if max_token_len > 1 else 1
+        max_token_len = int(self.max_token_len)
+        if max_token_len < 1:
+            max_token_len = 1
+        lang_seq_len = max_token_len
 
         dummy: list[torch.Tensor] = []
         input_names: list[str] = []
@@ -226,9 +231,9 @@ class Pi05EmbedPrefix(nn.Module, Model):
             input_names.extend([f"image_{i}", f"image_mask_{i}"])
 
         dummy.append(
-            torch.zeros((1, trace_lang_len), dtype=torch.int64, device="cuda"),
+            torch.zeros((1, lang_seq_len), dtype=torch.int64, device="cuda"),
         )
-        dummy.append(torch.ones((1, trace_lang_len), dtype=torch.bool, device="cuda"))
+        dummy.append(torch.ones((1, lang_seq_len), dtype=torch.bool, device="cuda"))
         input_names.extend(["lang_tokens", "lang_masks"])
 
         output_path = f"{export_dir}/embed_prefix.onnx"
@@ -249,13 +254,13 @@ class Pi05EmbedPrefix(nn.Module, Model):
                 from torch.export import Dim
 
                 batch_dim = Dim("batch", min=1, max=4096)
-                token_dim = Dim("token_len", min=1, max=max_token_len)
                 ds_list: list[dict] = []
                 for _ in range(self.num_image_views):
                     ds_list.append({0: batch_dim})  # image_i
                     ds_list.append({0: batch_dim})  # image_mask_i
-                ds_list.append({0: batch_dim, 1: token_dim})  # lang_tokens
-                ds_list.append({0: batch_dim, 1: token_dim})  # lang_masks
+                # 仅 batch 动态；语言长度固定为 max_token_len，避免 token_len Dim 与 specialize 冲突
+                ds_list.append({0: batch_dim})
+                ds_list.append({0: batch_dim})
                 # forward(*inputs) 在 torch.export 侧只有一个顶层参数名 "inputs"（可变参数元组）
                 return {"dynamic_shapes": {"inputs": tuple(ds_list)}}
 
