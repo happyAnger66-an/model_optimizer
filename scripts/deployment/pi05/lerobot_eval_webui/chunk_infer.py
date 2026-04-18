@@ -24,18 +24,34 @@ from .running_stats import (
 _perf_model: Any | None = None
 
 
+def _policy_torch_model(policy: Any) -> Any:
+    """解析 PyTorch 策略上的 PI0 模块：openpi ``Policy`` 为 ``_model``，少数封装为 ``_policy._model``。"""
+    m = getattr(policy, "_model", None)
+    if m is not None:
+        return m
+    inner = getattr(policy, "_policy", None)
+    if inner is not None:
+        return getattr(inner, "_model", None)
+    return None
+
+
 def flow_match_noise_for_chunk(policy: Any, args: Any, dataset_chunk_idx: int) -> np.ndarray | None:
     """若 ``args.noise == "fixed"``，返回 ``(action_horizon, action_dim)`` 的 float32 高斯初值；否则 ``None``。"""
     if getattr(args, "noise", "random") != "fixed":
         return None
+    model = _policy_torch_model(policy)
+    if model is None or not hasattr(model, "config"):
+        raise RuntimeError(
+            "noise=fixed 需要可解析的 PyTorch 模型（policy._model 或 policy._policy._model）且带 .config（含 action_horizon / action_dim）。"
+        )
     try:
-        cfg = policy._policy._model.config
+        cfg = model.config
+        h = int(cfg.action_horizon)
+        d = int(cfg.action_dim)
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(
-            "noise=fixed 需要 PyTorch policy 且存在 policy._policy._model.config（含 action_horizon / action_dim）。"
+            "noise=fixed 需要模型 config 上存在 action_horizon 与 action_dim（PI0 PyTorch）。"
         ) from exc
-    h = int(cfg.action_horizon)
-    d = int(cfg.action_dim)
     seed = int(args.noise_seed)
     ss = np.random.SeedSequence([seed, int(dataset_chunk_idx)])
     rng = np.random.default_rng(ss)
@@ -98,10 +114,7 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     pred_h_ptq = pack.pred_h_ptq
 
     if _perf_model is None:
-        if hasattr(policy, "_policy"):
-            _perf_model = policy._policy._model
-        else:
-            _perf_model = policy._model
+        _perf_model = _policy_torch_model(policy)
 
     tr = getattr(_perf_model, "time_results", None) if _perf_model is not None else None
     if tr:
