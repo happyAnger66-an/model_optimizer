@@ -486,6 +486,9 @@ def load_infer_bundle(
         meta_payload["gpu_device_index"] = int(effective_gpu_index(args))
     meta_payload["rel_err_denominator"] = "max_abs_gt_eps"
     meta_payload["rel_eps"] = float(args.rel_eps)
+    meta_payload["flow_match_noise"] = str(args.noise)
+    if args.noise == "fixed":
+        meta_payload["flow_match_noise_seed"] = int(args.noise_seed)
 
     if args.ptq_compare:
         meta_payload["ptq_parts"] = list(args.ptq_parts)

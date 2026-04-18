@@ -2012,7 +2012,10 @@ function connect() {
 
 function connectInternal() {
   const url = el("wsUrl").value.trim();
-  if (!url) return;
+  if (!url) {
+    setProgress("请先填写 ws_url（或等待 server_hint.json 加载后再点 Connect）。");
+    return;
+  }
 
   wsConnectGeneration += 1;
   const myGen = wsConnectGeneration;
@@ -2045,7 +2048,7 @@ function connectInternal() {
     setInferPauseButtons(false);
   };
 
-  socket.onclose = () => {
+  socket.onclose = (ev) => {
     if (myGen !== wsConnectGeneration) return;
     ws = null;
     connected = false;
@@ -2059,6 +2062,18 @@ function connectInternal() {
     if (manualDisconnect) {
       setProgress("已断开（手动 Disconnect）。");
     } else {
+      const code = ev && typeof ev.code === "number" ? ev.code : 0;
+      const reason = ev && ev.reason ? String(ev.reason) : "";
+      if (code === 1008 && /invalid path/i.test(reason)) {
+        setProgress(
+          `WebSocket 被服务端拒绝（路径不匹配）。请确认地址以服务端 --path 为准（默认 /ws）。当前：${url}`,
+        );
+        return;
+      }
+      if (code && code !== 1000 && code !== 1001) {
+        const tail = reason ? ` · ${reason}` : "";
+        setProgress(`连接已关闭 code=${code}${tail}。若反复失败请检查：1) 评估 server 已启动且端口可达 2) 页面用 http(s) 打开而非 file:// 3) https 页面需使用 wss://`);
+      }
       scheduleReconnect();
     }
   };
@@ -2375,6 +2390,13 @@ async function bootstrap() {
   const hint = loadDefaultWsUrl().catch(() => {});
   await setup();
   await hint;
+  // 有默认地址时自动连一次，避免「已启动静态页但仍显示 disconnected」被误认为连不上
+  const u = el("wsUrl").value.trim();
+  if (u) {
+    manualDisconnect = false;
+    clearReconnectTimer();
+    connectInternal();
+  }
 }
 
 if (document.readyState === "loading") {

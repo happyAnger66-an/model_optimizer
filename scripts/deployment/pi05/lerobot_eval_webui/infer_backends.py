@@ -34,6 +34,8 @@ class InferBackend(ABC):
         obs: dict[str, Any],
         gt: np.ndarray,
         action_horizon: int,
+        *,
+        flow_noise: np.ndarray | None = None,
     ) -> PredictionPack:
         ...
 
@@ -47,10 +49,12 @@ class SingleTorchBackend(InferBackend):
         obs: dict[str, Any],
         gt: np.ndarray,
         action_horizon: int,
+        *,
+        flow_noise: np.ndarray | None = None,
     ) -> PredictionPack:
         del policy_trt, policy_ptq
         t0 = time.monotonic()
-        out = policy.infer(obs)
+        out = policy.infer(obs, noise=flow_noise)
         infer_ms_pt = (time.monotonic() - t0) * 1000.0
         pred = np.asarray(out["actions"])
         pred_a, gt_a = align_action_dim(pred, gt)
@@ -73,15 +77,17 @@ class PtTrtCompareBackend(InferBackend):
         obs: dict[str, Any],
         gt: np.ndarray,
         action_horizon: int,
+        *,
+        flow_noise: np.ndarray | None = None,
     ) -> PredictionPack:
         del policy_ptq
         if policy_trt is None:
             raise RuntimeError("PtTrtCompareBackend 需要 policy_trt")
         t0 = time.monotonic()
-        out_pt = policy.infer(obs)
+        out_pt = policy.infer(obs, noise=flow_noise)
         infer_ms_pt = (time.monotonic() - t0) * 1000.0
         t0 = time.monotonic()
-        out_trt = policy_trt.infer(obs)
+        out_trt = policy_trt.infer(obs, noise=flow_noise)
         infer_ms_second = (time.monotonic() - t0) * 1000.0
         pred_pt = np.asarray(out_pt["actions"])
         pred_trt_raw = np.asarray(out_trt["actions"])
@@ -106,15 +112,17 @@ class PtPtqCompareBackend(InferBackend):
         obs: dict[str, Any],
         gt: np.ndarray,
         action_horizon: int,
+        *,
+        flow_noise: np.ndarray | None = None,
     ) -> PredictionPack:
         del policy_trt
         if policy_ptq is None:
             raise RuntimeError("PtPtqCompareBackend 需要 policy_ptq")
         t0 = time.monotonic()
-        out_pt = policy.infer(obs)
+        out_pt = policy.infer(obs, noise=flow_noise)
         infer_ms_pt = (time.monotonic() - t0) * 1000.0
         t0 = time.monotonic()
-        out_ptq = policy_ptq.infer(obs)
+        out_ptq = policy_ptq.infer(obs, noise=flow_noise)
         infer_ms_second = (time.monotonic() - t0) * 1000.0
         pred_pt = np.asarray(out_pt["actions"])
         pred_ptq_raw = np.asarray(out_ptq["actions"])
@@ -144,15 +152,17 @@ class TrtOrtCompareBackend(InferBackend):
         obs: dict[str, Any],
         gt: np.ndarray,
         action_horizon: int,
+        *,
+        flow_noise: np.ndarray | None = None,
     ) -> PredictionPack:
         del policy_ptq
         if policy_trt is None:
             raise RuntimeError("TrtOrtCompareBackend 需要 policy_trt（ORT 路）")
         t0 = time.monotonic()
-        out_trt = policy.infer(obs)
+        out_trt = policy.infer(obs, noise=flow_noise)
         infer_ms_pt = (time.monotonic() - t0) * 1000.0
         t0 = time.monotonic()
-        out_ort = policy_trt.infer(obs)
+        out_ort = policy_trt.infer(obs, noise=flow_noise)
         infer_ms_second = (time.monotonic() - t0) * 1000.0
         pred_trt = np.asarray(out_trt["actions"])
         pred_ort_raw = np.asarray(out_ort["actions"])

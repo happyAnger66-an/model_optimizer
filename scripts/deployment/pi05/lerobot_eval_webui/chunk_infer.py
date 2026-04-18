@@ -24,6 +24,24 @@ from .running_stats import (
 _perf_model: Any | None = None
 
 
+def flow_match_noise_for_chunk(policy: Any, args: Any, dataset_chunk_idx: int) -> np.ndarray | None:
+    """若 ``args.noise == "fixed"``，返回 ``(action_horizon, action_dim)`` 的 float32 高斯初值；否则 ``None``。"""
+    if getattr(args, "noise", "random") != "fixed":
+        return None
+    try:
+        cfg = policy._policy._model.config
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError(
+            "noise=fixed 需要 PyTorch policy 且存在 policy._policy._model.config（含 action_horizon / action_dim）。"
+        ) from exc
+    h = int(cfg.action_horizon)
+    d = int(cfg.action_dim)
+    seed = int(args.noise_seed)
+    ss = np.random.SeedSequence([seed, int(dataset_chunk_idx)])
+    rng = np.random.default_rng(ss)
+    return rng.standard_normal((h, d), dtype=np.float32)
+
+
 def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     """在专用推理线程中执行单段 chunk：dataset 取样 + infer + 图像编码；返回 JSON 字符串列表。"""
     global _perf_model
@@ -67,8 +85,11 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     gt = np.asarray(packed["actions"])
     obs = {k: v for k, v in packed.items() if k != "actions"}
 
+    flow_noise = flow_match_noise_for_chunk(policy, args, idx)
     backend = select_infer_backend(bundle)
-    pack = backend.predict(policy, policy_trt, policy_ptq, obs, gt, action_horizon)
+    pack = backend.predict(
+        policy, policy_trt, policy_ptq, obs, gt, action_horizon, flow_noise=flow_noise
+    )
     infer_ms_pt = pack.infer_ms_pt
     infer_ms_second = pack.infer_ms_second
     pred_h = pack.pred_h

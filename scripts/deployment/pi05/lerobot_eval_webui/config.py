@@ -148,3 +148,10 @@ class Args:
 
     rel_eps: float = 1e-8
     """相对误差分母的 eps：``rel = |pred-gt| / max(|gt|, rel_eps)``。用于屏蔽 gt≈0 导致的发散。"""
+
+    noise: Literal["random", "fixed"] = "random"
+    """流匹配推理初值：``random``（默认）由模型内采样；``fixed`` 时每个数据 chunk 用 ``noise_seed`` 与 chunk 起点 ``idx`` 确定性生成
+    ``(action_horizon, action_dim)`` 高斯噪声并传给 ``Policy.infer(..., noise=...)``，多轮评估可复现；compare / 双路共用同一块噪声。"""
+
+    noise_seed: int = 0
+    """仅 ``noise=fixed`` 时与数据集 chunk 起点下标一起决定该 chunk 的初值（``numpy.random.SeedSequence``）。"""

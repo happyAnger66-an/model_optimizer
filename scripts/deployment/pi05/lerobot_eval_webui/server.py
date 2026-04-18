@@ -22,6 +22,29 @@ from .outbound_bridge import JanusOutboundBridge
 from .protocol import LOADING_META_MSG, event_to_json
 
 
+def _handshake_request_path(ws: Any) -> str | None:
+    """读取 WebSocket 握手路径。
+
+    ``websockets`` 旧版在连接对象上暴露 ``path``；13+ asyncio 服务端多为 ``request.path``。
+    """
+    p = getattr(ws, "path", None)
+    if isinstance(p, str):
+        return p
+    req = getattr(ws, "request", None)
+    if req is not None:
+        rp = getattr(req, "path", None)
+        if isinstance(rp, str):
+            return rp
+    return None
+
+
+def _paths_equivalent(a: str, b: str) -> bool:
+    """``/ws`` 与 ``/ws/`` 视为同一路径。"""
+    aa = a.rstrip("/") or "/"
+    bb = b.rstrip("/") or "/"
+    return aa == bb
+
+
 async def run_server(args: Args) -> None:
     import websockets.asyncio.server as _server
     import websockets.exceptions as _wsex
@@ -47,7 +70,8 @@ async def run_server(args: Args) -> None:
     bridge = JanusOutboundBridge(outbound_queue, broadcaster)
 
     async def handler(ws: Any) -> None:
-        if getattr(ws, "path", None) not in (None, args.path):
+        req_path = _handshake_request_path(ws)
+        if req_path is None or not _paths_equivalent(req_path, args.path):
             await ws.close(code=1008, reason="invalid path")
             return
         await broadcaster.register(ws)

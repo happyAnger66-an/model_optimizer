@@ -24,6 +24,8 @@ LeRobot 离线评估 WebUI（client-server）：
 实现已拆分为 ``lerobot_eval_webui`` 包（同目录下），本文件仅作兼容入口。
 
 **配置文件**：支持 ``--webui-config my.yaml``（或 ``.json``）。文件中为与 ``Args`` 一致的 **snake_case** 键；命令行参数写在同一命令中且位于配置文件之后时，**可覆盖**文件中的项。YAML 需安装 ``PyYAML``。
+
+**流匹配初值**：``--noise fixed`` 与 ``--noise-seed N``（默认 0）对每个数据 chunk 生成确定性高斯 ``noise`` 传入 ``Policy.infer``，便于复现；``--noise random``（默认）沿用模型内随机采样。双路对比时两路共用同一块 ``noise``。
 """
 
 from __future__ import annotations
