@@ -22,6 +22,88 @@ from modelopt.torch.quantization.utils import export_torch_mode
 logger = logging.getLogger(__name__)
 
 
+def _patch_modelopt_quantizers_trt_hp_for_onnx(model: nn.Module) -> None:
+    """与 ``whole_export._patch_modelopt_quantizers_trt_high_precision_for_onnx`` 一致，避免 FP8 ONNX 符号
+    在 TRT strongly-typed 路径上与激活 dtype 不一致。"""
+    override = os.environ.get("PI05_WHOLE_TRT_HP_DTYPE", "").strip()
+    if override:
+        hp = override
+    else:
+        try:
+            p = next(model.parameters())
+            if p.dtype == torch.float16:
+                hp = "Half"
+            elif p.dtype == torch.bfloat16:
+                hp = "BFloat16"
+            else:
+                hp = "Float"
+        except StopIteration:
+            hp = "Float"
+    n = 0
+    for mod in model.modules():
+        for qn in ("input_quantizer", "output_quantizer", "weight_quantizer"):
+            q = getattr(mod, qn, None)
+            if q is None:
+                continue
+            if hasattr(q, "_trt_high_precision_dtype"):
+                setattr(q, "_trt_high_precision_dtype", hp)
+                n += 1
+    if n:
+        logger.info("ModelOpt ONNX FP8: set _trt_high_precision_dtype=%r on %s quantizer(s)", hp, n)
+
+
+@contextlib.contextmanager
+def _siglip_vision_quantconv_disable_input_quant_for_torchscript_onnx(
+    vision_tower: nn.Module | None,
+) -> None:
+    """缓解 TorchScript ONNX：``TRT_FP8DequantizeLinear`` 输出作为 ``Conv2d`` 输入时
+    ``SymbolicValueError: convolution for kernel of unknown shape``。
+
+    PyTorch ONNX Conv 符号化无法处理该 TRT 自定义 op 到 Conv 的数据流；导出窗口内对
+    ``vision_tower`` 下各 ``QuantConv2d`` 临时 ``input_quantizer.disable()``，结束后恢复。
+    权重侧 ``weight_quantizer`` 仍参与前向，图内仍可保留权重量化相关节点。
+
+    调试若需关闭本缓解：环境变量 ``PI05_EMBED_PREFIX_ONNX_NO_VISION_IQ_OFF=1``。
+    """
+    if vision_tower is None:
+        yield
+        return
+    if os.environ.get("PI05_EMBED_PREFIX_ONNX_NO_VISION_IQ_OFF", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    ):
+        yield
+        return
+    try:
+        from modelopt.torch.quantization.nn.modules.quant_conv import QuantConv2d
+    except ImportError:
+        yield
+        return
+
+    reenable: list = []
+    try:
+        for m in vision_tower.modules():
+            if isinstance(m, QuantConv2d):
+                iq = getattr(m, "input_quantizer", None)
+                if iq is None or getattr(iq, "_disabled", False):
+                    continue
+                iq.disable()
+                reenable.append(iq)
+        if reenable:
+            logger.info(
+                "embed_prefix TorchScript ONNX: disabled input_quantizer on %s vision QuantConv2d "
+                "(workaround for TRT_FP8DequantizeLinear -> Conv export)",
+                len(reenable),
+            )
+        yield
+    finally:
+        for iq in reenable:
+            iq.enable()
+
+
 class Pi05EmbedPrefix(nn.Module, Model):
     """
     将多路相机图像经 SigLIP + projector 得到 patch embedding，与经 embedding 层
@@ -113,8 +195,6 @@ class Pi05EmbedPrefix(nn.Module, Model):
 
         embs: list[torch.Tensor] = []
         pad_masks: list[torch.Tensor] = []
-        att_masks: list[int] = []
-
         # Keep external interface unchanged (image_0/image_1/...), but batch all views
         # into a single tower forward to reduce per-view launch overhead.
         batched_images = torch.stack(images, dim=1)  # [B, V, 3, H, W]
@@ -141,7 +221,6 @@ class Pi05EmbedPrefix(nn.Module, Model):
 
         embs.append(img_emb)
         pad_masks.append(img_pad_masks)
-        att_masks += [0] * (num_views * num_img_embs)
 
         lang_emb = self.embed_tokens(lang_tokens)
         lang_emb_dim = lang_emb.shape[-1]
@@ -150,15 +229,12 @@ class Pi05EmbedPrefix(nn.Module, Model):
         embs.append(lang_emb)
         pad_masks.append(lang_masks)
 
-        num_lang_embs = lang_emb.shape[1]
-        att_masks += [0] * num_lang_embs
-
         out_embs = torch.cat(embs, dim=1)
         out_pad = torch.cat(pad_masks, dim=1)
-        att_t = torch.tensor(att_masks, dtype=torch.bool, device=out_pad.device)
-
         bsize = out_pad.shape[0]
-        att_t = att_t[None, :].expand(bsize, att_t.shape[0])
+        seq_len = out_embs.shape[1]
+        # 与原先 ``[0]*len -> bool`` 等价（全 False），避免 ``torch.tensor(Python list)`` 在 ONNX 追踪下不稳定
+        att_t = torch.zeros((1, seq_len), device=out_embs.device, dtype=torch.bool).expand(bsize, -1)
         return out_embs, out_pad, att_t
 
     def forward(
@@ -211,7 +287,13 @@ class Pi05EmbedPrefix(nn.Module, Model):
         走 ``torch.export`` 时图中仍保留 ``tensorrt.quantize_op``，新导出器无法翻译，会报
         ``No ONNX function found for tensorrt.quantize_op``。
         非量化路径仍可按参数尝试 ``dynamo=True``（与未量化 Expert 默认一致）。
-        仅在 ``quantized and use_dynamo`` 时包 ``export_torch_mode()``，供假阳性/未来 dynamo 兜底使用。
+        已量化时导出前会打 ModelOpt ``_trt_high_precision_dtype`` patch，并在 **整个** ONNX 导出外包
+        ``export_torch_mode()``（与 ModelOpt 对 ``torch.export`` 的用法一致，亦有助于部分 TorchScript
+        ONNX 路径下量化 Conv/Linear 的追踪稳定性）。
+
+        **TorchScript ONNX + SigLIP ``QuantConv2d``**：若出现 ``TRT_FP8DequantizeLinear`` 接 ``Conv`` 的
+        ``kernel of unknown shape``，在 ``dynamo=False`` 导出内会自动临时关闭 ``vision_tower`` 内各
+        ``QuantConv2d`` 的 ``input_quantizer``（见 ``_siglip_vision_quantconv_disable_input_quant_for_torchscript_onnx``）。
 
         **Dynamo / torch.export**：语言序列维若声明 ``Dim("token_len", …)`` 与示例长度组合，易触发
         ``ConstraintViolationError``（图把 ``L`` specialize 成常数与可变约束矛盾）。此处对 **dynamo 路径**
@@ -285,6 +367,9 @@ class Pi05EmbedPrefix(nn.Module, Model):
         logger.info("Start export embed_prefix onnx ...")
         print(colored("Start Pi05 embed_prefix (Pi05EmbedPrefix) export onnx...", "green"))
 
+        if quantized:
+            _patch_modelopt_quantizers_trt_hp_for_onnx(self)
+
         with torch.inference_mode():
             last_err = None
             used_dynamo = None
@@ -297,25 +382,30 @@ class Pi05EmbedPrefix(nn.Module, Model):
                             idx,
                             use_dynamo,
                         )
-                    # ModelOpt：仅 torch.export/dynamo 路径需要 export_torch_mode（见 ModelOpt test_torch_export.py）。
                     export_ctx = (
-                        export_torch_mode()
-                        if (quantized and use_dynamo)
+                        export_torch_mode() if quantized else contextlib.nullcontext()
+                    )
+                    ts_iq_ctx = (
+                        _siglip_vision_quantconv_disable_input_quant_for_torchscript_onnx(
+                            self.vision_tower
+                        )
+                        if (quantized and not use_dynamo)
                         else contextlib.nullcontext()
                     )
                     with export_ctx:
-                        torch.onnx.export(
-                            self,
-                            tuple(dummy),
-                            output_path,
-                            export_params=True,
-                            input_names=input_names,
-                            output_names=["prefix_embs", "prefix_pad_masks", "prefix_att_masks"],
-                            opset_version=19,
-                            dynamo=use_dynamo,
-                            do_constant_folding=True,
-                            **export_kw,
-                        )
+                        with ts_iq_ctx:
+                            torch.onnx.export(
+                                self,
+                                tuple(dummy),
+                                output_path,
+                                export_params=True,
+                                input_names=input_names,
+                                output_names=["prefix_embs", "prefix_pad_masks", "prefix_att_masks"],
+                                opset_version=19,
+                                dynamo=use_dynamo,
+                                do_constant_folding=True,
+                                **export_kw,
+                            )
                     used_dynamo = use_dynamo
                     break
                 except Exception as err:
@@ -326,7 +416,9 @@ class Pi05EmbedPrefix(nn.Module, Model):
                         "fallback" if idx < len(fallback_order) - 1 else "raise",
                     )
             if used_dynamo is None:
-                raise RuntimeError("embed_prefix ONNX export failed (see prior attempt logs)") from last_err
+                raise RuntimeError(
+                    f"embed_prefix ONNX export failed after {len(fallback_order)} attempt(s): {last_err!r}"
+                ) from last_err
 
         end = time.time()
         logger.info(
@@ -349,7 +441,7 @@ class Pi05EmbedPrefix(nn.Module, Model):
         self.is_quantized = True
         set_dynamic_quant(self, "bf16")
 
-        self.export(export_dir, dynamo=False)  # 已量化时 export() 内会改走 dynamo=True
+        self.export(export_dir, dynamo=False)  # 已量化时固定 TorchScript ONNX（与 Expert 一致）
         onnx_path = f"{export_dir}/embed_prefix.onnx"
         if is_nvfp4_quantized(quant_cfg):
             print(colored("nvfp4 quantization detected, post processing...", "green"))
