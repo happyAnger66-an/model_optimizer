@@ -204,11 +204,14 @@ class Pi05EmbedPrefix(nn.Module, Model):
     ):
         """导出 ``embed_prefix.onnx``；输入输出与 ``forward`` 一致。
 
-        若已 **ModelOpt 量化**（``is_quantized``），Vision 中含 ``QuantConv2d`` / ``TRT_FP8DequantizeLinear``，
-        TorchScript ONNX（``dynamo=False``）会报 ``Unsupported: ONNX export of convolution for kernel of unknown shape``，
-        因此会 **优先走 ``dynamo=True``**（与 ``quantize`` 后导出一致）。
-        量化导出会在 ``modelopt.torch.quantization.utils.export_torch_mode()`` 内执行，避免
-        ``torch.export`` 将量化器状态误提升为 fake constant（``lifted_tensor_*`` / constant list 报错）。
+        若已 **ModelOpt 量化**（``is_quantized``），与 ``Expert.quantize`` → ``export(..., dynamo=False)``
+        及 ``Expert.export_onnx`` 一致，**仅使用 ``dynamo=False``**（TorchScript ONNX 追踪）。
+        ModelOpt 的 fake 量化在 CUDA 上前向会调用 ``torch.ops.tensorrt.quantize_op``；旧式 ONNX 导出
+        对该路径走 ``autograd.Function.symbolic`` 落到 Q/DQ 等 ONNX 算子，而 **``dynamo=True``**
+        走 ``torch.export`` 时图中仍保留 ``tensorrt.quantize_op``，新导出器无法翻译，会报
+        ``No ONNX function found for tensorrt.quantize_op``。
+        非量化路径仍可按参数尝试 ``dynamo=True``（与未量化 Expert 默认一致）。
+        仅在 ``quantized and use_dynamo`` 时包 ``export_torch_mode()``，供假阳性/未来 dynamo 兜底使用。
 
         **Dynamo / torch.export**：语言序列维若声明 ``Dim("token_len", …)`` 与示例长度组合，易触发
         ``ConstraintViolationError``（图把 ``L`` specialize 成常数与可变约束矛盾）。此处对 **dynamo 路径**
@@ -243,11 +246,11 @@ class Pi05EmbedPrefix(nn.Module, Model):
         output_path = f"{export_dir}/embed_prefix.onnx"
         quantized = bool(getattr(self, "is_quantized", False))
         if quantized:
-            # 见类文档：量化后必须 torch.export / dynamo 路径；再尝试 legacy 作兜底。
-            fallback_order = [True, False]
-            if not dynamo:
+            # 与 Expert 量化导出一致：只用 TorchScript ONNX；dynamo 无法降低 tensorrt.quantize_op。
+            fallback_order = [False]
+            if dynamo:
                 logger.info(
-                    "embed_prefix 已量化：ONNX 先使用 dynamo=True（TorchScript 不支持 QDQ Vision Conv）。"
+                    "embed_prefix 已量化：忽略 dynamo=True，固定使用 dynamo=False（与 Expert.export 一致）。"
                 )
         else:
             # 未量化：仅按用户选择；不自动 dynamo=True，避免无谓告警。
@@ -294,11 +297,11 @@ class Pi05EmbedPrefix(nn.Module, Model):
                             idx,
                             use_dynamo,
                         )
-                    # ModelOpt：torch.export/dynamo 下须开启 export_torch_mode，否则 TensorQuantizer
-                    # 会把 amax 等提升为 fake constant，触发
-                    # "fake tensor in the exported program constant's list"（见 ModelOpt test_torch_export.py）。
+                    # ModelOpt：仅 torch.export/dynamo 路径需要 export_torch_mode（见 ModelOpt test_torch_export.py）。
                     export_ctx = (
-                        export_torch_mode() if quantized else contextlib.nullcontext()
+                        export_torch_mode()
+                        if (quantized and use_dynamo)
+                        else contextlib.nullcontext()
                     )
                     with export_ctx:
                         torch.onnx.export(
@@ -323,8 +326,7 @@ class Pi05EmbedPrefix(nn.Module, Model):
                         "fallback" if idx < len(fallback_order) - 1 else "raise",
                     )
             if used_dynamo is None:
-                # If all attempts fail, re-raise the last one.
-                raise RuntimeError("embed_prefix export failed with both dynamo and torchscript paths") from last_err
+                raise RuntimeError("embed_prefix ONNX export failed (see prior attempt logs)") from last_err
 
         end = time.time()
         logger.info(
