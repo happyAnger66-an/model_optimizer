@@ -18,9 +18,9 @@ build_cfg = {
         "attention_mask": (1, 1, 968, 968),
         "position_ids": (1, 968),
     },
-    "plugin_lib_paths": [
-        "/srcs/codes/llmOnEdge/build-fmha/libNvInfer_edgellm_plugin.so"
-    ],
+    #"plugin_lib_paths": [
+    #    "/srcs/codes/llmOnEdge/build-fmha/libNvInfer_edgellm_plugin.so"
+    #],
 
     # Debug：把中间 tensor 也标为 engine 输出（便于做 TRT layer report / 对齐 PyTorch）。
     # 1) 先把 debug_dump_tensor_names=True 跑一次 build，在日志里找到你要的 tensor 名；
