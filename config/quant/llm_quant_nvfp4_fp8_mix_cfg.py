@@ -14,18 +14,18 @@ _FP8_LINEAR = {"num_bits": (4, 3), "axis": None}
 
 # 与 print_quant_summary / 配置里常用的通配一致：*layers.{i}... 可匹配 model.layers.{i}...
 _LLM_LINEAR_SUFFIXES = (
-    "self_attn.q_proj",
-    "self_attn.k_proj",
-    "self_attn.v_proj",
-    "self_attn.o_proj",
+    #"self_attn.q_proj",
+    #self_attn.k_proj",
+    #self_attn.v_proj",
+    #self_attn.o_proj",
     "mlp.gate_proj",
     "mlp.up_proj",
-    "mlp.down_proj",
+    #"mlp.down_proj",
 )
 
 
-def _apply_layerwise_fp8_11_17(qc: dict) -> None:
-    for i in range(11, 18):
+def _apply_layerwise_fp8(qc: dict) -> None:
+    for i in range(0, 18):
         for sub in _LLM_LINEAR_SUFFIXES:
             qc[f"*layers.{i}.{sub}.weight_quantizer"] = dict(_FP8_LINEAR)
             qc[f"*layers.{i}.{sub}.input_quantizer"] = dict(_FP8_LINEAR)
@@ -33,12 +33,12 @@ def _apply_layerwise_fp8_11_17(qc: dict) -> None:
 
 if isinstance(_qc, dict):
     merged = dict(_qc)
-    _apply_layerwise_fp8_11_17(merged)
+    _apply_layerwise_fp8(merged)
     QUANT_CFG["quant_cfg"] = merged
 else:
     # 旧版 list：在列表末尾追加更具体的 FP8 项（后项覆盖先项）
     extra: list = []
-    for i in range(11, 18):
+    for i in range(0, 18):
         for sub in _LLM_LINEAR_SUFFIXES:
             for kind in ("weight_quantizer", "input_quantizer"):
                 extra.append(
