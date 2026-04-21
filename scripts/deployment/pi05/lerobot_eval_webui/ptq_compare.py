@@ -104,6 +104,8 @@ def apply_selective_ptq(
     calib_dir: Path,
     quant_cfg: dict[str, Any],
     parts: tuple[str, ...],
+    *,
+    measure_quant_error: bool = False,
 ) -> None:
     """对第二份 policy 内的 Pi0.5 子模块就地 PTQ（与 ``Vit/LLM/Expert.quantize`` 一致，跳过 ONNX）。"""
     m = unwrap_pytorch_pi05_model(policy_ptq)
@@ -116,25 +118,25 @@ def apply_selective_ptq(
             wrap = _vit_from_pi05(m)
             dl = wrap.get_calibrate_dataset(calib_s)
             print(colored(f"[ptq] quantize vit …", "cyan"), flush=True)
-            quantize_model(wrap, sub_cfg, dl)
+            quantize_model(wrap, sub_cfg, dl, measure_quant_error=measure_quant_error)
             set_dynamic_quant(wrap, "bf16")
         elif part == "llm":
             wrap = _llm_from_pi05(m)
             dl = wrap.get_calibrate_dataset(calib_s)
             print(colored(f"[ptq] quantize llm …", "cyan"), flush=True)
-            quantize_model(wrap, sub_cfg, dl)
+            quantize_model(wrap, sub_cfg, dl, measure_quant_error=measure_quant_error)
             set_dynamic_quant(wrap, "bf16")
         elif part == "expert":
             wrap = _expert_from_pi05(m)
             dl = wrap.get_calibrate_dataset(calib_s)
             print(colored(f"[ptq] quantize expert …", "cyan"), flush=True)
-            quantize_model(wrap, sub_cfg, dl)
+            quantize_model(wrap, sub_cfg, dl, measure_quant_error=measure_quant_error)
             set_dynamic_quant(wrap, "bf16")
         elif part == "denoise":
             wrap = _denoise_from_pi05(m)
             dl = wrap.get_calibrate_dataset(calib_s)
             print(colored(f"[ptq] quantize denoise (Pi05DenoiseStep) …", "cyan"), flush=True)
-            quantize_model(wrap, sub_cfg, dl)
+            quantize_model(wrap, sub_cfg, dl, measure_quant_error=measure_quant_error)
             # 与 Pi05DenoiseStep.quantize 一致（export/TRT 侧常用 fp16）
             set_dynamic_quant(wrap, "fp16")
         else:

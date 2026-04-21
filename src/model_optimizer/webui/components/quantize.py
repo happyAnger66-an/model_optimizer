@@ -25,6 +25,12 @@ def create_quantize_tab(engine: "Engine") -> dict[str, "Component"]:
         calibrate_data = gr.Textbox(value=None, scale=3, label="校准数据路径（calibrate_data）")
 
     with gr.Row():
+        measure_quant_error = gr.Checkbox(
+            value=False,
+            label="PTQ 后测量张量级 QDQ 误差（--measure-quant-error）",
+        )
+
+    with gr.Row():
         current_time = gr.Textbox(visible=False, interactive=False)
         export_dir = gr.Textbox(value=None, scale=3, label="导出目录（export_dir）")
     
@@ -36,9 +42,10 @@ def create_quantize_tab(engine: "Engine") -> dict[str, "Component"]:
         output_box = gr.Markdown()
 
     input_elems.update(
-        {export_dir, quantize_cfg, calibrate_data})
+        {export_dir, quantize_cfg, calibrate_data, measure_quant_error})
     elem_dict.update(dict(quantize_cfg=quantize_cfg,
                           calibrate_data=calibrate_data,
+                          measure_quant_error=measure_quant_error,
                           export_dir=export_dir,
                           output_box=output_box,
         #                  resume_btn=resume_btn,

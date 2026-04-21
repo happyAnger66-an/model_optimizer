@@ -51,6 +51,8 @@ class PTQConfig:
     quant_cfg: str | None = None
     calib_dir: str | None = None
     parts: list[str] = field(default_factory=list)
+    measure_quant_error: bool = False
+    """若 True，各子模块 PTQ 结束后用校准数据再跑一遍并打印张量级 QDQ 误差。"""
 
 
 @dataclass

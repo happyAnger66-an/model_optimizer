@@ -66,6 +66,8 @@ class Args:
     """与 ``open_pi05_calib_for_quantize`` 一致：含 ``pi05_{vit,llm,expert,denoise}_calib_*`` 的目录。"""
     ptq_parts: tuple[Literal["vit", "llm", "expert", "denoise"], ...] = dataclasses.field(default_factory=tuple)
     """要量化的子系统，例如 ``--ptq-parts llm expert`` 或含 ``denoise``。"""
+    ptq_measure_quant_error: bool = False
+    """为 True 时，各子模块 PTQ 结束后用校准数据再跑一遍并打印张量级 QDQ 误差。"""
     ptq_layer_report_path: Path | None = None
     """可选：将各 QuantLinear 输出相对 FP 的误差写入该 JSON 路径。"""
     ptq_layer_report_samples: int = 32

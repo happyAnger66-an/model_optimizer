@@ -1,5 +1,7 @@
-import torch
 from functools import partial
+from typing import Any
+
+import torch
 import torch.nn as nn
 
 import modelopt.torch.quantization as mtq
@@ -92,7 +94,7 @@ class Model:
                 )
             )
 
-    def quantize(self, quant_cfg, calib_data, export_dir):
+    def quantize(self, quant_cfg, calib_data, export_dir, *, measure_quant_error: bool = False):
         self.quantize_start(quant_cfg, calib_data, None)
 
         calibrate_loop = self.get_model_calibrate_loop(calib_data)
@@ -100,6 +102,27 @@ class Model:
                      forward_loop=calibrate_loop)
         print(f'quantize summary')
         mtq.print_quant_summary(self.model)
+
+        if measure_quant_error:
+            from model_optimizer.quantization.quantization_utils import (
+                _print_qdq_report,
+                _tensor_qdq_error_analysis,
+            )
+
+            datasets = self.get_calibrate_dataset(calib_data)
+
+            def forward_batch(m: torch.nn.Module, data: Any) -> None:
+                if data is None:
+                    return
+                m(data)
+
+            rep = _tensor_qdq_error_analysis(
+                self.model,
+                datasets,
+                forward_batch,
+                desc="QDQ error (analysis)",
+            )
+            _print_qdq_report(rep)
 
         self.quantize_end(export_dir)
 

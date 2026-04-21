@@ -1,3 +1,4 @@
+import inspect
 import os
 import argparse
 
@@ -71,6 +72,13 @@ def quantize_cli(args):
                         help='导出目录，量化后的模型将保存到此目录 (必需)')
     parser.add_argument('--input_shapes', type=str, default=None,
                         help='输入数据形状，用于量化校准的输入数据 (可选)')
+    parser.add_argument(
+        '--measure-quant-error',
+        action='store_true',
+        help=(
+            'PTQ 结束后用同一套校准数据再跑一遍前向，打印各 TensorQuantizer 张量级 QDQ 误差（RMSE 等）。'
+        ),
+    )
     args = parser.parse_args(args[1:])
     print(colored(f'[cli] quantize args {args}', 'green'))
 
@@ -89,7 +97,17 @@ def quantize_cli(args):
 
     quant_cfg = get_quant_cfg(args.quantize_cfg)
     print(colored(f' !!!!!! quant_cfg: {quant_cfg} !!!!!!!!!', 'dark_grey'))
-    model.quantize(quant_cfg, args.calibrate_data, args.export_dir)
+    quant_kwargs = {}
+    if "measure_quant_error" in inspect.signature(model.quantize).parameters:
+        quant_kwargs["measure_quant_error"] = bool(args.measure_quant_error)
+    elif args.measure_quant_error:
+        print(
+            colored(
+                "[cli] --measure-quant-error ignored: this model's quantize() does not support it.",
+                "yellow",
+            )
+        )
+    model.quantize(quant_cfg, args.calibrate_data, args.export_dir, **quant_kwargs)
 
     if args.verify:
         print(f'verify model {args.verify_data} after quantize')

@@ -26,6 +26,9 @@ class QuantizeCommand(CommandRunner):
         self.quantize_cfg = self.get_data_elem_by_id("quantize.quantize_cfg")
         self.calibrate_data = self.get_data_elem_by_id("quantize.calibrate_data")
         self.export_dir = self.get_data_elem_by_id("quantize.export_dir")
+        self.measure_quant_error = bool(
+            self.get_data_elem_by_id("quantize.measure_quant_error")
+        )
 
         if not self.model_name:
             return self.alert("err_no_model")
@@ -40,7 +43,7 @@ class QuantizeCommand(CommandRunner):
         return
 
     def _prepare_cli(self) -> list[str]:
-        return [
+        cmd = [
             "--model_name",
             str(self.model_name),
             "--model_path",
@@ -52,6 +55,9 @@ class QuantizeCommand(CommandRunner):
             "--export_dir",
             str(self.export_dir),
         ]
+        if self.measure_quant_error:
+            cmd.append("--measure-quant-error")
+        return cmd
 
     def run(self):
         error = self.check_inputs()

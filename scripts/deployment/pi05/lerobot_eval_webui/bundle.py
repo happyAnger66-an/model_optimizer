@@ -283,7 +283,13 @@ def load_infer_bundle(
         qcfg = load_ptq_quant_cfg(Path(args.ptq_quant_cfg))
         parts_s = ",".join(args.ptq_parts)
         _p("ptq_apply", f"ptq_compare：读取 calib 并对 [{parts_s}] 应用量化（quantize + dynamic）…")
-        apply_selective_ptq(policy_ptq, Path(args.ptq_calib_dir), qcfg, tuple(args.ptq_parts))
+        apply_selective_ptq(
+            policy_ptq,
+            Path(args.ptq_calib_dir),
+            qcfg,
+            tuple(args.ptq_parts),
+            measure_quant_error=args.ptq_measure_quant_error,
+        )
 
         print(colored("[infer] ptq_compare：浮点 policy + PTQ policy 已就绪", "cyan"), flush=True)
         _p("ptq_apply", "选择性 PTQ 已应用（浮点 + PTQ 双路就绪）")
@@ -304,7 +310,13 @@ def load_infer_bundle(
         from .ptq_compare import apply_selective_ptq, load_ptq_quant_cfg
 
         qcfg = load_ptq_quant_cfg(Path(args.ptq_quant_cfg))
-        apply_selective_ptq(policy, Path(args.ptq_calib_dir), qcfg, tuple(args.ptq_parts))
+        apply_selective_ptq(
+            policy,
+            Path(args.ptq_calib_dir),
+            qcfg,
+            tuple(args.ptq_parts),
+            measure_quant_error=args.ptq_measure_quant_error,
+        )
         _p("ptq_apply", "PTQ 已应用到主 policy（将作为 pred1）")
 
         if not args.engine_path:

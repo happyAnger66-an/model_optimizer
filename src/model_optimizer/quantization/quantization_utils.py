@@ -18,12 +18,135 @@ Quantization utilities for TensorRT Edge-LLM.
 This module provides core quantization functionality using NVIDIA ModelOpt.
 """
 
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Optional
 
 import modelopt.torch.quantization as mtq
 import torch
+from modelopt.torch.quantization.nn import TensorQuantizer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+
+def _tensor_qdq_error_analysis(
+    model: torch.nn.Module,
+    calib_dataloader: DataLoader,
+    forward_batch: Callable[[torch.nn.Module, Any], None],
+    *,
+    desc: str = "QDQ error analysis",
+) -> Dict[str, Dict[str, float]]:
+    """Run the same calibration data through the model and aggregate tensor-level QDQ error per TensorQuantizer.
+
+    For each :class:`TensorQuantizer` forward, compares the module output to its input (first argument).
+    If ``pre_quant_scale`` / Hadamard rotation / block reshape is used inside the quantizer, this
+    measures the full effect of that submodule (not only the inner ``_fake_quantize`` kernel).
+
+    Args:
+        model: Quantized model (after ``mtq.quantize``).
+        calib_dataloader: Same loader as calibration.
+        forward_batch: ``(model, batch) -> None`` — one forward pass for one batch.
+        desc: Progress bar description.
+
+    Returns:
+        Mapping from quantizer module name to metrics:
+        ``rmse``, ``mae``, ``global_rel_l2``, ``max_batch_rel_l2``, ``numel``, ``num_forwards``.
+    """
+    stats: Dict[str, Dict[str, float]] = {}
+    hooks = []
+
+    def _ensure(name: str) -> Dict[str, float]:
+        if name not in stats:
+            stats[name] = {
+                "numel": 0.0,
+                "sum_sq": 0.0,
+                "sum_abs": 0.0,
+                "sum_x_norm_sq": 0.0,
+                "max_batch_rel_l2": 0.0,
+                "num_forwards": 0.0,
+            }
+        return stats[name]
+
+    @torch.no_grad()
+    def _hook(name: str):
+        def fn(module: TensorQuantizer, inp: tuple, out: torch.Tensor) -> None:
+            if module._disabled or not module._if_quant:
+                return
+            x = inp[0]
+            if not isinstance(x, torch.Tensor) or not isinstance(out, torch.Tensor):
+                return
+            if x.numel() == 0 or out.numel() == 0:
+                return
+            if x.shape != out.shape:
+                return
+            s = _ensure(name)
+            x_f = x.detach().float()
+            out_f = out.detach().float()
+            diff = out_f - x_f
+            n = float(x_f.numel())
+            s["numel"] += n
+            s["sum_sq"] += float((diff * diff).sum().item())
+            s["sum_abs"] += float(diff.abs().sum().item())
+            s["sum_x_norm_sq"] += float((x_f * x_f).sum().item())
+            x_norm = float(x_f.norm().item())
+            if x_norm > 0.0:
+                s["max_batch_rel_l2"] = max(
+                    s["max_batch_rel_l2"], float(diff.norm().item()) / x_norm
+                )
+            s["num_forwards"] += 1.0
+
+        return fn
+
+    for qname, module in model.named_modules():
+        if isinstance(module, TensorQuantizer):
+            hooks.append(module.register_forward_hook(_hook(qname)))
+
+    try:
+        try:
+            n = len(calib_dataloader)
+        except TypeError:
+            n = None
+        pbar = tqdm(calib_dataloader, total=n, desc=desc, unit="num_samples")
+        for data in pbar:
+            forward_batch(model, data)
+    finally:
+        for h in hooks:
+            h.remove()
+
+    report: Dict[str, Dict[str, float]] = {}
+    for name, s in stats.items():
+        numel = s["numel"]
+        if numel <= 0.0:
+            continue
+        sum_sq = s["sum_sq"]
+        sum_x2 = s["sum_x_norm_sq"]
+        report[name] = {
+            "rmse": (sum_sq / numel) ** 0.5,
+            "mae": s["sum_abs"] / numel,
+            "global_rel_l2": (sum_sq**0.5) / (sum_x2**0.5 + 1e-12),
+            "max_batch_rel_l2": s["max_batch_rel_l2"],
+            "numel": numel,
+            "num_forwards": s["num_forwards"],
+        }
+    return report
+
+
+def _print_qdq_report(report: Dict[str, Dict[str, float]], *, top_k: int = 32) -> None:
+    if not report:
+        print("QDQ error analysis: no TensorQuantizer hooks collected statistics (empty report).")
+        return
+    ranked = sorted(report.items(), key=lambda kv: kv[1]["rmse"], reverse=True)
+    print(
+        f"QDQ error analysis: {len(report)} quantizer(s); "
+        f"showing top {min(top_k, len(ranked))} by RMSE (tensor I/O, post-calibration fake quant)."
+    )
+    print(
+        f"{'quantizer':<72} {'rmse':>12} {'mae':>12} {'g_rel_L2':>10} {'max_b_rel':>10}"
+    )
+    for name, m in ranked[:top_k]:
+        short = name if len(name) <= 72 else name[:33] + "..." + name[-34:]
+        print(
+            f"{short:<72} {m['rmse']:12.6g} {m['mae']:12.6g} "
+            f"{m['global_rel_l2']:10.6g} {m['max_batch_rel_l2']:10.6g}"
+        )
 
 
 def enable_huggingface_checkpointing_patch() -> None:
@@ -52,6 +175,9 @@ def quantize_model(
     model: torch.nn.Module,
     quant_config: Dict[str, Any],
     calib_dataloader: DataLoader,
+    *,
+    measure_quant_error: bool = False,
+    qdq_error_report: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> torch.nn.Module:
     """
     Quantize a PyTorch model using the specified configuration and calibration data.
@@ -60,10 +186,22 @@ def quantize_model(
         model: PyTorch model to quantize
         quant_config: Quantization configuration dictionary
         calib_dataloader: DataLoader for calibration data
-        
+        measure_quant_error: If True, after ``mtq.quantize`` runs an extra pass over
+            ``calib_dataloader`` and prints per-``TensorQuantizer`` tensor I/O QDQ metrics.
+        qdq_error_report: If not ``None``, filled with the same metrics returned by
+            :func:`_tensor_qdq_error_analysis` (only when ``measure_quant_error`` is True).
+
     Returns:
         Quantized PyTorch model
     """
+
+    def _phi4mm_kwargs(m: torch.nn.Module) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {}
+        if hasattr(m, "config") and "phi4mm" in getattr(
+                m.config, "model_type", "").lower():
+            kwargs["input_mode"] = 0
+            kwargs["use_cache"] = False
+        return kwargs
 
     # Define calibration loop
     def calibrate_loop(model: torch.nn.Module) -> None:
@@ -83,14 +221,7 @@ def quantize_model(
             print("Calibrating model (streaming calibration data, total unknown)...")
         pbar = tqdm(calib_dataloader, total=n, desc="Calibrating", unit="num_samples")
 
-        # Add extra necessary kwargs for Phi-4-Multimodal
-        kwargs = {}
-        if hasattr(model, "config") and "phi4mm" in getattr(
-                model.config, "model_type", "").lower():
-            # Have already merged the vision LoRA, so set input_mode=0 (LANGUAGE) during quantization
-            kwargs["input_mode"] = 0
-            # Work around a transformers version mismatch between Phi-4MM and Edge-LLM
-            kwargs["use_cache"] = False
+        kwargs = _phi4mm_kwargs(model)
 
         for data in pbar:
             if isinstance(data, dict):
@@ -100,9 +231,29 @@ def quantize_model(
                 data = data.to(model.device)
                 model(data, **kwargs)
 
+    def analysis_forward_batch(m: torch.nn.Module, data: Any) -> None:
+        kwargs = _phi4mm_kwargs(m)
+        if isinstance(data, dict):
+            data = {k: v.to(m.device) for k, v in data.items()}
+            m(**data, **kwargs)
+        else:
+            data = data.to(m.device)
+            m(data, **kwargs)
+
     # Get quantization config and perform quantization
     mtq.quantize(model, quant_config, forward_loop=calibrate_loop)
     mtq.print_quant_summary(model)
+    if measure_quant_error:
+        rep = _tensor_qdq_error_analysis(
+            model,
+            calib_dataloader,
+            analysis_forward_batch,
+            desc="QDQ error (analysis)",
+        )
+        _print_qdq_report(rep)
+        if qdq_error_report is not None:
+            qdq_error_report.clear()
+            qdq_error_report.update(rep)
     return model
 
 
@@ -111,6 +262,9 @@ def quantize_draft_model(
     draft_model: torch.nn.Module,
     quant_config: Dict[str, Any],
     calib_dataloader: DataLoader,
+    *,
+    measure_quant_error: bool = False,
+    qdq_error_report: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> torch.nn.Module:
     """
     Quantize a PyTorch model using the specified configuration and calibration data.
@@ -120,10 +274,38 @@ def quantize_draft_model(
         draft_model: The draft model to quantize
         quant_config: Quantization configuration dictionary
         calib_dataloader: DataLoader for calibration data
-        
+        measure_quant_error: If True, after ``mtq.quantize`` runs an extra analysis pass
+            (same as :func:`quantize_model`).
+        qdq_error_report: Optional dict filled when ``measure_quant_error`` is True.
+
     Returns:
         Quantized PyTorch model
     """
+
+    def _draft_forward_batch(dm: torch.nn.Module, data: Any) -> None:
+        assert base_model.device == dm.device, "Base model and draft model must be on the same device"
+        if isinstance(data, dict):
+            batch = {k: v.to(dm.device) for k, v in data.items()}
+            outputs = base_model(**batch, output_hidden_states=True)
+            ids_for_draft = batch
+        else:
+            batch_tensor = data.to(base_model.device)
+            outputs = base_model(batch_tensor, output_hidden_states=True)
+            ids_for_draft = batch_tensor
+        all_hidden_states = outputs["hidden_states"]
+        idx = [
+            2,
+            ((len(all_hidden_states) - 1) // 2),
+            len(all_hidden_states) - 4,
+        ]
+        hidden_states_0 = all_hidden_states[idx[0]]
+        hidden_states_1 = all_hidden_states[idx[1]]
+        hidden_states_2 = all_hidden_states[idx[2]]
+        hidden_states = torch.cat(
+            [hidden_states_0, hidden_states_1, hidden_states_2], dim=-1
+        )
+        hidden_states_from_draft = torch.zeros_like(hidden_states_0)
+        dm.quant_forward(hidden_states, hidden_states_from_draft, input_ids=ids_for_draft)
 
     # Define calibration loop
     def calibrate_loop(draft_model: torch.nn.Module) -> None:
@@ -145,28 +327,20 @@ def quantize_draft_model(
         assert base_model.device == draft_model.device, "Base model and draft model must be on the same device"
 
         for data in pbar:
-            if isinstance(data, dict):
-                data = {k: v.to(draft_model.device) for k, v in data.items()}
-                base_model(**data)
-            else:
-                data = data.to(base_model.device)
-                outputs = base_model(data, output_hidden_states=True)
-            all_hidden_states = outputs['hidden_states']
-            idx = [
-                2, ((len(all_hidden_states) - 1) // 2),
-                len(all_hidden_states) - 4
-            ]
-            hidden_states_0 = all_hidden_states[idx[0]]
-            hidden_states_1 = all_hidden_states[idx[1]]
-            hidden_states_2 = all_hidden_states[idx[2]]
-            hidden_states = torch.cat(
-                [hidden_states_0, hidden_states_1, hidden_states_2], dim=-1)
-            hidden_states_from_draft = torch.zeros_like(hidden_states_0)
-            draft_model.quant_forward(hidden_states,
-                                      hidden_states_from_draft,
-                                      input_ids=data)
+            _draft_forward_batch(draft_model, data)
 
     # Get quantization config and perform quantization
     mtq.quantize(draft_model, quant_config, forward_loop=calibrate_loop)
     mtq.print_quant_summary(draft_model)
+    if measure_quant_error:
+        rep = _tensor_qdq_error_analysis(
+            draft_model,
+            calib_dataloader,
+            _draft_forward_batch,
+            desc="QDQ error (analysis)",
+        )
+        _print_qdq_report(rep)
+        if qdq_error_report is not None:
+            qdq_error_report.clear()
+            qdq_error_report.update(rep)
     return draft_model

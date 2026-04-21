@@ -114,10 +114,12 @@ class Vit(torch.nn.Module, Model):
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
         return vit_model
 
-    def quantize(self, quant_cfg, calib_data, export_dir):
+    def quantize(self, quant_cfg, calib_data, export_dir, *, measure_quant_error: bool = False):
         # tokenizer = get_tokenizer(model_dir)
         calib_dataloader = self.get_calibrate_dataset(calib_data)
-        quantize_model(self, quant_cfg, calib_dataloader)
+        quantize_model(
+            self, quant_cfg, calib_dataloader, measure_quant_error=measure_quant_error
+        )
         self.is_quantized = True
         set_dynamic_quant(self, "fp16")
 

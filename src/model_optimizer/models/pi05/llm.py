@@ -253,10 +253,12 @@ class LLM(torch.nn.Module, Model):
             val_loop(self, self.val_datas_before)
             return Pi05Metric(self.val_datas_before)
 
-    def quantize(self, quant_cfg, calib_data, export_dir):
+    def quantize(self, quant_cfg, calib_data, export_dir, *, measure_quant_error: bool = False):
         # tokenizer = get_tokenizer(model_dir)
         calib_dataloader = self.get_calibrate_dataset(calib_data)
-        quantize_model(self, quant_cfg, calib_dataloader)
+        quantize_model(
+            self, quant_cfg, calib_dataloader, measure_quant_error=measure_quant_error
+        )
         self.is_quantized = True
         set_dynamic_quant(self, "bf16")
 

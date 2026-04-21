@@ -159,27 +159,47 @@ def _apply_selective_ptq(
             )
             dl = wrap.get_calibrate_dataset(calib_dir)
             print(colored("[ptq] quantize vit …", "cyan"), flush=True)
-            quantize_model(wrap, sub_cfg, dl)
+            quantize_model(
+                wrap,
+                sub_cfg,
+                dl,
+                measure_quant_error=config.ptq.measure_quant_error,
+            )
             set_dynamic_quant(wrap, "bf16")
         elif part == "llm":
             pal = m.paligemma_with_expert.paligemma
             wrap = LLM(pal.config.text_config, pal.get_decoder())
             dl = wrap.get_calibrate_dataset(calib_dir)
             print(colored("[ptq] quantize llm …", "cyan"), flush=True)
-            quantize_model(wrap, sub_cfg, dl)
+            quantize_model(
+                wrap,
+                sub_cfg,
+                dl,
+                measure_quant_error=config.ptq.measure_quant_error,
+            )
             set_dynamic_quant(wrap, "bf16")
         elif part == "expert":
             ge = m.paligemma_with_expert.gemma_expert
             wrap = Expert(ge.config, ge.model)
             dl = wrap.get_calibrate_dataset(calib_dir)
             print(colored("[ptq] quantize expert …", "cyan"), flush=True)
-            quantize_model(wrap, sub_cfg, dl)
+            quantize_model(
+                wrap,
+                sub_cfg,
+                dl,
+                measure_quant_error=config.ptq.measure_quant_error,
+            )
             set_dynamic_quant(wrap, "bf16")
         elif part == "denoise":
             wrap = Pi05DenoiseStep.construct_model(m)
             dl = wrap.get_calibrate_dataset(calib_dir)
             print(colored("[ptq] quantize denoise …", "cyan"), flush=True)
-            quantize_model(wrap, sub_cfg, dl)
+            quantize_model(
+                wrap,
+                sub_cfg,
+                dl,
+                measure_quant_error=config.ptq.measure_quant_error,
+            )
             set_dynamic_quant(wrap, "fp16")
         else:
             raise ValueError(f"Unknown ptq part: {part!r}")
