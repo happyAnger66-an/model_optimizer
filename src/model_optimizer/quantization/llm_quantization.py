@@ -19,6 +19,7 @@ This module provides quantization utilities for large language models using NVID
 It supports various quantization schemes including FP8, INT4 AWQ, and NVFP4.
 """
 
+import copy
 import json
 import os
 import time
@@ -35,6 +36,7 @@ from transformers import (AutoModelForCausalLM, AutoModelForImageTextToText,
 
 from ..llm_models.model_utils import load_eagle3_draft_model, load_hf_model
 from ..llm_models.models.eagle3_draft import Eagle3DraftModel
+from .cfg import add_nvfp4_input_layernorm_explicit
 from .quantization_utils import (enable_huggingface_checkpointing_patch,
                                  quantize_draft_model, quantize_model)
 
@@ -215,7 +217,8 @@ def get_llm_quant_config(
     elif quantization == "int4_awq":
         quant_cfg = mtq.INT4_AWQ_CFG.copy()
     elif quantization == "nvfp4":
-        quant_cfg = mtq.NVFP4_DEFAULT_CFG.copy()
+        quant_cfg = copy.deepcopy(mtq.NVFP4_DEFAULT_CFG)
+        add_nvfp4_input_layernorm_explicit(quant_cfg["quant_cfg"])
     elif quantization == "int8_sq":
         quant_cfg = mtq.INT8_SMOOTHQUANT_CFG.copy()
     else:

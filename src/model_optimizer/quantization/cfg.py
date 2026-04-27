@@ -4,6 +4,29 @@ from typing import Any
 import modelopt.torch.quantization as mtq
 from modelopt.torch.utils import print_rank_0
 
+
+def add_nvfp4_input_layernorm_explicit(quant_cfg_inner: dict[str, Any]) -> None:
+    """为 Gemma 等模块中 ``input_layernorm`` 下的 TensorQuantizer 写入与全局 Linear 一致的 NVFP4 模板。
+
+    通配名与 ModelOpt / TRT-Edge 中 ``*lm_head.*_quantizer`` 写法一致，匹配路径如
+    ``...layers.0.input_layernorm.dense.weight_quantizer``。
+    """
+    if not isinstance(quant_cfg_inner, dict):
+        return
+    w = quant_cfg_inner.get("*weight_quantizer")
+    a = quant_cfg_inner.get("*input_quantizer")
+    if not isinstance(w, dict) or not isinstance(a, dict):
+        return
+    quant_cfg_inner["*input_layernorm*weight_quantizer"] = copy.deepcopy(w)
+    quant_cfg_inner["*input_layernorm*input_quantizer"] = copy.deepcopy(a)
+
+
+def nvfp4_default_cfg_with_explicit_input_layernorm() -> dict[str, Any]:
+    cfg = copy.deepcopy(mtq.NVFP4_DEFAULT_CFG)
+    add_nvfp4_input_layernorm_explicit(cfg["quant_cfg"])
+    return cfg
+
+
 QUANT_CFG_CHOICES: dict[str, dict[str, Any]] = {
     "int8": mtq.INT8_DEFAULT_CFG,
     "int8_sq": mtq.INT8_SMOOTHQUANT_CFG,
@@ -11,7 +34,7 @@ QUANT_CFG_CHOICES: dict[str, dict[str, Any]] = {
     "fp8": mtq.FP8_DEFAULT_CFG,
     "int4_awq": mtq.INT4_AWQ_CFG,
     "w4a8_awq": mtq.W4A8_AWQ_BETA_CFG,
-    "nvfp4": mtq.NVFP4_DEFAULT_CFG,
+    "nvfp4": nvfp4_default_cfg_with_explicit_input_layernorm(),
     "nvfp4_awq": mtq.NVFP4_AWQ_LITE_CFG,
     "fp8_pb_wo": mtq.FP8_2D_BLOCKWISE_WEIGHT_ONLY_CFG,
     "fp8_pc_pt": mtq.FP8_PER_CHANNEL_PER_TOKEN_CFG,
