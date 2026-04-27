@@ -96,7 +96,7 @@ class Expert(torch.nn.Module, Model):
 
         # attention mask
         attention_mask = torch.randn((1, 1, 10, 978),
-                                     dtype=export_dtype,
+                                     dtype=torch.float32,
                                      device="cuda")
 
         # position ids
@@ -106,7 +106,7 @@ class Expert(torch.nn.Module, Model):
 
         # action embeds
         inputs_embeds = torch.randn((1, 10, 1024),
-                                    dtype=export_dtype,
+                                    dtype=torch.float32,
                                     device="cuda")
 
         # past key values
@@ -175,13 +175,13 @@ class Expert(torch.nn.Module, Model):
         logger.info(f'config {expert_model.config}')
 
         attention_mask = torch.randn((1, 1, 10, 978),
-                                     dtype=torch.float16,
+                                     dtype=torch.float32,
                                      device="cuda")
         position_ids = torch.randint(1, expert_model.config.vocab_size, (1, 10),
                                      dtype=torch.int64,
                                      device="cuda")
         inputs_embeds = torch.randn((1, 10, 1024),
-                                    dtype=torch.float16,
+                                    dtype=torch.float32,
                                     device="cuda")
 
         output_dir = export_dir

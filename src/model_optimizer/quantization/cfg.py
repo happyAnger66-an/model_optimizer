@@ -6,10 +6,17 @@ from modelopt.torch.utils import print_rank_0
 
 
 def add_nvfp4_input_layernorm_explicit(quant_cfg_inner: dict[str, Any]) -> None:
-    """为 Gemma 等模块中 ``input_layernorm`` 下的 TensorQuantizer 写入与全局 Linear 一致的 NVFP4 模板。
+    """为路径名含 ``input_layernorm`` 的 ``TensorQuantizer`` 写入与全局 Linear 一致的 NVFP4 模板。
 
-    通配名与 ModelOpt / TRT-Edge 中 ``*lm_head.*_quantizer`` 写法一致，匹配路径如
+    通配名与 ``*lm_head.*_quantizer`` 类似，例如匹配
     ``...layers.0.input_layernorm.dense.weight_quantizer``。
+
+    重要：OpenPI / Pi0.5 的 **语言模型**里 ``GemmaRMSNorm(..., cond_dim=None)`` 在 ``forward(..., cond=None)``
+    时只有 ``weight`` 参数，**没有** ``nn.Linear`` 子模块。ModelOpt 只会给已注册的可量化子模块（如
+    ``QuantLinear``）插入 ``weight_quantizer`` / ``input_quantizer``，因此这种 RMSNorm **本身不会**
+    变成量化子模块，``print_quant_summary`` 里仍会显示普通 ``GemmaRMSNorm``——这不是 ``quant_cfg``
+    漏配，而是图里根本没有对应量化器。若 ``cond_dim`` 非空且存在 ``input_layernorm.dense``（如部分
+    Expert AdaRMS 路径），本配置才会作用于其中的 Linear 量化器。
     """
     if not isinstance(quant_cfg_inner, dict):
         return
