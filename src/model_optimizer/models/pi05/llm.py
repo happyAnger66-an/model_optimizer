@@ -141,6 +141,7 @@ class LLM(torch.nn.Module, Model):
         self.device = llm.device
         self.config = config
         self.model.config._attn_implementation = "eager"
+        print(colored(f"model {self.model}", "dark_grey"))
 
     def get_calibrate_dataset(self, calib_data):
         return open_pi05_calib_for_quantize(calib_data, component="pi05_llm")
@@ -311,7 +312,6 @@ class LLM(torch.nn.Module, Model):
                 "green",
             )
         )
-        print(colored(f"model {self.model}", "dark_grey"))
         inputs_embeds = torch.randn((1, 968, 2048),
                                     dtype=torch.bfloat16,
                                     device="cuda",
