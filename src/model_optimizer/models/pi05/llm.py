@@ -311,6 +311,7 @@ class LLM(torch.nn.Module, Model):
                 "green",
             )
         )
+        print(colored(f"model {self.model}", "dark_grey"))
         inputs_embeds = torch.randn((1, 968, 2048),
                                     dtype=torch.bfloat16,
                                     device="cuda",
