@@ -92,7 +92,7 @@ class Expert(torch.nn.Module, Model):
         print(colored(f'gemma_expert model config {self.config}', "dark_grey"))
 
         # time embeds
-        adarms_cond = torch.zeros(1, 1024, dtype=export_dtype, device="cuda")
+        adarms_cond = torch.zeros(1, 1024, dtype=torch.float32, device="cuda")
 
         # attention mask
         attention_mask = torch.randn((1, 1, 10, 978),
