@@ -158,7 +158,7 @@ class Expert(torch.nn.Module, Model):
             self, quant_cfg, calib_dataloader, measure_quant_error=measure_quant_error
         )
         self.is_quantized = True
-        set_dynamic_quant(self, "fp16")
+        set_dynamic_quant(self, "bf16")
 
         self.export(export_dir, dynamo=False)
         onnx_path = f"{export_dir}/action.onnx"
