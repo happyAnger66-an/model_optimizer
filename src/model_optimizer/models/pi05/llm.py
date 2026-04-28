@@ -130,7 +130,8 @@ class GemmaModelNativeOnnxExport(torch.nn.Module):
 
         # 输出：last_hidden_state + per-layer present_key_values.{i}
         # 为避免导出路径 dtype 混乱，这里保持与原导出一致：KV 输出为 bf16（由上游控制/可再调整）
-        present_key_values = [pkv.to(torch.bfloat16) for pkv in present_key_values]
+        #present_key_values = [pkv.to(torch.bfloat16) for pkv in present_key_values]
+        present_key_values = [pkv for pkv in present_key_values]
         return (hidden_states,) + tuple(present_key_values)
 
 
