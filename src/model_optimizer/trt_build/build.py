@@ -206,6 +206,7 @@ def apply_layer_precision_overrides(
         )
 
     updated = 0
+    updated_layers = []
     for li in range(network.num_layers):
         layer = network.get_layer(li)
         lname = str(getattr(layer, "name", "") or "")
@@ -294,11 +295,16 @@ def apply_layer_precision_overrides(
                             lname, oi, exc,
                         )
             updated += 1
+            updated_layers.append(lname)
             logger.info("Forced layer precision: %s -> %s", lname, dtype_str)
             print(colored(f"Forced layer precision: {lname} -> {dtype_str}", print_color))
             # Give users a moment to spot the override in logs.
             time.sleep(0.5)
             break
+    if updated_layers:
+        logger.info("Precision overrides applied to layers: %s", ", ".join(updated_layers))
+        print(colored(f"Precision overrides applied to layers: {', '.join(updated_layers)}", print_color))
+        time.sleep(3)
     return updated
 
 
