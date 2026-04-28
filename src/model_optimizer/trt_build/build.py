@@ -220,6 +220,53 @@ def apply_layer_precision_overrides(
             if not ok:
                 continue
             dt = _trt_dtype_from_str(dtype_str)
+            # Safety: only apply precision overrides to float-like layers/tensors.
+            # Avoid breaking Constant/Shape/etc. that produce INT/BOOL tensors.
+            try:
+                ltype = getattr(layer, "type", None)
+            except Exception:
+                ltype = None
+            if ltype is not None and ltype == trt.LayerType.CONSTANT:
+                logger.info("Skip precision override for Constant layer %r (metadata=%r)", lname, lmeta)
+                print(colored(f"Skip precision override for Constant layer: {lname}", "yellow"))
+                break
+
+            float_types = {trt.float32, trt.float16, trt.bfloat16}
+            bad_io = False
+            # Check output tensor dtypes
+            for oi in range(layer.num_outputs):
+                try:
+                    out_t = layer.get_output(oi)
+                    if out_t is None:
+                        continue
+                    out_dt = getattr(out_t, "dtype", None)
+                    if out_dt is not None and out_dt not in float_types:
+                        bad_io = True
+                        break
+                except Exception:
+                    # If we cannot introspect, don't block; let TRT validate later.
+                    pass
+            # Check input tensor dtypes
+            if not bad_io:
+                for ii in range(layer.num_inputs):
+                    try:
+                        in_t = layer.get_input(ii)
+                        if in_t is None:
+                            continue
+                        in_dt = getattr(in_t, "dtype", None)
+                        if in_dt is not None and in_dt not in float_types:
+                            bad_io = True
+                            break
+                    except Exception:
+                        pass
+            if bad_io:
+                logger.info(
+                    "Skip precision override for non-float I/O layer %r (requested=%s, metadata=%r)",
+                    lname, dtype_str, lmeta,
+                )
+                print(colored(f"Skip precision override for non-float I/O layer: {lname}", "yellow"))
+                break
+
             try:
                 layer.precision = dt
             except Exception as exc:
