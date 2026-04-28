@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from collections.abc import Sequence
+import fnmatch
 
 import tensorrt as trt
 
@@ -191,10 +192,17 @@ def apply_layer_precision_overrides(
     if not overrides:
         return 0
     match_mode = str(match).strip().lower()
-    if match_mode not in ("substring", "exact", "onnx_substring", "onnx_exact"):
+    if match_mode not in (
+        "substring",
+        "exact",
+        "glob",
+        "onnx_substring",
+        "onnx_exact",
+        "onnx_glob",
+    ):
         raise ValueError(
             f"Unsupported match mode: {match!r} "
-            "(expected 'substring', 'exact', 'onnx_substring', or 'onnx_exact')"
+            "(expected 'substring', 'exact', 'glob', 'onnx_substring', 'onnx_exact', or 'onnx_glob')"
         )
 
     updated = 0
@@ -213,10 +221,14 @@ def apply_layer_precision_overrides(
                 ok = k == lname
             elif match_mode == "substring":
                 ok = k in lname
+            elif match_mode == "glob":
+                ok = fnmatch.fnmatch(lname, k)
             elif match_mode == "onnx_exact":
                 ok = k == lmeta
-            else:  # onnx_substring
+            elif match_mode == "onnx_substring":
                 ok = k in lmeta
+            else:  # onnx_glob
+                ok = fnmatch.fnmatch(lmeta, k)
             if not ok:
                 continue
             dt = _trt_dtype_from_str(dtype_str)
@@ -457,7 +469,7 @@ def build_engine(
             logger.warning(
                 "layer_precision_overrides provided but no layer matched. "
                 "Try a different key or set layer_precision_match to "
-                "'exact' / 'onnx_substring' / 'onnx_exact'."
+                "'exact' / 'glob' / 'onnx_substring' / 'onnx_exact' / 'onnx_glob'."
             )
             print(colored(
                 "WARNING: layer_precision_overrides provided but no layer matched.",
