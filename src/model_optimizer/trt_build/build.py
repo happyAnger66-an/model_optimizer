@@ -57,15 +57,95 @@ def infer_onnx_float_precision(onnx_path: str) -> str:
 
 def validate_precision_matches_onnx(onnx_path: str, precision: str) -> None:
     """若 build_cfg.precision 与 ONNX 浮点 dtype 明显不一致，则抛错，避免错误 kernel 导致数值塌缩。"""
-    prec = str(precision).lower().strip()
     onnx_prec = infer_onnx_float_precision(onnx_path)
     if onnx_prec in ("unknown", "mixed"):
-        logger.warning("ONNX float precision appears to be %s (precision=%s).", onnx_prec, prec)
+        logger.warning("ONNX float precision appears to be %s (precision=%s).", onnx_prec, precision)
         return
-    if (onnx_prec == "bf16" and prec == "fp16") or (onnx_prec == "fp16" and prec == "bf16"):
+
+    tokens = set(normalize_precision_tokens(precision))
+
+    def _has(t: str) -> bool:
+        return t in tokens
+
+    # If user requests explicit bf16 builder support, ONNX should not be fp16-only (and vice versa).
+    if onnx_prec == "bf16" and _has("fp16") and not _has("bf16"):
         raise ValueError(
-            f"Precision mismatch: ONNX graph uses {onnx_prec}, but build_cfg.precision is {prec}. "
-            "这会导致 TensorRT 选择不匹配的 kernel，可能出现深层输出塌缩为 0/NaN。请保持一致。"
+            f"Precision mismatch: ONNX graph uses {onnx_prec}, but build_cfg.precision tokens {sorted(tokens)} "
+            "enable FP16 without BF16. Enable bf16 in precision (e.g., 'bf16' or 'bf16,fp16') or change ONNX dtype."
+        )
+    if onnx_prec == "fp16" and _has("bf16") and not _has("fp16"):
+        raise ValueError(
+            f"Precision mismatch: ONNX graph uses {onnx_prec}, but build_cfg.precision tokens {sorted(tokens)} "
+            "enable BF16 without FP16. Enable fp16 in precision (e.g., 'fp16' or 'bf16,fp16') or change ONNX dtype."
+        )
+
+
+def normalize_precision_tokens(precision: str) -> list[str]:
+    """Split ``precision`` into tokens.
+
+    Supports comma-separated lists, e.g. ``\"bf16,fp16\"``.
+    Tokens are stripped and lowercased; empty entries are ignored.
+    """
+    if precision is None:
+        return []
+    raw = str(precision).strip().lower()
+    if not raw:
+        return []
+    parts = []
+    for tok in raw.replace(";", ",").split(","):
+        t = tok.strip().lower()
+        if not t:
+            continue
+        parts.append(t)
+    # de-dupe while preserving order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for t in parts:
+        if t not in seen:
+            seen.add(t)
+            uniq.append(t)
+    return uniq
+
+
+def apply_builder_precision_flags(config: trt.IBuilderConfig, precision_tokens: list[str]) -> None:
+    """Apply TensorRT ``BuilderFlag`` precision flags.
+
+    Notes:
+        - ``fp32`` enables no precision flags (TRT default).
+        - Duplicate tokens are already removed by :func:`normalize_precision_tokens`.
+    """
+    unknown: list[str] = []
+    for tok in precision_tokens:
+        if tok in ("fp32", "float32"):
+            logger.info("precision token %r: FP32 baseline (no extra BuilderFlag)", tok)
+            print(colored(f"precision token {tok}: FP32 baseline (no extra BuilderFlag)", print_color))
+            continue
+        if tok == "fp16":
+            config.set_flag(trt.BuilderFlag.FP16)
+            logger.info("Enabled FP16 mode (BuilderFlag.FP16)")
+            print(colored("Enabled FP16 mode (BuilderFlag.FP16)", print_color))
+            continue
+        if tok == "bf16":
+            config.set_flag(trt.BuilderFlag.BF16)
+            logger.info("Enabled BF16 mode (BuilderFlag.BF16)")
+            print(colored("Enabled BF16 mode (BuilderFlag.BF16)", print_color))
+            continue
+        if tok == "fp8":
+            config.set_flag(trt.BuilderFlag.FP8)
+            logger.info("Enabled FP8 mode (BuilderFlag.FP8)")
+            print(colored("Enabled FP8 mode (BuilderFlag.FP8)", print_color))
+            continue
+        if tok in ("int4", "w4"):
+            config.set_flag(trt.BuilderFlag.INT4)
+            logger.info("Enabled INT4 mode (BuilderFlag.INT4)")
+            print(colored("Enabled INT4 mode (BuilderFlag.INT4)", print_color))
+            continue
+        unknown.append(tok)
+
+    if unknown:
+        raise ValueError(
+            f"Unknown precision token(s): {unknown}. "
+            "Supported tokens: fp32, fp16, bf16, fp8, int4"
         )
 
 
@@ -114,7 +194,9 @@ def build_engine(
     Args:
         onnx_path: Path to ONNX model
         engine_path: Path to save TensorRT engine
-        precision: Precision mode ('fp32', 'fp16', 'bf16', 'fp8')
+        precision: Precision mode. Accepts either a single mode (``fp32``/``fp16``/``bf16``/``fp8``/``int4``)
+            or a comma-separated list such as ``\"bf16,fp16\"`` to enable multiple ``BuilderFlag`` bits
+            (**only meaningful when strongly_typed_network is False**).
         workspace_mb: Workspace size in MB
         min_shapes: Minimum input shapes (dict: name -> shape tuple)
         opt_shapes: Optimal input shapes (dict: name -> shape tuple)
@@ -312,22 +394,17 @@ def build_engine(
                 print_color,
             )
         )
-    elif precision == "fp16":
-        config.set_flag(trt.BuilderFlag.FP16)
-        logger.info("Enabled FP16 mode")
-    elif precision == "bf16":
-        config.set_flag(trt.BuilderFlag.BF16)
-        logger.info("Enabled BF16 mode")
-    elif precision == "fp8":
-        config.set_flag(trt.BuilderFlag.FP8)
-        logger.info("Enabled FP8 mode")
-    elif precision == "int4":
-        config.set_flag(trt.BuilderFlag.INT4)
-        logger.info("Enabled int4 mode")
-    elif precision == "fp32":
-        logger.info("Using FP32 (default precision)")
     else:
-        raise ValueError(f"Unknown precision: {precision}")
+        tokens = normalize_precision_tokens(precision)
+        if not tokens:
+            raise ValueError(f"Empty precision: {precision!r}")
+        if len(tokens) == 1:
+            # Back-compat: allow legacy single-string values without treating commas.
+            apply_builder_precision_flags(config, tokens)
+        else:
+            logger.info("Multi-token precision mode: %s", ",".join(tokens))
+            print(colored(f"Multi-token precision mode: {','.join(tokens)}", print_color))
+            apply_builder_precision_flags(config, tokens)
 
     # Set optimization profiles for dynamic shapes
     if min_shapes and opt_shapes and max_shapes:
