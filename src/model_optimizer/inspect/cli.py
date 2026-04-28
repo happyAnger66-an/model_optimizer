@@ -88,6 +88,71 @@ def _layer_metadata(layer: dict[str, Any]) -> str:
     return str(md)
 
 
+def _io_summaries(layer: dict[str, Any]) -> tuple[str, str]:
+    """Best-effort extract input/output dtype summaries from inspector JSON.
+
+    The EngineInspector JSON schema differs across TRT versions. Common fields:
+      - "Inputs":  [ { "Name": ..., "Format/Datatype": "Float", ... }, ... ]
+      - "Outputs": [ { "Name": ..., "Format/Datatype": "BFloat16", ... }, ... ]
+    """
+    def _summ(v: Any) -> str:
+        if not isinstance(v, list):
+            return ""
+        dts: list[str] = []
+        for item in v:
+            if not isinstance(item, dict):
+                continue
+            dt = item.get("Format/Datatype") or item.get("formatDatatype") or item.get("dtype") or item.get("DataType")
+            if dt is None:
+                continue
+            dts.append(str(dt))
+        if not dts:
+            return ""
+        # de-dupe while preserving order
+        seen: set[str] = set()
+        uniq: list[str] = []
+        for x in dts:
+            if x not in seen:
+                seen.add(x)
+                uniq.append(x)
+        return ",".join(uniq)
+
+    ins = _summ(layer.get("Inputs") or layer.get("inputs"))
+    outs = _summ(layer.get("Outputs") or layer.get("outputs"))
+    return ins, outs
+
+
+def _io_details(layer: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Best-effort extract per-input/per-output details from inspector JSON."""
+
+    def _norm(v: Any) -> list[dict[str, Any]]:
+        if not isinstance(v, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for item in v:
+            if not isinstance(item, dict):
+                continue
+            out.append(
+                {
+                    "name": item.get("Name") or item.get("name"),
+                    "shape": item.get("Dimensions")
+                    or item.get("dimensions")
+                    or item.get("Shape")
+                    or item.get("shape"),
+                    "dtype": item.get("Format/Datatype")
+                    or item.get("formatDatatype")
+                    or item.get("dtype")
+                    or item.get("DataType"),
+                    "format": item.get("Format") or item.get("format"),
+                }
+            )
+        return out
+
+    ins = _norm(layer.get("Inputs") or layer.get("inputs"))
+    outs = _norm(layer.get("Outputs") or layer.get("outputs"))
+    return ins, outs
+
+
 def _match_any(value: str, *, glob: str | None, contains: str | None) -> bool:
     if glob:
         if not fnmatch.fnmatch(value, glob):
@@ -117,6 +182,8 @@ def inspect_engine(args: argparse.Namespace) -> int:
         name = _layer_name(layer)
         ltype = _layer_type(layer)
         meta = _layer_metadata(layer)
+        in_dts, out_dts = _io_summaries(layer)
+        in_ios, out_ios = _io_details(layer) if args.verbose_io else ([], [])
 
         if not _match_any(name, glob=name_glob, contains=name_contains):
             continue
@@ -127,10 +194,23 @@ def inspect_engine(args: argparse.Namespace) -> int:
 
         if args.format == "jsonl":
             out = {"index": i, "name": name, "type": ltype, "metadata": meta}
+            if args.show_io or args.verbose_io:
+                out["inputs_dtypes"] = in_dts
+                out["outputs_dtypes"] = out_dts
+            if args.verbose_io:
+                out["inputs"] = in_ios
+                out["outputs"] = out_ios
             print(json.dumps(out, ensure_ascii=False))
         else:
             # oneline/tsv-ish for easy copy/paste into config patterns
-            print(f"{i}\t{name}\t{ltype}\t{meta}")
+            if args.verbose_io:
+                ins_json = json.dumps(in_ios, ensure_ascii=False, separators=(",", ":"))
+                outs_json = json.dumps(out_ios, ensure_ascii=False, separators=(",", ":"))
+                print(f"{i}\t{name}\t{ltype}\tin={ins_json}\tout={outs_json}\t{meta}")
+            elif args.show_io:
+                print(f"{i}\t{name}\t{ltype}\tin={in_dts or '-'}\tout={out_dts or '-'}\t{meta}")
+            else:
+                print(f"{i}\t{name}\t{ltype}\t{meta}")
         shown += 1
         if args.limit is not None and shown >= args.limit:
             break
@@ -152,6 +232,16 @@ def inspect_cli(argv: list[str]) -> None:
     p_engine.add_argument("engine", type=str, help="Path to TensorRT engine (.engine)")
     p_engine.add_argument("--format", choices=("oneline", "jsonl"), default="oneline")
     p_engine.add_argument("--limit", type=int, default=None)
+    p_engine.add_argument(
+        "--show-io",
+        action="store_true",
+        help="Include best-effort input/output dtype summaries per layer",
+    )
+    p_engine.add_argument(
+        "--verbose-io",
+        action="store_true",
+        help="Include full input/output details (name/shape/dtype) per layer",
+    )
 
     p_engine.add_argument("--name-glob", type=str, default=None, help="Filter by layer name glob (*, ?)")
     p_engine.add_argument("--name-contains", type=str, default=None, help="Filter by substring in layer name")
