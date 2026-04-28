@@ -191,16 +191,32 @@ def apply_layer_precision_overrides(
     if not overrides:
         return 0
     match_mode = str(match).strip().lower()
-    if match_mode not in ("substring", "exact"):
-        raise ValueError(f"Unsupported match mode: {match!r} (expected 'substring' or 'exact')")
+    if match_mode not in ("substring", "exact", "onnx_substring", "onnx_exact"):
+        raise ValueError(
+            f"Unsupported match mode: {match!r} "
+            "(expected 'substring', 'exact', 'onnx_substring', or 'onnx_exact')"
+        )
 
     updated = 0
     for li in range(network.num_layers):
         layer = network.get_layer(li)
         lname = str(getattr(layer, "name", "") or "")
+        # TRT 10+ exposes parsed metadata that often contains strings like:
+        # "[ONNX Layer: /action_in_proj/MatMul]"
+        try:
+            lmeta = str(getattr(layer, "metadata", "") or "")
+        except Exception:
+            lmeta = ""
         for key, dtype_str in overrides.items():
             k = str(key)
-            ok = (k == lname) if match_mode == "exact" else (k in lname)
+            if match_mode == "exact":
+                ok = k == lname
+            elif match_mode == "substring":
+                ok = k in lname
+            elif match_mode == "onnx_exact":
+                ok = k == lmeta
+            else:  # onnx_substring
+                ok = k in lmeta
             if not ok:
                 continue
             dt = _trt_dtype_from_str(dtype_str)
@@ -221,6 +237,8 @@ def apply_layer_precision_overrides(
             updated += 1
             logger.info("Forced layer precision: %s -> %s", lname, dtype_str)
             print(colored(f"Forced layer precision: {lname} -> {dtype_str}", print_color))
+            # Give users a moment to spot the override in logs.
+            time.sleep(0.5)
             break
     return updated
 
@@ -391,7 +409,8 @@ def build_engine(
         if n == 0:
             logger.warning(
                 "layer_precision_overrides provided but no layer matched. "
-                "Try a different key or set layer_precision_match='exact'."
+                "Try a different key or set layer_precision_match to "
+                "'exact' / 'onnx_substring' / 'onnx_exact'."
             )
             print(colored(
                 "WARNING: layer_precision_overrides provided but no layer matched.",
