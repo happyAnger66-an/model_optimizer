@@ -31,6 +31,7 @@ USAGE = (
     + "|   model_optimizer-cli webui: launch webui                        |\n"
     + "|   model_optimizer-cli download: download a model                      |\n"
     + "|   model_optimizer-cli compare: compare data                      |\n"
+    + "|   model_optimizer-cli inspect model <engine>: inspect TRT engine |\n"
     + "|   model_optimizer-cli data: data process                         |\n"
     + "|   model_optimizer-cli version: show version info                      |\n"
     + "| Hint: You can use `moc` as a shortcut for `model_optimizer-cli`.      |\n"
@@ -87,5 +88,8 @@ def launch():
     elif command == "compare":
         from .compare.cli import compare_cli
         compare_cli(sys.argv)
+    elif command == "inspect":
+        from .inspect.cli import inspect_cli
+        inspect_cli(sys.argv)
     else:
         print(USAGE)
