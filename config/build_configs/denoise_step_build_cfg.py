@@ -20,6 +20,9 @@ _HEAD_DIM = 256
 build_cfg = {
     "precision": "bf16",
     "workspace_mb": 8192,
+    "layer_precision_overrides": {
+      "/action_in_proj": "fp32",
+    },
     "min_shapes": {
         "prefix_pad_masks": (1, _PREFIX_LEN),
         "past_keys": (_NUM_LAYERS, 1, _PREFIX_LEN, _HEAD_DIM),

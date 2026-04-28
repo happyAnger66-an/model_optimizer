@@ -149,6 +149,82 @@ def apply_builder_precision_flags(config: trt.IBuilderConfig, precision_tokens: 
         )
 
 
+def _trt_dtype_from_str(dtype: str) -> trt.DataType:
+    t = str(dtype).strip().lower()
+    if t in ("fp32", "float", "float32"):
+        return trt.float32
+    if t in ("fp16", "half", "float16"):
+        return trt.float16
+    if t in ("bf16", "bfloat16"):
+        return trt.bfloat16
+    if t in ("int32", "i32"):
+        return trt.int32
+    if t in ("int8", "i8"):
+        return trt.int8
+    if t in ("int64", "i64"):
+        return trt.int64
+    if t in ("bool",):
+        return trt.bool
+    raise ValueError(f"Unsupported TensorRT dtype string: {dtype!r}")
+
+
+def apply_layer_precision_overrides(
+    network: trt.INetworkDefinition,
+    overrides: dict[str, str],
+    *,
+    match: str = "substring",
+    set_output_types: bool = True,
+) -> int:
+    """Force per-layer precision (non-STRONGLY_TYPED networks only).
+
+    Args:
+        network: TRT network after ONNX parsing.
+        overrides: Mapping from layer match key -> dtype string, e.g. {"/action_in_proj/MatMul": "fp32"}.
+        match:
+            - "substring": match when key is a substring of layer.name
+            - "exact": match when key == layer.name
+        set_output_types: If True, also set all outputs' dtype to the same dtype.
+
+    Returns:
+        Number of layers updated (may be 0 if no match).
+    """
+    if not overrides:
+        return 0
+    match_mode = str(match).strip().lower()
+    if match_mode not in ("substring", "exact"):
+        raise ValueError(f"Unsupported match mode: {match!r} (expected 'substring' or 'exact')")
+
+    updated = 0
+    for li in range(network.num_layers):
+        layer = network.get_layer(li)
+        lname = str(getattr(layer, "name", "") or "")
+        for key, dtype_str in overrides.items():
+            k = str(key)
+            ok = (k == lname) if match_mode == "exact" else (k in lname)
+            if not ok:
+                continue
+            dt = _trt_dtype_from_str(dtype_str)
+            try:
+                layer.precision = dt
+            except Exception as exc:
+                logger.warning("Failed to set layer.precision for %r: %s", lname, exc)
+                continue
+            if set_output_types:
+                for oi in range(layer.num_outputs):
+                    try:
+                        layer.set_output_type(oi, dt)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to set layer output type for %r out%d: %s",
+                            lname, oi, exc,
+                        )
+            updated += 1
+            logger.info("Forced layer precision: %s -> %s", lname, dtype_str)
+            print(colored(f"Forced layer precision: {lname} -> {dtype_str}", print_color))
+            break
+    return updated
+
+
 def _load_trt_plugin_shared_libraries(
     paths: Sequence[str],
     *,
@@ -185,6 +261,10 @@ def build_engine(
     plugin_lib_paths: Sequence[str] | None = None,
     init_builtin_trt_plugins: bool = True,
     strongly_typed_network: bool = False,
+    layer_precision_overrides: dict[str, str] | None = None,
+    layer_precision_match: str = "substring",
+    set_layer_output_types: bool = True,
+    precision_constraints: str = "prefer",
     debug_output_tensors: Sequence[str] | None = None,
     debug_dump_tensor_names: bool = False,
 ):
@@ -300,6 +380,24 @@ def build_engine(
         logger.info(f"  Output {i}: {out.name} {out.shape}")
         print(colored(f"  Output {i}: {out.name} {out.shape}", print_color))
 
+    # Apply per-layer precision overrides (only for non-STRONGLY_TYPED networks)
+    if layer_precision_overrides and not strongly_typed_network:
+        n = apply_layer_precision_overrides(
+            network,
+            dict(layer_precision_overrides),
+            match=layer_precision_match,
+            set_output_types=bool(set_layer_output_types),
+        )
+        if n == 0:
+            logger.warning(
+                "layer_precision_overrides provided but no layer matched. "
+                "Try a different key or set layer_precision_match='exact'."
+            )
+            print(colored(
+                "WARNING: layer_precision_overrides provided but no layer matched.",
+                "yellow",
+            ))
+
     def _iter_all_tensors():
         # Iterate tensors reachable from layers (best-effort; TRT Python API lacks a global tensor registry)
         for li in range(network.num_layers):
@@ -395,6 +493,23 @@ def build_engine(
             )
         )
     else:
+        # Precision constraint policy (useful when layer_precision_overrides is provided).
+        pol = str(precision_constraints or "").strip().lower()
+        if pol:
+            if pol == "obey":
+                config.set_flag(trt.BuilderFlag.OBEY_PRECISION_CONSTRAINTS)
+                logger.info("Enabled OBEY_PRECISION_CONSTRAINTS")
+                print(colored("Enabled OBEY_PRECISION_CONSTRAINTS", print_color))
+            elif pol == "prefer":
+                config.set_flag(trt.BuilderFlag.PREFER_PRECISION_CONSTRAINTS)
+                logger.info("Enabled PREFER_PRECISION_CONSTRAINTS")
+                print(colored("Enabled PREFER_PRECISION_CONSTRAINTS", print_color))
+            else:
+                raise ValueError(
+                    f"Unknown precision_constraints policy: {precision_constraints!r} "
+                    "(expected 'obey' or 'prefer')"
+                )
+
         tokens = normalize_precision_tokens(precision)
         if not tokens:
             raise ValueError(f"Empty precision: {precision!r}")
