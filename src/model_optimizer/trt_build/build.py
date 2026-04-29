@@ -5,6 +5,7 @@ import os
 import time
 from collections.abc import Sequence
 import fnmatch
+import re
 
 import tensorrt as trt
 
@@ -175,6 +176,7 @@ def apply_layer_precision_overrides(
     *,
     match: str = "substring",
     set_output_types: bool = True,
+    require_layer_name_contains: str | None = None,
 ) -> int:
     """Force per-layer precision (non-STRONGLY_TYPED networks only).
 
@@ -199,10 +201,11 @@ def apply_layer_precision_overrides(
         "onnx_substring",
         "onnx_exact",
         "onnx_glob",
+        "onnx_token_glob",
     ):
         raise ValueError(
             f"Unsupported match mode: {match!r} "
-            "(expected 'substring', 'exact', 'glob', 'onnx_substring', 'onnx_exact', or 'onnx_glob')"
+            "(expected 'substring', 'exact', 'glob', 'onnx_substring', 'onnx_exact', 'onnx_glob', or 'onnx_token_glob')"
         )
 
     updated = 0
@@ -216,8 +219,11 @@ def apply_layer_precision_overrides(
             lmeta = str(getattr(layer, "metadata", "") or "")
         except Exception:
             lmeta = ""
+        req = str(require_layer_name_contains) if require_layer_name_contains else ""
         for key, dtype_str in overrides.items():
             k = str(key)
+            if req and req not in lname:
+                continue
             if match_mode == "exact":
                 ok = k == lname
             elif match_mode == "substring":
@@ -228,8 +234,13 @@ def apply_layer_precision_overrides(
                 ok = k == lmeta
             elif match_mode == "onnx_substring":
                 ok = k in lmeta
-            else:  # onnx_glob
+            elif match_mode == "onnx_glob":
                 ok = fnmatch.fnmatch(lmeta, k)
+            else:  # onnx_token_glob
+                # Extract individual ONNX Layer tokens from metadata and match against token strings.
+                # Example token: "/time_mlp_in/Gemm"
+                toks = re.findall(r"\\[ONNX Layer: ([^\\]]+)\\]", lmeta)
+                ok = any(fnmatch.fnmatch(tok, k) for tok in toks)
             if not ok:
                 continue
             dt = _trt_dtype_from_str(dtype_str)
@@ -348,6 +359,7 @@ def build_engine(
     layer_precision_match: str = "substring",
     set_layer_output_types: bool = True,
     precision_constraints: str = "prefer",
+    require_layer_name_contains: str | None = None,
     debug_output_tensors: Sequence[str] | None = None,
     debug_dump_tensor_names: bool = False,
 ):
@@ -470,12 +482,13 @@ def build_engine(
             dict(layer_precision_overrides),
             match=layer_precision_match,
             set_output_types=bool(set_layer_output_types),
+            require_layer_name_contains=require_layer_name_contains,
         )
         if n == 0:
             logger.warning(
                 "layer_precision_overrides provided but no layer matched. "
                 "Try a different key or set layer_precision_match to "
-                "'exact' / 'glob' / 'onnx_substring' / 'onnx_exact' / 'onnx_glob'."
+                "'exact' / 'glob' / 'onnx_substring' / 'onnx_exact' / 'onnx_glob' / 'onnx_token_glob'."
             )
             print(colored(
                 "WARNING: layer_precision_overrides provided but no layer matched.",
