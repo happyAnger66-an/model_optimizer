@@ -239,7 +239,8 @@ def apply_layer_precision_overrides(
             else:  # onnx_token_glob
                 # Extract individual ONNX Layer tokens from metadata and match against token strings.
                 # Example token: "/time_mlp_in/Gemm"
-                toks = re.findall(r"\\[ONNX Layer: ([^\\]]+)\\]", lmeta)
+                # Metadata tokens look like: "[ONNX Layer: /foo/bar]" (possibly concatenated).
+                toks = re.findall(r"\[ONNX Layer: ([^\]]+)\]", lmeta)
                 ok = any(fnmatch.fnmatch(tok, k) for tok in toks)
             if not ok:
                 continue
