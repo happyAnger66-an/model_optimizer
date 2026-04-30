@@ -46,6 +46,8 @@ let latestDimRelP99 = null; // number[] | null
 let latestDimMsePctMeanTrt = null; // number[] | null，仅 compare_mode
 let latestDimRelP99Trt = null; // number[] | null，仅 compare_mode
 let latestDimMsePtTrtDimMean = null; // number[] | null，各维累计 mean((pt-trt)^2)，仅 compare_mode
+/** 最近一次 chunk 的 ViT PT vs TRT 摘要（仅 --vit-pt-trt-compare 时存在）。 */
+let latestVitPtTrt = null;
 
 /** PTQ 分层报告：完整 layers，供模块名子串过滤 */
 let ptqLayerReportLayersAll = null;
@@ -1255,19 +1257,21 @@ function updateTop(event) {
       const vb = el("vitCompareBlock");
       const v = m.vit_pt_trt;
       if (vb) {
-        if (v && typeof v === "object") {
-          vb.hidden = false;
-          setNum("vitCmpMaxAbs", v.max_abs);
-          setNum("vitCmpMeanAbs", v.mean_abs);
-          setNum("vitCmpRmse", v.rmse);
-          setNum("vitCmpRel", v.mean_abs_rel_to_pt_mean_abs);
-          if (Array.isArray(v.shape)) setTxt("vitCmpShape", v.shape.join("x"));
-          else if (v.shape_pt && v.shape_trt)
-            setTxt("vitCmpShape", `pt=${v.shape_pt.join("x")} trt=${v.shape_trt.join("x")}`);
-          else if (v.error) setTxt("vitCmpShape", `error=${v.error}`);
+        // 仅在 chunk 起点有字段；后续 step 复用上一次结果，避免 UI 闪烁/看不到。
+        if (v && typeof v === "object") latestVitPtTrt = v;
+        const show = meta?.vit_pt_trt_compare && latestVitPtTrt && typeof latestVitPtTrt === "object";
+        vb.hidden = !show;
+        if (show) {
+          const vv = latestVitPtTrt;
+          setNum("vitCmpMaxAbs", vv.max_abs);
+          setNum("vitCmpMeanAbs", vv.mean_abs);
+          setNum("vitCmpRmse", vv.rmse);
+          setNum("vitCmpRel", vv.mean_abs_rel_to_pt_mean_abs);
+          if (Array.isArray(vv.shape)) setTxt("vitCmpShape", vv.shape.join("x"));
+          else if (vv.shape_pt && vv.shape_trt)
+            setTxt("vitCmpShape", `pt=${vv.shape_pt.join("x")} trt=${vv.shape_trt.join("x")}`);
+          else if (vv.error) setTxt("vitCmpShape", `error=${vv.error}`);
           else setTxt("vitCmpShape", "-");
-        } else {
-          vb.hidden = true;
         }
       }
     } else {
