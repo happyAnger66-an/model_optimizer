@@ -30,8 +30,8 @@ class Vit(torch.nn.Module, Model):
         image_outputs = self.vision_tower(pixel_values)
         selected_image_feature = image_outputs.last_hidden_state
         image_features = self.multi_modal_projector(selected_image_feature)
-        image_features = image_features / \
-            (self.config.text_config.hidden_size ** 0.5)
+        print(colored(f"hidden_size: {self.config.text_config.hidden_size}", "green"))
+        image_features = image_features / (self.config.text_config.hidden_size ** 0.5)
 #        logger.info(f'Pi05Vit output: {image_features.shape}')
         return image_features
 
