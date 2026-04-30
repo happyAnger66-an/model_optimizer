@@ -12,6 +12,8 @@ QUANT_CFG["quant_cfg"]["norm"] = {"enable": False}
 
 QUANT_CFG["quant_cfg"]["vision_tower.vision_model.embeddings.patch_embedding.input_quantizer"] = {"enable": False}
 QUANT_CFG["quant_cfg"]["vision_tower.vision_model.embeddings.patch_embedding.weight_quantizer"] = {"enable": False}
+QUANT_CFG["quant_cfg"]["multi_modal_projector.linear.input_quantizer"] = {"enable": False}
+QUANT_CFG["quant_cfg"]["multi_modal_projector.linear.weight_quantizer"] = {"enable": False}
 
 # Disable quantization on encoder layers[0]: self_attn (q/k/v/out) + MLP fc1/fc2 (matches ``mtq.print_quant_summary`` FQNs).
 _VIT_ENCODER_LAYER0_QUANTIZER_SKIP_SUFFIXES: tuple[str, ...] = (
