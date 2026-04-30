@@ -303,25 +303,32 @@ def load_infer_bundle(
 
                 def wrapped(pixel_values, *a, **kw):
                     out = orig(pixel_values, *a, **kw)
+                    # get_image_features may be called multiple times per chunk (per image view).
+                    stats = _tensor_stats(pixel_values)
                     try:
-                        setattr(mm, f"_webui_last_vit_in_{tag}", pixel_values.detach())
+                        out_det = out.detach()
                     except Exception:
-                        setattr(mm, f"_webui_last_vit_in_{tag}", pixel_values)
-                    setattr(mm, f"_webui_last_vit_in_stats_{tag}", _tensor_stats(pixel_values))
+                        out_det = out
                     try:
-                        setattr(mm, f"_webui_last_vit_out_{tag}", out.detach())
+                        lst = getattr(mm, f"_webui_vit_calls_{tag}", None)
+                        if not isinstance(lst, list):
+                            lst = []
+                        lst.append({"in_stats": stats, "out": out_det})
+                        setattr(mm, f"_webui_vit_calls_{tag}", lst)
                     except Exception:
-                        setattr(mm, f"_webui_last_vit_out_{tag}", out)
+                        # Best-effort: fallback to last-only if list append fails.
+                        setattr(mm, f"_webui_last_vit_in_stats_{tag}", stats)
+                        setattr(mm, f"_webui_last_vit_out_{tag}", out_det)
                     return out
 
                 mm.get_image_features = wrapped
 
                 def fetch_and_clear():
-                    x = getattr(mm, f"_webui_last_vit_in_{tag}", None)
-                    y = getattr(mm, f"_webui_last_vit_out_{tag}", None)
-                    s = getattr(mm, f"_webui_last_vit_in_stats_{tag}", None)
+                    calls = getattr(mm, f"_webui_vit_calls_{tag}", None)
+                    last_out = getattr(mm, f"_webui_last_vit_out_{tag}", None)
+                    last_stats = getattr(mm, f"_webui_last_vit_in_stats_{tag}", None)
                     for nm in (
-                        f"_webui_last_vit_in_{tag}",
+                        f"_webui_vit_calls_{tag}",
                         f"_webui_last_vit_out_{tag}",
                         f"_webui_last_vit_in_stats_{tag}",
                     ):
@@ -330,7 +337,10 @@ def load_infer_bundle(
                                 delattr(mm, nm)
                             except Exception:
                                 pass
-                    return x, y, s
+                    # Return list if available, else fallback to (None, last_out, last_stats)
+                    if isinstance(calls, list) and calls:
+                        return calls
+                    return [{"in_stats": last_stats, "out": last_out}]
 
                 setattr(pol, f"_webui_fetch_vit_io_{tag}", fetch_and_clear)
 

@@ -1305,8 +1305,24 @@ function updateTop(event) {
             const sd = typeof inp.std === "number" ? inp.std.toFixed(6) : "?";
             return `shape=${sh} dtype=${dt} min=${mn} max=${mx} mean=${me} std=${sd}`;
           };
-          setTxt("vitCmpInPt", fmtIn(vv.input_pt));
-          setTxt("vitCmpInTrt", fmtIn(vv.input_trt));
+          if (Array.isArray(vv.calls) && vv.calls.length > 0) {
+            const linesPt = [];
+            const linesTrt = [];
+            for (const c of vv.calls.slice(0, 6)) {
+              const idx = typeof c.i === "number" ? c.i : "?";
+              linesPt.push(`[${idx}] ${fmtIn(c.input_pt)}`);
+              linesTrt.push(`[${idx}] ${fmtIn(c.input_trt)}`);
+            }
+            if (vv.calls.length > 6) {
+              linesPt.push(`… (${vv.calls.length} calls)`);
+              linesTrt.push(`… (${vv.calls.length} calls)`);
+            }
+            setTxt("vitCmpInPt", linesPt.join(" | "));
+            setTxt("vitCmpInTrt", linesTrt.join(" | "));
+          } else {
+            setTxt("vitCmpInPt", fmtIn(vv.input_pt));
+            setTxt("vitCmpInTrt", fmtIn(vv.input_trt));
+          }
         }
       }
     } else {

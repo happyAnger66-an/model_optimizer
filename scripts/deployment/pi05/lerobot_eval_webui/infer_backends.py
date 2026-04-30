@@ -100,40 +100,88 @@ class PtTrtCompareBackend(InferBackend):
         fetch_trt = getattr(policy_trt, "_webui_fetch_vit_io_trt", None)
         if callable(fetch_pt) and callable(fetch_trt):
             try:
-                x_pt, y_pt, s_pt = fetch_pt()
-                x_trt, y_trt, s_trt = fetch_trt()
-                # We expect both paths to call get_image_features once per chunk.
-                if y_pt is not None and y_trt is not None and hasattr(y_pt, "detach") and hasattr(y_trt, "detach"):
+                calls_pt = fetch_pt()
+                calls_trt = fetch_trt()
+                if not isinstance(calls_pt, list) or not isinstance(calls_trt, list):
+                    raise TypeError("vit tap must return list[call]")
+                n = min(len(calls_pt), len(calls_trt))
+                if n <= 0:
+                    vit_pack = {"error": "no_calls"}
+                else:
                     import torch
 
-                    a = y_pt.detach()
-                    b = y_trt.detach()
-                    if a.shape == b.shape:
+                    per_call = []
+                    max_abs_overall = 0.0
+                    mean_abs_sum = 0.0
+                    rmse_sum = 0.0
+                    rel_sum = 0.0
+                    rel_n = 0
+                    shape_ref = None
+                    dtype_pt = None
+                    dtype_trt = None
+                    for i in range(n):
+                        a = calls_pt[i].get("out", None)
+                        b = calls_trt[i].get("out", None)
+                        if a is None or b is None:
+                            per_call.append({"i": i, "error": "missing_out"})
+                            continue
+                        if hasattr(a, "detach"):
+                            a = a.detach()
+                        if hasattr(b, "detach"):
+                            b = b.detach()
+                        if getattr(a, "shape", None) != getattr(b, "shape", None):
+                            per_call.append(
+                                {
+                                    "i": i,
+                                    "error": "shape_mismatch",
+                                    "shape_pt": list(getattr(a, "shape", ())),
+                                    "shape_trt": list(getattr(b, "shape", ())),
+                                }
+                            )
+                            continue
                         diff = (a - b).to(torch.float32)
                         absd = diff.abs()
                         denom = a.abs().to(torch.float32).mean().clamp_min(1e-8)
-                        vit_pack = {
-                            "shape": list(a.shape),
-                            "dtype_pt": str(a.dtype),
-                            "dtype_trt": str(b.dtype),
-                            "max_abs": float(absd.max().item()),
-                            "mean_abs": float(absd.mean().item()),
-                            "rmse": float(torch.sqrt((diff * diff).mean()).item()),
-                            "mean_abs_rel_to_pt_mean_abs": float((absd.mean() / denom).item()),
-                        }
-                    else:
-                        vit_pack = {
-                            "shape_pt": list(getattr(a, "shape", ())),
-                            "shape_trt": list(getattr(b, "shape", ())),
-                            "error": "shape_mismatch",
-                        }
-                if vit_pack is None:
-                    vit_pack = {}
-                # Attach input pixel_values stats for sanity check.
-                if isinstance(s_pt, dict):
-                    vit_pack["input_pt"] = s_pt
-                if isinstance(s_trt, dict):
-                    vit_pack["input_trt"] = s_trt
+                        max_abs_i = float(absd.max().item())
+                        mean_abs_i = float(absd.mean().item())
+                        rmse_i = float(torch.sqrt((diff * diff).mean()).item())
+                        rel_i = float((absd.mean() / denom).item())
+                        per_call.append(
+                            {
+                                "i": i,
+                                "max_abs": max_abs_i,
+                                "mean_abs": mean_abs_i,
+                                "rmse": rmse_i,
+                                "rel": rel_i,
+                                "input_pt": calls_pt[i].get("in_stats", None),
+                                "input_trt": calls_trt[i].get("in_stats", None),
+                            }
+                        )
+                        max_abs_overall = max(max_abs_overall, max_abs_i)
+                        mean_abs_sum += mean_abs_i
+                        rmse_sum += rmse_i
+                        rel_sum += rel_i
+                        rel_n += 1
+                        if shape_ref is None:
+                            shape_ref = list(getattr(a, "shape", ()))
+                            dtype_pt = str(getattr(a, "dtype", ""))
+                            dtype_trt = str(getattr(b, "dtype", ""))
+                    vit_pack = {
+                        "calls": per_call,
+                        "num_calls": n,
+                    }
+                    if rel_n > 0:
+                        vit_pack.update(
+                            {
+                                "shape": shape_ref,
+                                "dtype_pt": dtype_pt,
+                                "dtype_trt": dtype_trt,
+                                "max_abs": float(max_abs_overall),
+                                "mean_abs": float(mean_abs_sum / rel_n),
+                                "rmse": float(rmse_sum / rel_n),
+                                "mean_abs_rel_to_pt_mean_abs": float(rel_sum / rel_n),
+                            }
+                        )
             except Exception:
                 vit_pack = {"error": "exception"}
 
