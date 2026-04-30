@@ -115,6 +115,7 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     gt_h = pack.gt_h
     pred_h_trt = pack.pred_h_trt
     pred_h_ptq = pack.pred_h_ptq
+    vit_pt_trt = getattr(pack, "vit_pt_trt", None)
 
     if _perf_model is None:
         _perf_model = _policy_torch_model(policy)
@@ -205,6 +206,8 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
             "mae_per_dim": [float(np.abs(dpt_flat[i])) for i in range(int(dpt_flat.size))],
             "mse_per_dim": [float(dpt_flat[i] * dpt_flat[i]) for i in range(int(dpt_flat.size))],
         }
+        if k == 0 and isinstance(vit_pt_trt, dict) and vit_pt_trt:
+            metrics["vit_pt_trt"] = vit_pt_trt
         pred_trt_list: list[float] | None = None
         pred_ptq_list: list[float] | None = None
         timing: dict[str, float] | None = None

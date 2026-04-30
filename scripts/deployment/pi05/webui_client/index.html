@@ -161,6 +161,29 @@
                 </tr>
               </tbody>
             </table>
+            <div id="vitCompareBlock" class="vitCompareBlock mono" hidden>
+              <div class="sub subTight">ViT 输出对比（chunk 起点统计：PT get_image_features vs vit.engine）</div>
+              <table class="compareScalarTable mono" aria-label="ViT PT vs TRT 摘要">
+                <tbody>
+                  <tr>
+                    <th scope="row">max_abs</th>
+                    <td id="vitCmpMaxAbs">-</td>
+                    <th scope="row">mean_abs</th>
+                    <td id="vitCmpMeanAbs">-</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">rmse</th>
+                    <td id="vitCmpRmse">-</td>
+                    <th scope="row">rel</th>
+                    <td id="vitCmpRel">-</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">shape</th>
+                    <td id="vitCmpShape" colspan="3">-</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>

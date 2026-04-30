@@ -20,6 +20,8 @@ class Args:
     inference_mode: Literal["pytorch", "tensorrt", "onnxrt"] = "pytorch"
     # 双路对比：需 --engine-path 与各 *_engine（同 tensorrt 模式）；与 ptq_compare 互斥
     compare_mode: bool = False
+    vit_pt_trt_compare: bool = False
+    """compare_mode 下额外对比 ViT：PyTorch get_image_features vs TensorRT vit.engine（按 chunk 统计并推送到 WebUI）。"""
 
     # PyTorch 浮点 vs 同权重复本上的选择性 PTQ（fake quant）；与 compare_mode 互斥
     ptq_compare: bool = False

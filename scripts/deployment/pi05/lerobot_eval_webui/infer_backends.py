@@ -22,6 +22,7 @@ class PredictionPack:
     pred_h_ptq: np.ndarray | None
     infer_ms_pt: float
     infer_ms_second: float | None
+    vit_pt_trt: dict[str, Any] | None = None
 
 
 class InferBackend(ABC):
@@ -93,6 +94,42 @@ class PtTrtCompareBackend(InferBackend):
         pred_trt_raw = np.asarray(out_trt["actions"])
         pred_a_pt, gt_a = align_action_dim(pred_pt, gt)
         pred_a_trt, _ = align_action_dim(pred_trt_raw, gt)
+        vit_pack: dict[str, Any] | None = None
+        # Optional: chunk-level ViT output compare (PyTorch get_image_features vs TRT engine).
+        fetch_pt = getattr(policy, "_webui_fetch_vit_io_pt", None)
+        fetch_trt = getattr(policy_trt, "_webui_fetch_vit_io_trt", None)
+        if callable(fetch_pt) and callable(fetch_trt):
+            try:
+                x_pt, y_pt = fetch_pt()
+                x_trt, y_trt = fetch_trt()
+                # We expect both paths to call get_image_features once per chunk.
+                if y_pt is not None and y_trt is not None and hasattr(y_pt, "detach") and hasattr(y_trt, "detach"):
+                    import torch
+
+                    a = y_pt.detach()
+                    b = y_trt.detach()
+                    if a.shape == b.shape:
+                        diff = (a - b).to(torch.float32)
+                        absd = diff.abs()
+                        denom = a.abs().to(torch.float32).mean().clamp_min(1e-8)
+                        vit_pack = {
+                            "shape": list(a.shape),
+                            "dtype_pt": str(a.dtype),
+                            "dtype_trt": str(b.dtype),
+                            "max_abs": float(absd.max().item()),
+                            "mean_abs": float(absd.mean().item()),
+                            "rmse": float(torch.sqrt((diff * diff).mean()).item()),
+                            "mean_abs_rel_to_pt_mean_abs": float((absd.mean() / denom).item()),
+                        }
+                    else:
+                        vit_pack = {
+                            "shape_pt": list(getattr(a, "shape", ())),
+                            "shape_trt": list(getattr(b, "shape", ())),
+                            "error": "shape_mismatch",
+                        }
+            except Exception:
+                vit_pack = {"error": "exception"}
+
         return PredictionPack(
             pred_h=pred_a_pt[:action_horizon],
             gt_h=gt_a[:action_horizon],
@@ -100,6 +137,7 @@ class PtTrtCompareBackend(InferBackend):
             pred_h_ptq=None,
             infer_ms_pt=infer_ms_pt,
             infer_ms_second=infer_ms_second,
+            vit_pt_trt=vit_pack,
         )
 
 

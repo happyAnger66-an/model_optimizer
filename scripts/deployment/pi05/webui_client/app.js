@@ -1233,6 +1233,10 @@ function updateTop(event) {
       const n = el(id);
       if (n && typeof v === "number") n.textContent = v.toFixed(6);
     };
+    const setTxt = (id, v) => {
+      const n = el(id);
+      if (n) n.textContent = v == null ? "-" : String(v);
+    };
     if (dualPredMode()) {
       setNum("cmpMaePt", m.mae);
       setNum("cmpMsePt", m.mse);
@@ -1246,6 +1250,25 @@ function updateTop(event) {
         setNum("cmpMseTrt", m.mse_trt);
         setNum("cmpMaePair", m.mae_pt_trt);
         setNum("cmpMsePair", m.mse_pt_trt);
+      }
+      // Optional ViT PT vs TRT compare summary (only on chunk start).
+      const vb = el("vitCompareBlock");
+      const v = m.vit_pt_trt;
+      if (vb) {
+        if (v && typeof v === "object") {
+          vb.hidden = false;
+          setNum("vitCmpMaxAbs", v.max_abs);
+          setNum("vitCmpMeanAbs", v.mean_abs);
+          setNum("vitCmpRmse", v.rmse);
+          setNum("vitCmpRel", v.mean_abs_rel_to_pt_mean_abs);
+          if (Array.isArray(v.shape)) setTxt("vitCmpShape", v.shape.join("x"));
+          else if (v.shape_pt && v.shape_trt)
+            setTxt("vitCmpShape", `pt=${v.shape_pt.join("x")} trt=${v.shape_trt.join("x")}`);
+          else if (v.error) setTxt("vitCmpShape", `error=${v.error}`);
+          else setTxt("vitCmpShape", "-");
+        } else {
+          vb.hidden = true;
+        }
       }
     } else {
       if (typeof m.mae === "number") el("mae").textContent = m.mae.toFixed(6);

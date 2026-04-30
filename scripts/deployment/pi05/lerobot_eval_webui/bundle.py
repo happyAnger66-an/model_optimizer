@@ -259,6 +259,58 @@ def load_infer_bundle(
         )
         print(colored("[infer] compare_mode：PyTorch + TensorRT 双策略已就绪", "cyan"), flush=True)
         _p("policy_trt", "TensorRT 引擎已挂载（compare 双路就绪）")
+
+        if getattr(args, "vit_pt_trt_compare", False):
+            # 在 TRT 替换 get_image_features 之后挂 tap：同一输入下抓 PT vs TRT 的 ViT 输出差异（按 chunk）。
+            def _policy_torch_model(pol: Any) -> Any:
+                m = getattr(pol, "_model", None)
+                if m is not None:
+                    return m
+                inner = getattr(pol, "_policy", None)
+                if inner is not None:
+                    return getattr(inner, "_model", None)
+                return None
+
+            def _install_vit_tap(pol: Any, tag: str) -> None:
+                mdl = _policy_torch_model(pol)
+                if mdl is None:
+                    raise RuntimeError(f"vit_pt_trt_compare: cannot resolve policy torch model for {tag}")
+                mm = mdl.paligemma_with_expert.paligemma.model
+                orig = getattr(mm, "get_image_features", None)
+                if not callable(orig):
+                    raise RuntimeError(f"vit_pt_trt_compare: {tag} missing callable get_image_features")
+
+                def wrapped(pixel_values, *a, **kw):
+                    out = orig(pixel_values, *a, **kw)
+                    try:
+                        setattr(mm, f"_webui_last_vit_in_{tag}", pixel_values.detach())
+                    except Exception:
+                        setattr(mm, f"_webui_last_vit_in_{tag}", pixel_values)
+                    try:
+                        setattr(mm, f"_webui_last_vit_out_{tag}", out.detach())
+                    except Exception:
+                        setattr(mm, f"_webui_last_vit_out_{tag}", out)
+                    return out
+
+                mm.get_image_features = wrapped
+
+                def fetch_and_clear():
+                    x = getattr(mm, f"_webui_last_vit_in_{tag}", None)
+                    y = getattr(mm, f"_webui_last_vit_out_{tag}", None)
+                    for nm in (f"_webui_last_vit_in_{tag}", f"_webui_last_vit_out_{tag}"):
+                        if hasattr(mm, nm):
+                            try:
+                                delattr(mm, nm)
+                            except Exception:
+                                pass
+                    return x, y
+
+                setattr(pol, f"_webui_fetch_vit_io_{tag}", fetch_and_clear)
+
+            _p("vit_compare", "compare_mode：安装 ViT get_image_features tap（PT vs TRT）…")
+            _install_vit_tap(policy, "pt")
+            _install_vit_tap(policy_trt, "trt")
+            _p("vit_compare", "ViT tap 已安装（将按 chunk 推送 PT↔TRT 摘要）")
     elif args.ptq_compare:
         if args.ptq_quant_cfg is None or not Path(args.ptq_quant_cfg).is_file():
             raise ValueError("ptq_compare 需要有效的 --ptq-quant-cfg（存在的 .json 或定义 QUANT_CFG 的 .py）。")
@@ -482,6 +534,7 @@ def load_infer_bundle(
         "repo_id": data_config.repo_id,
         "backend": backend,
         "compare_mode": bool(args.compare_mode),
+        "vit_pt_trt_compare": bool(getattr(args, "vit_pt_trt_compare", False)),
         "ptq_compare": bool(args.ptq_compare),
         "ptq_trt_compare": bool(getattr(args, "ptq_trt_compare", False)),
         "ort_compare": bool(getattr(args, "ort_compare", False)),
