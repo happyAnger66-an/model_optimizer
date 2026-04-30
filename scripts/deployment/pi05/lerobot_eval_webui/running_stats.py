@@ -198,6 +198,45 @@ class RunningPerDimMsePctStats:
     """
 
     eps: float = 1e-12
+
+
+@dataclass
+class RunningVitCompareStats:
+    """ViT PT vs TRT(engine) 按 chunk 的累计均值统计（标量摘要）。"""
+
+    count: int = 0
+    mean_abs_sum: float = 0.0
+    max_abs_sum: float = 0.0
+    rmse_sum: float = 0.0
+    rel_sum: float = 0.0
+
+    def update_from_pack(self, pack: dict) -> None:
+        if not isinstance(pack, dict):
+            return
+        try:
+            ma = float(pack.get("mean_abs"))
+            xa = float(pack.get("max_abs"))
+            rs = float(pack.get("rmse"))
+            rl = float(pack.get("mean_abs_rel_to_pt_mean_abs"))
+        except Exception:
+            return
+        self.count += 1
+        self.mean_abs_sum += ma
+        self.max_abs_sum += xa
+        self.rmse_sum += rs
+        self.rel_sum += rl
+
+    def mean_abs_mean(self) -> float | None:
+        return float(self.mean_abs_sum / self.count) if self.count > 0 else None
+
+    def max_abs_mean(self) -> float | None:
+        return float(self.max_abs_sum / self.count) if self.count > 0 else None
+
+    def rmse_mean(self) -> float | None:
+        return float(self.rmse_sum / self.count) if self.count > 0 else None
+
+    def rel_mean(self) -> float | None:
+        return float(self.rel_sum / self.count) if self.count > 0 else None
     err2_sum: list[float] | None = None
     gt2_sum: list[float] | None = None
     count: int = 0

@@ -85,6 +85,7 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     per_dim_mse_pct_ptq: RunningPerDimMsePctStats | None = bundle.get("running_per_dim_mse_pct_ptq")
     per_dim_rel_p99_ptq: RunningPerDimRelP99Stats | None = bundle.get("running_per_dim_rel_p99_ptq")
     pair_mse_pt_ptq: RunningPerDimPairMseStats | None = bundle.get("running_pt_ptq_mse_per_dim")
+    running_vit = bundle.get("running_vit_pt_trt")
 
     stride_ok = (idx - start_index) % action_horizon == 0
     chunk_fits = idx + action_horizon <= n and idx + action_horizon <= end
@@ -206,8 +207,38 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
             "mae_per_dim": [float(np.abs(dpt_flat[i])) for i in range(int(dpt_flat.size))],
             "mse_per_dim": [float(dpt_flat[i] * dpt_flat[i]) for i in range(int(dpt_flat.size))],
         }
-        if k == 0 and isinstance(vit_pt_trt, dict) and vit_pt_trt:
-            metrics["vit_pt_trt"] = vit_pt_trt
+        # ViT PT vs TRT: attach scalar metrics every step for curve plotting,
+        # and update running mean once per chunk (k==0).
+        if isinstance(vit_pt_trt, dict) and vit_pt_trt and isinstance(running_vit, object):
+            if k == 0 and hasattr(running_vit, "update_from_pack"):
+                try:
+                    running_vit.update_from_pack(vit_pt_trt)
+                except Exception:
+                    pass
+            cur_mean_abs = vit_pt_trt.get("mean_abs")
+            cur_rmse = vit_pt_trt.get("rmse")
+            if isinstance(cur_mean_abs, (int, float)):
+                metrics["vit_mean_abs"] = float(cur_mean_abs)
+            if isinstance(cur_rmse, (int, float)):
+                metrics["vit_rmse"] = float(cur_rmse)
+            # running (cumulative) mean across chunks
+            if hasattr(running_vit, "mean_abs_mean"):
+                try:
+                    v = running_vit.mean_abs_mean()
+                    if v is not None:
+                        metrics["vit_mean_abs_cum"] = float(v)
+                except Exception:
+                    pass
+            if hasattr(running_vit, "rmse_mean"):
+                try:
+                    v = running_vit.rmse_mean()
+                    if v is not None:
+                        metrics["vit_rmse_cum"] = float(v)
+                except Exception:
+                    pass
+            if k == 0:
+                # keep the full pack on chunk start for detailed panel
+                metrics["vit_pt_trt"] = vit_pt_trt
         pred_trt_list: list[float] | None = None
         pred_ptq_list: list[float] | None = None
         timing: dict[str, float] | None = None

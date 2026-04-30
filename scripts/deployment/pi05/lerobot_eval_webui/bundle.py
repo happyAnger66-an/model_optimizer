@@ -27,6 +27,7 @@ from .running_stats import (
     RunningPerDimMsePctStats,
     RunningPerDimPairMseStats,
     RunningPerDimRelP99Stats,
+    RunningVitCompareStats,
 )
 from .onnxrt_backend import load_onnxrt_engines
 from .tensorrt_backend import load_tensorrt_engines
@@ -676,6 +677,7 @@ def load_infer_bundle(
         "running_err_stats": RunningErrorStats(),
         "running_per_dim_mse_pct": RunningPerDimMsePctStats(),
         "running_per_dim_rel_p99": RunningPerDimRelP99Stats(),
+        "running_vit_pt_trt": RunningVitCompareStats(),
         "trt_ort_compare": bool(getattr(args, "trt_ort_compare", False)),
         "trt_trt_compare": bool(getattr(args, "trt_trt_compare", False)),
     }

@@ -972,6 +972,22 @@ const metricsLayouts = new Map();
 const METRIC_CHART_DEFS = [
   { id: "chart-mae", cardTitle: "MAE", yLabel: "MAE", seriesKey: "mae", traceName: "mae", colorKey: "maeLine" },
   { id: "chart-mse", cardTitle: "MSE", yLabel: "MSE", seriesKey: "mse", traceName: "mse", colorKey: "mseLine" },
+  {
+    id: "chart-vit-mean-abs",
+    cardTitle: "ViT mean_abs (PT−TRT)",
+    yLabel: "mean_abs",
+    seriesKey: "vit_mean_abs",
+    traceName: "vit_mean_abs",
+    kind: "scalar",
+  },
+  {
+    id: "chart-vit-rmse",
+    cardTitle: "ViT rmse (PT−TRT)",
+    yLabel: "rmse",
+    seriesKey: "vit_rmse",
+    traceName: "vit_rmse",
+    kind: "scalar",
+  },
 ];
 
 const state = {
@@ -986,6 +1002,7 @@ const state = {
   gt: new Map(), // dim -> []
   pred: new Map(), // dim -> []
   pred_trt: new Map(), // dim -> [] compare_mode
+  scalar: new Map(), // seriesKey -> []
 };
 
 /** 已收到的 ``type=step`` 条数（当前 meta run） */
@@ -1188,6 +1205,7 @@ function resetSeries() {
   state.gt = new Map();
   state.pred = new Map();
   state.pred_trt = new Map();
+  state.scalar = new Map();
   for (const d of state.dims) {
     state.gt.set(d, []);
     state.pred.set(d, []);
@@ -1196,6 +1214,10 @@ function resetSeries() {
     state.msePerDim.set(d, []);
     state.maePtTrtPerDim.set(d, []);
     state.msePtTrtPerDim.set(d, []);
+  }
+  // scalar series (windowed)
+  for (const k of ["vit_mean_abs", "vit_mean_abs_cum", "vit_rmse", "vit_rmse_cum"]) {
+    state.scalar.set(k, []);
   }
 }
 
@@ -1475,6 +1497,14 @@ function traceTemplatesEmpty() {
 function buildMetricTracesFromState(def) {
   const xArr = [...state.x];
   const sk = def.seriesKey;
+  if (def.kind === "scalar") {
+    const y0 = [...(state.scalar.get(sk) || [])];
+    const y1 = [...(state.scalar.get(`${sk}_cum`) || [])];
+    return [
+      { x: xArr, y: y0, mode: "lines", name: sk, line: { width: 2, color: PLOTLY_THEME[state.theme]?.maeLine || "#059669" } },
+      { x: xArr, y: y1, mode: "lines", name: `${sk}_cum`, line: { width: 2, dash: "dash", color: PLOTLY_THEME[state.theme]?.comparePair || "#64748b" } },
+    ];
+  }
   const traces = [];
   for (let i = 0; i < state.dims.length; i++) {
     const d = state.dims[i];
@@ -1500,6 +1530,12 @@ function buildMetricTracesFromState(def) {
  * 强制 purge + newPlot，避免 Plotly.react 多次合并后出现多余 trace（例如 3 条线）。
  */
 function emptyMetricTraces(def) {
+  if (def.kind === "scalar") {
+    return [
+      { x: [], y: [], mode: "lines", name: def.seriesKey, line: { width: 2 } },
+      { x: [], y: [], mode: "lines", name: `${def.seriesKey}_cum`, line: { width: 2, dash: "dash" } },
+    ];
+  }
   const traces = [];
   for (let i = 0; i < state.dims.length; i++) {
     const d = state.dims[i];
@@ -1929,6 +1965,28 @@ function pushPoint(event) {
         while (mseP.length > state.windowSize) mseP.shift();
       }
     }
+
+    // scalar series (ViT compare)
+    if (meta?.vit_pt_trt_compare) {
+      const s0 = state.scalar.get("vit_mean_abs");
+      const s0c = state.scalar.get("vit_mean_abs_cum");
+      const s1 = state.scalar.get("vit_rmse");
+      const s1c = state.scalar.get("vit_rmse_cum");
+      if (s0 && s0c && s1 && s1c) {
+        const v0 = typeof met.vit_mean_abs === "number" ? met.vit_mean_abs : null;
+        const v0c = typeof met.vit_mean_abs_cum === "number" ? met.vit_mean_abs_cum : null;
+        const v1 = typeof met.vit_rmse === "number" ? met.vit_rmse : null;
+        const v1c = typeof met.vit_rmse_cum === "number" ? met.vit_rmse_cum : null;
+        s0.push(v0);
+        s0c.push(v0c);
+        s1.push(v1);
+        s1c.push(v1c);
+        while (s0.length > state.windowSize) s0.shift();
+        while (s0c.length > state.windowSize) s0c.shift();
+        while (s1.length > state.windowSize) s1.shift();
+        while (s1c.length > state.windowSize) s1c.shift();
+      }
+    }
   }
 
   const xArr = [...state.x];
@@ -1995,6 +2053,25 @@ function pushPoint(event) {
         const layout = layoutFallback();
         metricsLayouts.set(def.id, layout);
         Plotly.newPlot(gd, buildMetricTracesFromState(def), layout, { displayModeBar: false, responsive: true });
+      }
+    }
+  }
+
+  if (!isMetricsFoldCollapsed() && isPlotlyLoaded()) {
+    for (const def of METRIC_CHART_DEFS) {
+      if (def.kind !== "scalar") continue;
+      const gd = document.getElementById(def.id);
+      if (!gd) continue;
+      try {
+        if (!gd.data || gd.data.length < 2) {
+          const layout = metricsLayouts.get(def.id) || metricsChartLayout(def);
+          metricsLayouts.set(def.id, layout);
+          Plotly.newPlot(gd, buildMetricTracesFromState(def), layout, { displayModeBar: false, responsive: true });
+          continue;
+        }
+        Plotly.restyle(gd, buildMetricTracesFromState(def));
+      } catch (e) {
+        /* ignore */
       }
     }
   }
