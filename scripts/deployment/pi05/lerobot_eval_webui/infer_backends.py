@@ -100,8 +100,8 @@ class PtTrtCompareBackend(InferBackend):
         fetch_trt = getattr(policy_trt, "_webui_fetch_vit_io_trt", None)
         if callable(fetch_pt) and callable(fetch_trt):
             try:
-                x_pt, y_pt = fetch_pt()
-                x_trt, y_trt = fetch_trt()
+                x_pt, y_pt, s_pt = fetch_pt()
+                x_trt, y_trt, s_trt = fetch_trt()
                 # We expect both paths to call get_image_features once per chunk.
                 if y_pt is not None and y_trt is not None and hasattr(y_pt, "detach") and hasattr(y_trt, "detach"):
                     import torch
@@ -127,6 +127,13 @@ class PtTrtCompareBackend(InferBackend):
                             "shape_trt": list(getattr(b, "shape", ())),
                             "error": "shape_mismatch",
                         }
+                if vit_pack is None:
+                    vit_pack = {}
+                # Attach input pixel_values stats for sanity check.
+                if isinstance(s_pt, dict):
+                    vit_pack["input_pt"] = s_pt
+                if isinstance(s_trt, dict):
+                    vit_pack["input_trt"] = s_trt
             except Exception:
                 vit_pack = {"error": "exception"}
 

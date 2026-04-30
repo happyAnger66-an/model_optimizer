@@ -1294,6 +1294,19 @@ function updateTop(event) {
             setTxt("vitCmpShape", `pt=${vv.shape_pt.join("x")} trt=${vv.shape_trt.join("x")}`);
           else if (vv.error) setTxt("vitCmpShape", `error=${vv.error}`);
           else setTxt("vitCmpShape", "-");
+
+          const fmtIn = (inp) => {
+            if (!inp || typeof inp !== "object") return "-";
+            const sh = Array.isArray(inp.shape) ? inp.shape.join("x") : "?";
+            const dt = typeof inp.dtype === "string" ? inp.dtype : "?";
+            const mn = typeof inp.min === "number" ? inp.min.toFixed(6) : "?";
+            const mx = typeof inp.max === "number" ? inp.max.toFixed(6) : "?";
+            const me = typeof inp.mean === "number" ? inp.mean.toFixed(6) : "?";
+            const sd = typeof inp.std === "number" ? inp.std.toFixed(6) : "?";
+            return `shape=${sh} dtype=${dt} min=${mn} max=${mx} mean=${me} std=${sd}`;
+          };
+          setTxt("vitCmpInPt", fmtIn(vv.input_pt));
+          setTxt("vitCmpInTrt", fmtIn(vv.input_trt));
         }
       }
     } else {

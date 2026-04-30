@@ -281,12 +281,33 @@ def load_infer_bundle(
                 if not callable(orig):
                     raise RuntimeError(f"vit_pt_trt_compare: {tag} missing callable get_image_features")
 
+                def _tensor_stats(x: Any) -> dict[str, Any] | None:
+                    try:
+                        import torch
+
+                        if not torch.is_tensor(x):
+                            return None
+                        t = x.detach()
+                        # Use float32 for stable statistics; keep it cheap (no flatten copy).
+                        tf = t.to(torch.float32)
+                        return {
+                            "shape": list(t.shape),
+                            "dtype": str(t.dtype),
+                            "min": float(tf.amin().item()),
+                            "max": float(tf.amax().item()),
+                            "mean": float(tf.mean().item()),
+                            "std": float(tf.std(unbiased=False).item()),
+                        }
+                    except Exception:
+                        return None
+
                 def wrapped(pixel_values, *a, **kw):
                     out = orig(pixel_values, *a, **kw)
                     try:
                         setattr(mm, f"_webui_last_vit_in_{tag}", pixel_values.detach())
                     except Exception:
                         setattr(mm, f"_webui_last_vit_in_{tag}", pixel_values)
+                    setattr(mm, f"_webui_last_vit_in_stats_{tag}", _tensor_stats(pixel_values))
                     try:
                         setattr(mm, f"_webui_last_vit_out_{tag}", out.detach())
                     except Exception:
@@ -298,13 +319,18 @@ def load_infer_bundle(
                 def fetch_and_clear():
                     x = getattr(mm, f"_webui_last_vit_in_{tag}", None)
                     y = getattr(mm, f"_webui_last_vit_out_{tag}", None)
-                    for nm in (f"_webui_last_vit_in_{tag}", f"_webui_last_vit_out_{tag}"):
+                    s = getattr(mm, f"_webui_last_vit_in_stats_{tag}", None)
+                    for nm in (
+                        f"_webui_last_vit_in_{tag}",
+                        f"_webui_last_vit_out_{tag}",
+                        f"_webui_last_vit_in_stats_{tag}",
+                    ):
                         if hasattr(mm, nm):
                             try:
                                 delattr(mm, nm)
                             except Exception:
                                 pass
-                    return x, y
+                    return x, y, s
 
                 setattr(pol, f"_webui_fetch_vit_io_{tag}", fetch_and_clear)
 

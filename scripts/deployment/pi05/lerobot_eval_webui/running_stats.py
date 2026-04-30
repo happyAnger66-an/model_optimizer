@@ -198,6 +198,43 @@ class RunningPerDimMsePctStats:
     """
 
     eps: float = 1e-12
+    err2_sum: list[float] | None = None
+    gt2_sum: list[float] | None = None
+    count: int = 0
+
+    def ensure_dim(self, dim: int) -> None:
+        d = int(dim)
+        if d <= 0:
+            raise ValueError("dim must be > 0")
+        if self.err2_sum is not None and len(self.err2_sum) == d:
+            return
+        self.err2_sum = [0.0 for _ in range(d)]
+        self.gt2_sum = [0.0 for _ in range(d)]
+        self.count = 0
+
+    def update(self, diff_vec, gt_vec) -> None:
+        if self.err2_sum is None or self.gt2_sum is None:
+            self.ensure_dim(len(diff_vec))
+        assert self.err2_sum is not None and self.gt2_sum is not None
+        if len(diff_vec) != len(self.err2_sum):
+            self.ensure_dim(len(diff_vec))
+        for i, (dv, gv) in enumerate(zip(diff_vec, gt_vec)):
+            d = float(dv)
+            g = float(gv)
+            self.err2_sum[i] += d * d
+            self.gt2_sum[i] += g * g
+        self.count += 1
+
+    def mse_pct_mean(self) -> list[float] | None:
+        if self.err2_sum is None or self.gt2_sum is None or self.count <= 0:
+            return None
+        out: list[float] = []
+        c = float(self.count)
+        for e2, g2 in zip(self.err2_sum, self.gt2_sum):
+            mse = e2 / c
+            g_pow = g2 / c
+            out.append(float(100.0 * mse / (g_pow + float(self.eps))))
+        return out
 
 
 @dataclass
@@ -237,43 +274,6 @@ class RunningVitCompareStats:
 
     def rel_mean(self) -> float | None:
         return float(self.rel_sum / self.count) if self.count > 0 else None
-    err2_sum: list[float] | None = None
-    gt2_sum: list[float] | None = None
-    count: int = 0
-
-    def ensure_dim(self, dim: int) -> None:
-        d = int(dim)
-        if d <= 0:
-            raise ValueError("dim must be > 0")
-        if self.err2_sum is not None and len(self.err2_sum) == d:
-            return
-        self.err2_sum = [0.0 for _ in range(d)]
-        self.gt2_sum = [0.0 for _ in range(d)]
-        self.count = 0
-
-    def update(self, diff_vec, gt_vec) -> None:
-        if self.err2_sum is None or self.gt2_sum is None:
-            self.ensure_dim(len(diff_vec))
-        assert self.err2_sum is not None and self.gt2_sum is not None
-        if len(diff_vec) != len(self.err2_sum):
-            self.ensure_dim(len(diff_vec))
-        for i, (dv, gv) in enumerate(zip(diff_vec, gt_vec)):
-            d = float(dv)
-            g = float(gv)
-            self.err2_sum[i] += d * d
-            self.gt2_sum[i] += g * g
-        self.count += 1
-
-    def mse_pct_mean(self) -> list[float] | None:
-        if self.err2_sum is None or self.gt2_sum is None or self.count <= 0:
-            return None
-        out: list[float] = []
-        c = float(self.count)
-        for e2, g2 in zip(self.err2_sum, self.gt2_sum):
-            mse = e2 / c
-            g_pow = g2 / c
-            out.append(float(100.0 * mse / (g_pow + float(self.eps))))
-        return out
 
 
 @dataclass
