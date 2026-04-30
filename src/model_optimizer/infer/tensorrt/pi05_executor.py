@@ -147,7 +147,7 @@ class Pi05TensorRTExecutor(Executor):
                             h = int(self.pi05_model.paligemma_with_expert.paligemma.config.text_config.hidden_size)
                         except Exception:
                             h = 2048
-                        print(colored(f"engine hidden_size: {h}", "green"))
+                        #print(colored(f"engine hidden_size: {h}", "green"))
                         scale = float(math.sqrt(float(h)))
                         # Use fp32 mul for stability, cast back to original dtype.
                         out = (out.to(torch.float32) * scale).to(out.dtype)
