@@ -2,6 +2,7 @@ from openpi.policies.libero_policy import make_libero_example
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field
+import importlib.util
 import logging
 import os
 from pathlib import Path
@@ -281,11 +282,41 @@ def get_data_loader(config):
     return loader
 
 
+def load_train_config(config_ref: str) -> _config.TrainConfig:
+    """Resolve a training config from a registry name or a Python file path.
+
+    - If ``config_ref`` points to an existing ``.py`` file, the module is executed and the first
+      of ``cfg``, ``config``, or ``train_config`` that is a :class:`openpi.training.config.TrainConfig`
+      is returned (typical pattern: ``cfg = TrainConfig(...)`` in project config files).
+    - Otherwise ``config_ref`` is passed to :func:`openpi.training.config.get_config`.
+    """
+    path = Path(config_ref).expanduser()
+    if path.is_file() and path.suffix == ".py":
+        mod_name = f"_standalone_inference_cfg_{path.stem}"
+        spec = importlib.util.spec_from_file_location(mod_name, str(path.resolve()))
+        if spec is None or spec.loader is None:
+            raise ValueError(f"Cannot load config module from {config_ref!r}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        tc = _config.TrainConfig
+        for attr in ("cfg", "config", "train_config"):
+            if hasattr(mod, attr):
+                obj = getattr(mod, attr)
+                if isinstance(obj, tc):
+                    logging.info("Loaded TrainConfig from %s (attribute %r)", path, attr)
+                    return obj
+        raise ValueError(
+            f"File {path} does not define a TrainConfig instance. "
+            "Define one of: cfg, config, or train_config = TrainConfig(...)."
+        )
+    return _config.get_config(config_ref)
+
+
 @dataclass
 class ArgsConfig:
     """Configuration for evaluating a policy."""
     config_name: str = "pi05_libero"
-    """Config name to use."""
+    """Registered config name (``get_config``) **or** path to a ``.py`` file that sets ``cfg = TrainConfig(...)``."""
 
     host: str = "127.0.0.1"
     """Host to connect to."""
@@ -408,7 +439,7 @@ def main(args: ArgsConfig):
     model_load_start = time.time()
 
     if local_model_path is not None:
-        config = _config.get_config(args.config_name)
+        config = load_train_config(args.config_name)
 #        checkpoint_dir = download.maybe_download(
 #           "gs://openpi-assets/checkpoints/pi0_fast_droid")
         checkpoint_dir = local_model_path

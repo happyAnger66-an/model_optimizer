@@ -239,8 +239,14 @@ def apply_layer_precision_overrides(
             else:  # onnx_token_glob
                 # Extract individual ONNX Layer tokens from metadata and match against token strings.
                 # Example token: "/time_mlp_in/Gemm"
-                # Metadata tokens look like: "[ONNX Layer: /foo/bar]" (possibly concatenated).
+                # Many TRT builds store "[ONNX Layer: /foo/bar]" in metadata; some layers (e.g. fused
+                # kgen) expose only the bare ONNX path "/foo/bar" with no bracket wrapper — in that
+                # case bracket-regex finds nothing; fall back to matching the full stripped string.
                 toks = re.findall(r"\[ONNX Layer: ([^\]]+)\]", lmeta)
+                if not toks:
+                    s = lmeta.strip()
+                    if s:
+                        toks = [s]
                 ok = any(fnmatch.fnmatch(tok, k) for tok in toks)
             if not ok:
                 continue
@@ -387,11 +393,12 @@ def build_engine(
             若为 True，在加载自定义库之前调用 ``trt.init_libnvinfer_plugins``，注册随
             TensorRT 安装的 ``libnvinfer_plugin`` 等内置插件（常见 ONNX 自定义域会依赖）。
         strongly_typed_network:
-            若为 True（默认），创建网络时附加 ``STRONGLY_TYPED``，与 TRT 10+ 在
+            若为 True，创建网络时附加 ``STRONGLY_TYPED``，与 TRT 10+ 在
             ``selectIODTypesForPluginV3...`` 中的类型推断一致；含 ``trt::AttentionPlugin``
             等自定义插件时，可避免出现
             ``doesn't report any supported format combinations``（弱类型图 + 插件 I/O
             不匹配）。若解析失败可改为 False 试旧行为。
+            注意：``STRONGLY_TYPED`` 下 ``layer_precision_overrides`` 不会生效（见下方实现）。
 
     注意：TensorRT-Edge-LLM 的 AttentionPlugin 在 ONNX schema 中多为 **FP16** 张量；
     若 ``precision="bf16"`` 建引擎仍报插件格式组合错误，请将 **ONNX 导出为 FP16**
@@ -477,6 +484,16 @@ def build_engine(
         print(colored(f"  Output {i}: {out.name} {out.shape}", print_color))
 
     # Apply per-layer precision overrides (only for non-STRONGLY_TYPED networks)
+    if layer_precision_overrides and strongly_typed_network:
+        logger.warning(
+            "layer_precision_overrides are ignored when strongly_typed_network=True "
+            "(per-layer precision is not applied on STRONGLY_TYPED networks). "
+            "Set strongly_typed_network=False to use overrides, or set dtypes in the ONNX graph."
+        )
+        print(colored(
+            "WARNING: layer_precision_overrides ignored (strongly_typed_network=True).",
+            "yellow",
+        ))
     if layer_precision_overrides and not strongly_typed_network:
         n = apply_layer_precision_overrides(
             network,

@@ -39,7 +39,7 @@ class Vit(torch.nn.Module, Model):
         self.eval().cuda()
 
         pixel_values = torch.randn(
-            (1, 3, 224, 224), dtype=torch.bfloat16, device="cuda")
+            (1, 3, 224, 224), dtype=torch.float32, device="cuda")
 
         output_dir = export_dir
         os.makedirs(output_dir, exist_ok=True)
@@ -84,11 +84,11 @@ class Vit(torch.nn.Module, Model):
 
     @classmethod
     def export_onnx(cls, pi05_model, export_dir):
-        vit_model = cls.construct_model(pi05_model, dtype=torch.float16)
+        vit_model = cls.construct_model(pi05_model, dtype=torch.bfloat16)
         vit_model.eval().cuda()
 
         pixel_values = torch.randn(
-            (1, 3, 224, 224), dtype=torch.float16, device="cuda")
+            (1, 3, 224, 224), dtype=torch.bfloat16, device="cuda")
 
         output_dir = export_dir
         os.makedirs(output_dir, exist_ok=True)
@@ -121,7 +121,7 @@ class Vit(torch.nn.Module, Model):
             self, quant_cfg, calib_dataloader, measure_quant_error=measure_quant_error
         )
         self.is_quantized = True
-        set_dynamic_quant(self, "fp16")
+        set_dynamic_quant(self, "bf16")
 
         self.export(export_dir, dynamo=False)
         if is_nvfp4_quantized(quant_cfg):
