@@ -163,6 +163,16 @@ class PtTrtCompareBackend(InferBackend):
                         mean_abs_i = float(absd.mean().item())
                         rmse_i = float(torch.sqrt((diff * diff).mean()).item())
                         rel_i = float((absd.mean() / denom).item())
+                        # Heuristic: check whether scale mismatch equals sqrt(hidden_size)=sqrt(D).
+                        d_last = int(a.shape[-1]) if hasattr(a, "shape") and len(a.shape) > 0 else 0
+                        scale = float(d_last**0.5) if d_last > 0 else 1.0
+                        a_scaled = a / scale if scale and scale > 0 else a
+                        diff_s = (a_scaled - b).to(torch.float32)
+                        absd_s = diff_s.abs()
+                        denom_s = a_scaled.abs().to(torch.float32).mean().clamp_min(1e-8)
+                        mean_abs_s = float(absd_s.mean().item())
+                        rmse_s = float(torch.sqrt((diff_s * diff_s).mean()).item())
+                        rel_s = float((absd_s.mean() / denom_s).item())
                         per_call.append(
                             {
                                 "i": i,
@@ -170,6 +180,10 @@ class PtTrtCompareBackend(InferBackend):
                                 "mean_abs": mean_abs_i,
                                 "rmse": rmse_i,
                                 "rel": rel_i,
+                                "scale_sqrt_d": float(scale),
+                                "mean_abs_scaled": mean_abs_s,
+                                "rmse_scaled": rmse_s,
+                                "rel_scaled": rel_s,
                                 "input_pt": calls_pt[i].get("in_stats", None),
                                 "input_trt": calls_trt[i].get("in_stats", None),
                                 "out_pt": _tstats(a),

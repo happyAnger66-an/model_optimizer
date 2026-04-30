@@ -1313,6 +1313,13 @@ function updateTop(event) {
             const me = typeof c.mean_abs === "number" ? c.mean_abs.toFixed(6) : "?";
             const rm = typeof c.rmse === "number" ? c.rmse.toFixed(6) : "?";
             const rl = typeof c.rel === "number" ? c.rel.toFixed(6) : "?";
+            const sc = typeof c.scale_sqrt_d === "number" ? c.scale_sqrt_d.toFixed(3) : null;
+            const meS = typeof c.mean_abs_scaled === "number" ? c.mean_abs_scaled.toFixed(6) : null;
+            const rmS = typeof c.rmse_scaled === "number" ? c.rmse_scaled.toFixed(6) : null;
+            const rlS = typeof c.rel_scaled === "number" ? c.rel_scaled.toFixed(6) : null;
+            if (sc && meS && rmS && rlS) {
+              return `[${idx}] raw(ma=${me},rm=${rm},rel=${rl}) scaled(/√D=${sc}): (ma=${meS},rm=${rmS},rel=${rlS}) max_abs=${ma}`;
+            }
             return `[${idx}] max_abs=${ma} mean_abs=${me} rmse=${rm} rel=${rl}`;
           };
           if (Array.isArray(vv.calls) && vv.calls.length > 0) {
