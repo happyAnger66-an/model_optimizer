@@ -4,6 +4,7 @@ import types
 import warnings
 from collections.abc import Mapping
 from functools import partial
+import math
 
 from termcolor import colored
 import torch
@@ -132,7 +133,24 @@ class Pi05TensorRTExecutor(Executor):
                     perf=True)
 
                 def get_image_features(pixel_values):
-                    return vit_engine(pixel_values)
+                    out = vit_engine(pixel_values)
+                    # Workaround: some vit.engine artifacts are scaled by 1/sqrt(hidden_size) relative to PyTorch.
+                    # Enable to match HF PaligemmaModel.get_image_features behavior.
+                    if os.environ.get("PI05_TRT_VIT_SCALE_FIX", "").strip().lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                        "y",
+                        "on",
+                    ):
+                        try:
+                            h = int(self.pi05_model.paligemma_with_expert.paligemma.config.text_config.hidden_size)
+                        except Exception:
+                            h = 2048
+                        scale = float(math.sqrt(float(h)))
+                        # Use fp32 mul for stability, cast back to original dtype.
+                        out = (out.to(torch.float32) * scale).to(out.dtype)
+                    return out
 
                 self.pi05_model.paligemma_with_expert.paligemma.model.get_image_features = get_image_features
 
