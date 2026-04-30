@@ -75,10 +75,10 @@ class Vit(torch.nn.Module, Model):
         return cls.construct_model(pi05_model)
 
     @classmethod
-    def construct_model(cls, pi05_model, dtype=torch.float16):
+    def construct_model(cls, pi05_model, dtype=torch.bfloat16):
         vit_model = cls(pi05_model.paligemma_with_expert.paligemma.config,
                         pi05_model.paligemma_with_expert.paligemma.model.vision_tower,
-                        pi05_model.paligemma_with_expert.paligemma.model.multi_modal_projector).to(dtype)
+                        pi05_model.paligemma_with_expert.paligemma.model.multi_modal_projector)
         # pi05_model.paligemma_with_expert.paligemma.model.multi_modal_projector).to(dtype)
         return vit_model
 
