@@ -1,4 +1,5 @@
 from ..model import Model
+import contextlib
 import os
 import time
 import torch
@@ -12,6 +13,47 @@ from model_optimizer.quantization.quantization_utils import quantize_model
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _sdp_math_backend_only():
+    """Force SDPA math path so TorchScript ONNX tracing avoids ops that hit ComplexDouble."""
+    try:
+        from torch.nn.attention import SDPBackend
+        from torch.nn.attention import sdpa_kernel
+
+        with sdpa_kernel(SDPBackend.MATH):
+            yield
+        return
+    except Exception:
+        pass
+    torch_cuda = getattr(torch.backends, "cuda", None)
+    sdp_kernel_fn = getattr(torch_cuda, "sdp_kernel", None) if torch_cuda is not None else None
+    if sdp_kernel_fn is not None:
+        with sdp_kernel_fn(
+            enable_flash=False,
+            enable_mem_efficient=False,
+            enable_math=True,
+        ):
+            yield
+    else:
+        yield
+
+
+@contextlib.contextmanager
+def _force_vision_eager_attention_temporarily(vision_tower: torch.nn.Module):
+    """SigLIP blocks: use eager attention (matmul) during ONNX export (avoids SDPA export issues)."""
+    cfg = getattr(vision_tower, "config", None)
+    if cfg is None or not hasattr(cfg, "_attn_implementation"):
+        yield
+        return
+    saved = getattr(cfg, "_attn_implementation", None)
+    try:
+        setattr(cfg, "_attn_implementation", "eager")
+        yield
+    finally:
+        if saved is not None:
+            setattr(cfg, "_attn_implementation", saved)
 
 
 class Vit(torch.nn.Module, Model):
@@ -47,21 +89,23 @@ class Vit(torch.nn.Module, Model):
         logger.info("Start export onnx ...")
         print(colored(f"Start Vit export onnx...", "green"))
         with torch.inference_mode():
-            torch.onnx.export(
-                self,
-                (pixel_values),  # Include position_ids in ONNX export
-                f"{output_dir}/vit.onnx",
-                # Add position_ids to input names
-                input_names=["pixel_values"],
-                output_names=["image_features"],
-                opset_version=19,
-                dynamo=dynamo,
-                do_constant_folding=True,
-                #                dynamic_axes={
-                #                    "pixel_values": {0: "batch_size"},
-                #                    "vit_embeds": {0: "batch_size"},
-                #                },
-            )
+            with _force_vision_eager_attention_temporarily(self.vision_tower):
+                with _sdp_math_backend_only():
+                    torch.onnx.export(
+                        self,
+                        (pixel_values),  # Include position_ids in ONNX export
+                        f"{output_dir}/vit.onnx",
+                        # Add position_ids to input names
+                        input_names=["pixel_values"],
+                        output_names=["image_features"],
+                        opset_version=19,
+                        dynamo=dynamo,
+                        do_constant_folding=True,
+                        #                dynamic_axes={
+                        #                    "pixel_values": {0: "batch_size"},
+                        #                    "vit_embeds": {0: "batch_size"},
+                        #                },
+                    )
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
         print(
@@ -95,21 +139,23 @@ class Vit(torch.nn.Module, Model):
         start = time.time()
         logger.info("Start export onnx ...")
         with torch.inference_mode():
-            torch.onnx.export(
-                vit_model,
-                (pixel_values),  # Include position_ids in ONNX export
-                f"{output_dir}/vit.onnx",
-                # Add position_ids to input names
-                input_names=["pixel_values"],
-                output_names=["vit_embeds"],
-                opset_version=19,
-                dynamo=False,
-                do_constant_folding=True,
-                dynamic_axes={
-                    "pixel_values": {0: "batch_size"},
-                    "vit_embeds": {0: "batch_size"},
-                },
-            )
+            with _force_vision_eager_attention_temporarily(vit_model.vision_tower):
+                with _sdp_math_backend_only():
+                    torch.onnx.export(
+                        vit_model,
+                        (pixel_values),  # Include position_ids in ONNX export
+                        f"{output_dir}/vit.onnx",
+                        # Add position_ids to input names
+                        input_names=["pixel_values"],
+                        output_names=["vit_embeds"],
+                        opset_version=19,
+                        dynamo=False,
+                        do_constant_folding=True,
+                        dynamic_axes={
+                            "pixel_values": {0: "batch_size"},
+                            "vit_embeds": {0: "batch_size"},
+                        },
+                    )
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
         return vit_model
