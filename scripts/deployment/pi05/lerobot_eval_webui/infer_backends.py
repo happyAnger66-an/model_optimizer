@@ -110,6 +110,23 @@ class PtTrtCompareBackend(InferBackend):
                 else:
                     import torch
 
+                    def _tstats(t):
+                        if t is None or not hasattr(t, "detach"):
+                            return None
+                        try:
+                            tt = t.detach()
+                            tf = tt.to(torch.float32)
+                            return {
+                                "shape": list(tt.shape),
+                                "dtype": str(tt.dtype),
+                                "min": float(tf.amin().item()),
+                                "max": float(tf.amax().item()),
+                                "mean": float(tf.mean().item()),
+                                "std": float(tf.std(unbiased=False).item()),
+                            }
+                        except Exception:
+                            return None
+
                     per_call = []
                     max_abs_overall = 0.0
                     mean_abs_sum = 0.0
@@ -155,6 +172,8 @@ class PtTrtCompareBackend(InferBackend):
                                 "rel": rel_i,
                                 "input_pt": calls_pt[i].get("in_stats", None),
                                 "input_trt": calls_trt[i].get("in_stats", None),
+                                "out_pt": _tstats(a),
+                                "out_trt": _tstats(b),
                             }
                         )
                         max_abs_overall = max(max_abs_overall, max_abs_i)

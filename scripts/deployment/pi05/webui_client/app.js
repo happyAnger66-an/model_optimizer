@@ -1305,23 +1305,48 @@ function updateTop(event) {
             const sd = typeof inp.std === "number" ? inp.std.toFixed(6) : "?";
             return `shape=${sh} dtype=${dt} min=${mn} max=${mx} mean=${me} std=${sd}`;
           };
+          const fmtCall = (c) => {
+            if (!c || typeof c !== "object") return "-";
+            const idx = typeof c.i === "number" ? c.i : "?";
+            if (c.error) return `[${idx}] error=${c.error}`;
+            const ma = typeof c.max_abs === "number" ? c.max_abs.toFixed(6) : "?";
+            const me = typeof c.mean_abs === "number" ? c.mean_abs.toFixed(6) : "?";
+            const rm = typeof c.rmse === "number" ? c.rmse.toFixed(6) : "?";
+            const rl = typeof c.rel === "number" ? c.rel.toFixed(6) : "?";
+            return `[${idx}] max_abs=${ma} mean_abs=${me} rmse=${rm} rel=${rl}`;
+          };
           if (Array.isArray(vv.calls) && vv.calls.length > 0) {
             const linesPt = [];
             const linesTrt = [];
+            const linesCalls = [];
+            const linesOutPt = [];
+            const linesOutTrt = [];
             for (const c of vv.calls.slice(0, 6)) {
               const idx = typeof c.i === "number" ? c.i : "?";
               linesPt.push(`[${idx}] ${fmtIn(c.input_pt)}`);
               linesTrt.push(`[${idx}] ${fmtIn(c.input_trt)}`);
+              linesCalls.push(fmtCall(c));
+              linesOutPt.push(`[${idx}] ${fmtIn(c.out_pt)}`);
+              linesOutTrt.push(`[${idx}] ${fmtIn(c.out_trt)}`);
             }
             if (vv.calls.length > 6) {
               linesPt.push(`… (${vv.calls.length} calls)`);
               linesTrt.push(`… (${vv.calls.length} calls)`);
+              linesCalls.push(`… (${vv.calls.length} calls)`);
+              linesOutPt.push(`… (${vv.calls.length} calls)`);
+              linesOutTrt.push(`… (${vv.calls.length} calls)`);
             }
             setTxt("vitCmpInPt", linesPt.join(" | "));
             setTxt("vitCmpInTrt", linesTrt.join(" | "));
+            setTxt("vitCmpCalls", linesCalls.join(" | "));
+            setTxt("vitCmpOutPt", linesOutPt.join(" | "));
+            setTxt("vitCmpOutTrt", linesOutTrt.join(" | "));
           } else {
             setTxt("vitCmpInPt", fmtIn(vv.input_pt));
             setTxt("vitCmpInTrt", fmtIn(vv.input_trt));
+            setTxt("vitCmpCalls", "-");
+            setTxt("vitCmpOutPt", fmtIn(vv.out_pt));
+            setTxt("vitCmpOutTrt", fmtIn(vv.out_trt));
           }
         }
       }
