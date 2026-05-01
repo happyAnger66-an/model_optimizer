@@ -7,12 +7,14 @@ import logging
 import math
 import os
 import time
+
 import torch
 import torch.nn as nn
 from termcolor import colored
 from tqdm import tqdm
 
 from ..model import Model
+from .vit import _force_vision_eager_attention_temporarily, _sdp_math_backend_only
 from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
 from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
 from model_optimizer.quantization.quantization_utils import quantize_model
@@ -271,98 +273,81 @@ class Pi05EmbedPrefix(nn.Module, Model):
         img_masks = [batch[f"image_mask_{i}"] for i in range(n)]
         return self.embed_prefix(images, img_masks, batch["lang_tokens"], batch["lang_masks"])
 
-    def export(
-        self,
-        export_dir: str,
-        export_dtype: torch.dtype = torch.bfloat16,
-        dynamo: bool = False,
-        mode = None
-    ):
-        """导出 ``embed_prefix.onnx``；输入输出与 ``forward`` 一致。
+    def _embed_prefix_export_dummy_inputs(
+        self, lang_seq_len: int
+    ) -> tuple[tuple[torch.Tensor, ...], list[str]]:
+        """与 :meth:`forward` 位置参数顺序一致的示例输入与 ``input_names``。"""
+        dummy: list[torch.Tensor] = []
+        names: list[str] = []
+        for i in range(self.num_image_views):
+            dummy.append(
+                torch.randn((1, 3, 224, 224), dtype=torch.float32, device="cuda"),
+            )
+            dummy.append(torch.ones((1,), dtype=torch.bool, device="cuda"))
+            names.extend([f"image_{i}", f"image_mask_{i}"])
+        dummy.append(torch.zeros((1, lang_seq_len), dtype=torch.int64, device="cuda"))
+        dummy.append(torch.ones((1, lang_seq_len), dtype=torch.bool, device="cuda"))
+        names.extend(["lang_tokens", "lang_masks"])
+        return tuple(dummy), names
 
-        若已 **ModelOpt 量化**（``is_quantized``），与 ``Expert.quantize`` → ``export(..., dynamo=False)``
-        及 ``Expert.export_onnx`` 一致，**仅使用 ``dynamo=False``**（TorchScript ONNX 追踪）。
-        ModelOpt 的 fake 量化在 CUDA 上前向会调用 ``torch.ops.tensorrt.quantize_op``；旧式 ONNX 导出
-        对该路径走 ``autograd.Function.symbolic`` 落到 Q/DQ 等 ONNX 算子，而 **``dynamo=True``**
-        走 ``torch.export`` 时图中仍保留 ``tensorrt.quantize_op``，新导出器无法翻译，会报
-        ``No ONNX function found for tensorrt.quantize_op``。
-        非量化路径仍可按参数尝试 ``dynamo=True``（与未量化 Expert 默认一致）。
-        已量化时导出前会打 ModelOpt ``_trt_high_precision_dtype`` patch，并在 **整个** ONNX 导出外包
-        ``export_torch_mode()``（与 ModelOpt 对 ``torch.export`` 的用法一致，亦有助于部分 TorchScript
-        ONNX 路径下量化 Conv/Linear 的追踪稳定性）。
+    @staticmethod
+    def _onnx_export_kwargs_for_embed_prefix(num_image_views: int, use_dynamo: bool) -> dict:
+        if use_dynamo:
+            from torch.export import Dim
 
-        **TorchScript ONNX + SigLIP ``QuantConv2d``**：若出现 ``TRT_FP8DequantizeLinear`` 接 ``Conv`` 的
-        ``kernel of unknown shape``，在 ``dynamo=False`` 导出内会自动临时关闭 ``vision_tower`` 内各
-        ``QuantConv2d`` 的 ``input_quantizer``（见 ``_siglip_vision_quantconv_disable_input_quant_for_torchscript_onnx``）。
+            batch_dim = Dim("batch", min=1, max=4096)
+            ds_list: list[dict] = []
+            for _ in range(num_image_views):
+                ds_list.append({0: batch_dim})
+                ds_list.append({0: batch_dim})
+            ds_list.append({0: batch_dim})
+            ds_list.append({0: batch_dim})
+            return {"dynamic_shapes": {"inputs": tuple(ds_list)}}
 
-        **Dynamo / torch.export**：语言序列维若声明 ``Dim("token_len", …)`` 与示例长度组合，易触发
-        ``ConstraintViolationError``（图把 ``L`` specialize 成常数与可变约束矛盾）。此处对 **dynamo 路径**
-        仅将 **batch（维 0）** 标为动态，**``lang_*`` 第 2 维固定为 ``max_token_len``**（与 Pi0.5 配置一致）；
-        传统 ``dynamo=False`` 仍可用 ``dynamic_axes`` 标 ``token_len``（浮点导出）。
+        dynamic_axes: dict[str, dict[int, str]] = {}
+        for i in range(num_image_views):
+            dynamic_axes[f"image_{i}"] = {0: "batch_size"}
+            dynamic_axes[f"image_mask_{i}"] = {0: "batch_size"}
+        dynamic_axes["lang_tokens"] = {0: "batch_size", 1: "token_len"}
+        dynamic_axes["lang_masks"] = {0: "batch_size", 1: "token_len"}
+        dynamic_axes["prefix_embs"] = {0: "batch_size", 1: "prefix_seq"}
+        dynamic_axes["prefix_pad_masks"] = {0: "batch_size", 1: "prefix_seq"}
+        dynamic_axes["prefix_att_masks"] = {0: "batch_size", 1: "prefix_seq"}
+        return {"dynamic_axes": dynamic_axes}
+
+    def export(self, export_dir: str, dynamo: bool = True, mode=None):
+        """导出 ``embed_prefix.onnx``；包装与 :class:`Vit` 一致：``inference_mode`` + SigLIP 导出期 eager 注意力 + SDPA math。
+
+        若已 **ModelOpt 量化**（``is_quantized``），与 ``Expert`` 一致 **仅 ``dynamo=False``**（TorchScript
+        ONNX）；``dynamo=True`` 无法降低 ``tensorrt.quantize_op``。非量化时默认与 ``Vit.export`` 相同先尝试
+        ``dynamo=True``，失败再回退 ``False``。
+
+        量化导出前打 ``_trt_high_precision_dtype`` patch，并在 ONNX 导出外包 ``export_torch_mode()``。
+        ``dynamo=False`` 且已量化时，可对 ``vision_tower`` 内 ``QuantConv2d`` 临时关闭 ``input_quantizer``
+        （见 ``_siglip_vision_quantconv_disable_input_quant_for_torchscript_onnx``）。
+
+        Dynamo 路径仅 batch 维动态，``lang_*`` 序列维固定为 ``max_token_len``，避免 ``Dim("token_len")`` 与
+        specialize 冲突；TorchScript 路径仍用 ``dynamic_axes`` 标 ``token_len``。
+
+        ``mode`` 保留与注册表 ``convert_model(..., mode=...)`` 调用签名兼容，当前未使用。
         """
         self.eval().cuda()
 
-        output_dir = export_dir
-        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(export_dir, exist_ok=True)
         start = time.time()
-        max_token_len = int(self.max_token_len)
-        if max_token_len < 1:
-            max_token_len = 1
-        lang_seq_len = max_token_len
-
-        dummy: list[torch.Tensor] = []
-        input_names: list[str] = []
-        for i in range(self.num_image_views):
-            dummy.append(
-                torch.randn((1, 3, 224, 224), dtype=export_dtype, device="cuda"),
-            )
-            dummy.append(torch.ones((1,), dtype=torch.bool, device="cuda"))
-            input_names.extend([f"image_{i}", f"image_mask_{i}"])
-
-        dummy.append(
-            torch.zeros((1, lang_seq_len), dtype=torch.int64, device="cuda"),
-        )
-        dummy.append(torch.ones((1, lang_seq_len), dtype=torch.bool, device="cuda"))
-        input_names.extend(["lang_tokens", "lang_masks"])
+        max_token_len = max(1, int(self.max_token_len))
+        dummy, input_names = self._embed_prefix_export_dummy_inputs(max_token_len)
 
         output_path = f"{export_dir}/embed_prefix.onnx"
         quantized = bool(getattr(self, "is_quantized", False))
         if quantized:
-            # 与 Expert 量化导出一致：只用 TorchScript ONNX；dynamo 无法降低 tensorrt.quantize_op。
             fallback_order = [False]
             if dynamo:
                 logger.info(
                     "embed_prefix 已量化：忽略 dynamo=True，固定使用 dynamo=False（与 Expert.export 一致）。"
                 )
         else:
-            # 未量化：仅按用户选择；不自动 dynamo=True，避免无谓告警。
             fallback_order = [True, False] if dynamo else [False]
-
-        def _export_kwargs(use_dynamo: bool) -> dict:
-            if use_dynamo:
-                from torch.export import Dim
-
-                batch_dim = Dim("batch", min=1, max=4096)
-                ds_list: list[dict] = []
-                for _ in range(self.num_image_views):
-                    ds_list.append({0: batch_dim})  # image_i
-                    ds_list.append({0: batch_dim})  # image_mask_i
-                # 仅 batch 动态；语言长度固定为 max_token_len，避免 token_len Dim 与 specialize 冲突
-                ds_list.append({0: batch_dim})
-                ds_list.append({0: batch_dim})
-                # forward(*inputs) 在 torch.export 侧只有一个顶层参数名 "inputs"（可变参数元组）
-                return {"dynamic_shapes": {"inputs": tuple(ds_list)}}
-
-            dynamic_axes = {}
-            for i in range(self.num_image_views):
-                dynamic_axes[f"image_{i}"] = {0: "batch_size"}
-                dynamic_axes[f"image_mask_{i}"] = {0: "batch_size"}
-            dynamic_axes["lang_tokens"] = {0: "batch_size", 1: "token_len"}
-            dynamic_axes["lang_masks"] = {0: "batch_size", 1: "token_len"}
-            dynamic_axes["prefix_embs"] = {0: "batch_size", 1: "prefix_seq"}
-            dynamic_axes["prefix_pad_masks"] = {0: "batch_size", 1: "prefix_seq"}
-            dynamic_axes["prefix_att_masks"] = {0: "batch_size", 1: "prefix_seq"}
-            return {"dynamic_axes": dynamic_axes}
 
         logger.info("Start export embed_prefix onnx ...")
         print(colored("Start Pi05 embed_prefix (Pi05EmbedPrefix) export onnx...", "green"))
@@ -370,60 +355,68 @@ class Pi05EmbedPrefix(nn.Module, Model):
         if quantized:
             _patch_modelopt_quantizers_trt_hp_for_onnx(self)
 
+        last_err: BaseException | None = None
+        used_dynamo: bool | None = None
         with torch.inference_mode():
-            last_err = None
-            used_dynamo = None
-            for idx, use_dynamo in enumerate(fallback_order):
-                export_kw = _export_kwargs(use_dynamo)
-                try:
-                    if idx > 0:
-                        logger.warning(
-                            "embed_prefix export fallback attempt %s: dynamo=%s",
-                            idx,
-                            use_dynamo,
+            with _force_vision_eager_attention_temporarily(self.vision_tower):
+                with _sdp_math_backend_only():
+                    for idx, use_dynamo in enumerate(fallback_order):
+                        export_kw = self._onnx_export_kwargs_for_embed_prefix(
+                            self.num_image_views, use_dynamo
                         )
-                    export_ctx = (
-                        export_torch_mode() if quantized else contextlib.nullcontext()
-                    )
-                    ts_iq_ctx = (
-                        _siglip_vision_quantconv_disable_input_quant_for_torchscript_onnx(
-                            self.vision_tower
-                        )
-                        if (quantized and not use_dynamo)
-                        else contextlib.nullcontext()
-                    )
-                    with export_ctx:
-                        with ts_iq_ctx:
-                            torch.onnx.export(
-                                self,
-                                tuple(dummy),
-                                output_path,
-                                export_params=True,
-                                input_names=input_names,
-                                output_names=["prefix_embs", "prefix_pad_masks", "prefix_att_masks"],
-                                opset_version=19,
-                                dynamo=use_dynamo,
-                                do_constant_folding=True,
-                                **export_kw,
+                        try:
+                            if idx > 0:
+                                logger.warning(
+                                    "embed_prefix export fallback attempt %s: dynamo=%s",
+                                    idx,
+                                    use_dynamo,
+                                )
+                            export_ctx = (
+                                export_torch_mode() if quantized else contextlib.nullcontext()
                             )
-                    used_dynamo = use_dynamo
-                    break
-                except Exception as err:
-                    last_err = err
-                    logger.exception(
-                        "embed_prefix export failed with dynamo=%s, will %s",
-                        use_dynamo,
-                        "fallback" if idx < len(fallback_order) - 1 else "raise",
-                    )
-            if used_dynamo is None:
-                raise RuntimeError(
-                    f"embed_prefix ONNX export failed after {len(fallback_order)} attempt(s): {last_err!r}"
-                ) from last_err
+                            ts_iq_ctx = (
+                                _siglip_vision_quantconv_disable_input_quant_for_torchscript_onnx(
+                                    self.vision_tower
+                                )
+                                if (quantized and not use_dynamo)
+                                else contextlib.nullcontext()
+                            )
+                            with export_ctx:
+                                with ts_iq_ctx:
+                                    torch.onnx.export(
+                                        self,
+                                        dummy,
+                                        output_path,
+                                        export_params=True,
+                                        input_names=input_names,
+                                        output_names=[
+                                            "prefix_embs",
+                                            "prefix_pad_masks",
+                                            "prefix_att_masks",
+                                        ],
+                                        opset_version=19,
+                                        dynamo=use_dynamo,
+                                        do_constant_folding=True,
+                                        **export_kw,
+                                    )
+                            used_dynamo = use_dynamo
+                            break
+                        except Exception as err:
+                            last_err = err
+                            logger.exception(
+                                "embed_prefix export failed with dynamo=%s, will %s",
+                                use_dynamo,
+                                "fallback" if idx < len(fallback_order) - 1 else "raise",
+                            )
+        if used_dynamo is None:
+            raise RuntimeError(
+                f"embed_prefix ONNX export failed after {len(fallback_order)} attempt(s): {last_err!r}"
+            ) from last_err
 
         end = time.time()
         logger.info(
             "export embed_prefix onnx to %s done cost:%ss (dynamo=%s)",
-            output_dir,
+            export_dir,
             end - start,
             used_dynamo,
         )
