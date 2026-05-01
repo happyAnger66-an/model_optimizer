@@ -352,8 +352,8 @@ class Pi05EmbedPrefix(nn.Module, Model):
         logger.info("Start export embed_prefix onnx ...")
         print(colored("Start Pi05 embed_prefix (Pi05EmbedPrefix) export onnx...", "green"))
 
-        if quantized:
-            _patch_modelopt_quantizers_trt_hp_for_onnx(self)
+#        if quantized:
+#            _patch_modelopt_quantizers_trt_hp_for_onnx(self)
 
         last_err: BaseException | None = None
         used_dynamo: bool | None = None
@@ -371,34 +371,22 @@ class Pi05EmbedPrefix(nn.Module, Model):
                                     idx,
                                     use_dynamo,
                                 )
-                            export_ctx = (
-                                export_torch_mode() if quantized else contextlib.nullcontext()
+                            torch.onnx.export(
+                                self,
+                                dummy,
+                                output_path,
+                                export_params=True,
+                                input_names=input_names,
+                                output_names=[
+                                    "prefix_embs",
+                                    "prefix_pad_masks",
+                                    "prefix_att_masks",
+                                ],
+                                opset_version=19,
+                                dynamo=use_dynamo,
+                                do_constant_folding=True,
+                                **export_kw,
                             )
-                            ts_iq_ctx = (
-                                _siglip_vision_quantconv_disable_input_quant_for_torchscript_onnx(
-                                    self.vision_tower
-                                )
-                                if (quantized and not use_dynamo)
-                                else contextlib.nullcontext()
-                            )
-                            with export_ctx:
-                                with ts_iq_ctx:
-                                    torch.onnx.export(
-                                        self,
-                                        dummy,
-                                        output_path,
-                                        export_params=True,
-                                        input_names=input_names,
-                                        output_names=[
-                                            "prefix_embs",
-                                            "prefix_pad_masks",
-                                            "prefix_att_masks",
-                                        ],
-                                        opset_version=19,
-                                        dynamo=use_dynamo,
-                                        do_constant_folding=True,
-                                        **export_kw,
-                                    )
                             used_dynamo = use_dynamo
                             break
                         except Exception as err:
