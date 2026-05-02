@@ -23,7 +23,7 @@ Debug / mitigation env vars (optional):
   (default: ``BFloat16`` if model params are bf16, ``Half`` if fp16, else ``Float``)
 - ``export_whole_model_to_onnx(..., quantize=False)``: patch + bf16 ONNX only, skip ``mtq.quantize``
 - ``PI05_WHOLE_DEBUG_PREFIX_MASK_EVERY``: if enabled, log prefix additive mask stats on every ``sample_actions`` call
-  (default: log once per model instance to avoid spam during calibration loops)
+  (otherwise at most once per ModelOpt ``forward_loop`` / ONNX export trace; avoids spam when the root module is wrapped)
 - ``PI05_WHOLE_EXPORT_COMPUTE_DTYPE``: ``bf16`` (default), ``fp16``, or ``fp32`` for patch/export compute dtype.
   Must match calibration tensors: real-data calibration uses the same dtype as the model (``bf16`` recommended for Pi0.5).
 - ``PI05_WHOLE_CALIB_TRACEBACK``: if ``1`` (default), print a full Python traceback on the **first** calibration failure.
@@ -119,6 +119,10 @@ def _embed_suffix_onnx_trace_fp32_enabled() -> bool:
 
 
 _EMBED_FP32_INCOMPAT_NOTE_SHOWN: list[bool] = [False]
+
+# Prefix mask stats line under PI05_WHOLE_DEBUG_NAN: ModelOpt calibration may wrap the root module so
+# ``setattr(self, ...)`` on PI0Pytorch is unreliable across forwards; use this gate reset per forward_loop / export.
+_PI05_PREFIX_MASK_STATS_ONCE: list[bool] = [False]
 
 
 def _jit_is_tracing_safe() -> bool:
@@ -678,7 +682,7 @@ def patch_model_for_export(model, compute_dtype=torch.bfloat16):
             _raise_if_nan_inf("prefix_att_2d_masks_4d", prefix_att_2d_masks_4d)
             _raise_if_nan_inf("prefix_position_ids", prefix_position_ids)
             # `sample_actions` runs many times during ModelOpt calibration; avoid log spam by default.
-            if _debug_prefix_mask_every_call_enabled() or not getattr(self, "_pi05_whole_prefix_mask_stats_logged", False):
+            if _debug_prefix_mask_every_call_enabled() or not _PI05_PREFIX_MASK_STATS_ONCE[0]:
                 try:
                     print(
                         f"[PI05_WHOLE_DEBUG_NAN] prefix_att_mask stats: dtype={prefix_att_2d_masks_4d.dtype} "
@@ -688,7 +692,7 @@ def patch_model_for_export(model, compute_dtype=torch.bfloat16):
                 except Exception:
                     pass
                 if not _debug_prefix_mask_every_call_enabled():
-                    setattr(self, "_pi05_whole_prefix_mask_stats_logged", True)
+                    _PI05_PREFIX_MASK_STATS_ONCE[0] = True
 
         hook_handles = []
         if debug_nan:
@@ -888,6 +892,7 @@ def quantize_model(
         print(f"  Using {num_samples} real calibration samples from dataset")
 
         def forward_loop(mdl):
+            _PI05_PREFIX_MASK_STATS_ONCE[0] = False
             mdl.eval()
             n_ok = 0
             tb_printed = False
@@ -922,6 +927,7 @@ def quantize_model(
         print("  Using dummy inputs for calibration")
 
         def forward_loop(mdl):
+            _PI05_PREFIX_MASK_STATS_ONCE[0] = False
             wrapper = ONNXWrapper(mdl, num_steps)
             wrapper(*dummy_inputs)
 
@@ -1067,6 +1073,7 @@ def export_whole_model_to_onnx(
 
     wrapped_model = ONNXWrapper(model, num_steps)
     print(f"\nExporting whole Pi05 model to: {onnx_path}")
+    _PI05_PREFIX_MASK_STATS_ONCE[0] = False
     with torch.no_grad():
         torch.onnx.export(
             wrapped_model,
