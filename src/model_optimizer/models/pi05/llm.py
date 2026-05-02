@@ -169,6 +169,15 @@ class LLM(torch.nn.Module, Model):
         return k_v_cache
 
     def forward(self, inputs_embeds, attention_mask, position_ids):
+        # 校准数据常为 bf16，而 AWQ 标定会把 decoder 暂转 float32，需与权重 dtype 一致，否则 F.linear 报错。
+        mod_dtype = getattr(self.model, "dtype", None)
+        if mod_dtype is None:
+            try:
+                mod_dtype = next(self.model.parameters()).dtype
+            except StopIteration:
+                mod_dtype = None
+        if mod_dtype is not None and inputs_embeds.dtype != mod_dtype:
+            inputs_embeds = inputs_embeds.to(mod_dtype)
         prefix_output = self.model(inputs_embeds=inputs_embeds,
                                    attention_mask=attention_mask,
                                    position_ids=position_ids,
