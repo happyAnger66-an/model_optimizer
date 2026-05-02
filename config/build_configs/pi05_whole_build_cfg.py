@@ -96,7 +96,7 @@ _min, _opt, _max = _profile(
 )
 
 build_cfg = {
-    "precision": "fp16",
+    "precision": "bf16",
     "workspace_mb": 8192,
     "min_shapes": _min,
     "opt_shapes": _opt,
