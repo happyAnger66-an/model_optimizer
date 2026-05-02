@@ -160,7 +160,8 @@ class Pi05Wrapper(torch.nn.Module, Model):
         ``PI05_WHOLE_ENABLE_LLM_NVFP4``, ``PI05_WHOLE_QUANTIZE_ATTN_MATMUL`` (0/1),
         ``PI05_WHOLE_EXPORT_NO_QUANT`` (1 = ONNX export only, skip ModelOpt FP8 quantization),
         ``PI05_WHOLE_EXPORT_COMPUTE_DTYPE`` (bf16 default; must match calibration data dtype),
-        ``PI05_WHOLE_CALIB_TRACEBACK`` (1 = print traceback on first calibration failure).
+        ``PI05_WHOLE_CALIB_TRACEBACK`` (1 = print traceback on first calibration failure),
+        ``PI05_WHOLE_ONNX_TRACE_EMBED_FP32`` (1 = run ``embed_suffix`` in fp32 during JIT/ONNX trace).
         """
         _ = mode  # same signature as pi05 vit/llm/expert; not used for single ONNX graph
 
