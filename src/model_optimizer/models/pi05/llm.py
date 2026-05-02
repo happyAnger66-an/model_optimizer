@@ -22,6 +22,19 @@ from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quanti
 logger = logging.getLogger(__name__)
 
 
+def _quant_cfg_uses_awq_family(quant_cfg) -> bool:
+    """ModelOpt AWQ 标定在 bf16 权重上偶发数值/内核问题；需要时在校准阶段暂转 float32。"""
+    if not isinstance(quant_cfg, dict):
+        return False
+    algo = quant_cfg.get("algorithm")
+    if isinstance(algo, dict):
+        method = str(algo.get("method", "")).lower()
+        return method.startswith("awq")
+    if isinstance(algo, str):
+        return algo.lower().startswith("awq")
+    return False
+
+
 def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     """把 KV heads 扩展到 Q heads 数量（GQA/MQA）。"""
     if n_rep == 1:
@@ -262,9 +275,22 @@ class LLM(torch.nn.Module, Model):
     def quantize(self, quant_cfg, calib_data, export_dir, *, measure_quant_error: bool = False):
         # tokenizer = get_tokenizer(model_dir)
         calib_dataloader = self.get_calibrate_dataset(calib_data)
-        quantize_model(
-            self, quant_cfg, calib_dataloader, measure_quant_error=measure_quant_error
-        )
+        # INT4 AWQ（awq_lite 等）在 Gemma bf16 解码器上，搜索阶段会对 weight 做 pre_quant_scale；
+        # 部分环境会触发 CUDA device-side assert（异步报错栈常落在 TensorQuantizer）。
+        # 标定全程用 float32 权重/激活更稳，结束后再恢复为原 dtype 供导出。
+        awq_fp32_calib = _quant_cfg_uses_awq_family(quant_cfg)
+        saved_dtype = None
+        if awq_fp32_calib:
+            saved_dtype = next(self.model.parameters()).dtype
+            if saved_dtype in (torch.bfloat16, torch.float16):
+                self.model.to(torch.float32)
+        try:
+            quantize_model(
+                self, quant_cfg, calib_dataloader, measure_quant_error=measure_quant_error
+            )
+        finally:
+            if awq_fp32_calib and saved_dtype is not None:
+                self.model.to(saved_dtype)
         self.is_quantized = True
         set_dynamic_quant(self, "bf16")
 
