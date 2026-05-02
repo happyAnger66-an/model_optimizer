@@ -119,7 +119,7 @@ class Pi05Wrapper(torch.nn.Module, Model):
         ckpt = checkpoint_dir if checkpoint_dir is not None else self._checkpoint_dir
 
         device = next(self.pi05_model.parameters()).device
-        dummy_inputs = create_dummy_inputs(device, self.pi05_model.config, torch.bfloat16)
+        dummy_inputs = create_dummy_inputs(device, self.pi05_model.config, torch.float16)
 
         self.pi05_model = prepare_model_for_export(
             self.pi05_model,
