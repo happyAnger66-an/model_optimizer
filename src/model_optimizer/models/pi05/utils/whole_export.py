@@ -33,6 +33,8 @@ Debug / mitigation env vars (optional):
 - ``PI05_WHOLE_ONNX_AMAX_EPS``: minimum positive ``_amax`` element before ONNX export (default ``1e-8``); avoids
   ModelOpt ``export_fp8`` ``448.0 / amax`` ``ZeroDivisionError`` when calibration yields zero amax.
 - ``export_whole_model_to_onnx(..., quantize=False)``: patch + bf16 ONNX only, skip ``mtq.quantize``
+  (ONNX export wraps SigLIP + SDPA like ``Vit`` / ``embed_prefix``: eager vision attention + math-only SDPA to avoid
+  ``ScalarType ComplexDouble is an unexpected tensor scalar type`` during TorchScript tracing)
 - ``PI05_WHOLE_DEBUG_PREFIX_MASK_EVERY``: if enabled, log prefix additive mask stats on every ``sample_actions`` call
   (otherwise at most once per ModelOpt ``forward_loop`` / ONNX export trace; avoids spam when the root module is wrapped)
 - ``PI05_WHOLE_EXPORT_COMPUTE_DTYPE``: ``bf16`` (default), ``fp16``, or ``fp32`` for patch/export compute dtype.
@@ -42,6 +44,7 @@ Debug / mitigation env vars (optional):
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 from typing import Tuple
@@ -59,6 +62,7 @@ from openpi.models.gemma import PALIGEMMA_VOCAB_SIZE
 from openpi.models.model import IMAGE_KEYS, IMAGE_RESOLUTION
 
 from .calibration_data import load_calibration_data
+from ..vit import _force_vision_eager_attention_temporarily, _sdp_math_backend_only
 
 
 def _resolve_attention_mask_neg_cap() -> float | None:
@@ -1177,6 +1181,22 @@ def prepare_model_for_export(
     return model
 
 
+def _resolve_pi05_siglip_vision_tower(root: torch.nn.Module) -> torch.nn.Module | None:
+    """Return SigLIP ``vision_tower`` for Pi0.5 (``ONNXWrapper.model`` or raw ``PI0Pytorch``)."""
+
+    m = getattr(root, "model", root)
+    pwe = getattr(m, "paligemma_with_expert", None)
+    if pwe is None:
+        return None
+    pali = getattr(pwe, "paligemma", None)
+    if pali is None:
+        return None
+    inner = getattr(pali, "model", None)
+    if inner is None:
+        return None
+    return getattr(inner, "vision_tower", None)
+
+
 def export_whole_model_to_onnx(
     model: torch.nn.Module,
     export_dir: str | Path,
@@ -1229,7 +1249,15 @@ def export_whole_model_to_onnx(
     _PI05_SUFFIX_TRACE_NAN_SANITIZE_WARNED[0] = False
     if quantize:
         _sanitize_modelopt_quantizer_amax_for_onnx_export(wrapped_model)
-    with torch.no_grad():
+
+    vision_tower = _resolve_pi05_siglip_vision_tower(wrapped_model)
+    vision_ctx = (
+        _force_vision_eager_attention_temporarily(vision_tower)
+        if vision_tower is not None
+        else contextlib.nullcontext()
+    )
+
+    with torch.no_grad(), vision_ctx, _sdp_math_backend_only():
         torch.onnx.export(
             wrapped_model,
             dummy_inputs,
@@ -1249,7 +1277,7 @@ def export_whole_model_to_onnx(
                 "actions": {0: "batch_size"},
             },
         )
-        postprocess_onnx_model(str(onnx_path), enable_llm_nvfp4 and quantize)
+    postprocess_onnx_model(str(onnx_path), enable_llm_nvfp4 and quantize)
 
     return onnx_path
 
