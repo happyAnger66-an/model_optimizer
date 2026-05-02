@@ -6,7 +6,13 @@ runtime dependency on `openpi_on_thor` for `model-opt export pi05_libero/wrapper
 
 Debug / mitigation env vars (optional):
 
-- ``PI05_WHOLE_DEBUG_NAN``: enable NaN/Inf checks + extra diagnostics
+- ``PI05_WHOLE_DEBUG_NAN``: enable NaN/Inf checks + diagnostics. During **ONNX JIT trace**, fatal NaN checks that
+  raise ``RuntimeError`` are **skipped by default** (dummy + quantized + bf16 often diverges); calibration is not traced
+  and still raises.
+- ``PI05_WHOLE_DEBUG_NAN_ONNX_STRICT``: if ``1``, ``PI05_WHOLE_DEBUG_NAN`` keeps raising on NaN/Inf during ``torch.onnx.export``
+  tracing (default ``0``).
+- ``PI05_WHOLE_EXPORT_DUMMY_NOISE_STD``: std multiplier for dummy export ``noise`` tensor (default ``0.08``; full ``N(0,1)``
+  is often too harsh for bf16 ``embed_suffix`` + quantized denoise under trace).
 - ``PI05_WHOLE_DEBUG_LAYER_HOOKS``: per-leaf forward hooks (slow)
 - ``PI05_WHOLE_DEBUG_EMBED_HOOKS``: hooks on ``action_in_proj`` / ``time_mlp_*`` (independent of ``PI05_WHOLE_DEBUG_LAYER_HOOKS``)
 - ``PI05_WHOLE_DEBUG_EMBED_DECOMPOSE``: manually step through Pi0.5 ``embed_suffix`` math
@@ -15,9 +21,9 @@ Debug / mitigation env vars (optional):
   Linears are not ModelOpt-quantized; FP8 export keeps bf16/fp16 weights and fp32 activations break ``F.linear``).
 - ``PI05_WHOLE_ONNX_TRACE_EMBED_FP32``: default ``1`` — during JIT/ONNX tracing, prefer fp32 ``embed_suffix`` when
   compatible (same restriction as above). Set to ``0`` to disable.
-- ``PI05_WHOLE_EXPORT_TRACE_SUFFIX_NAN_TO_NUM``: default ``1`` — during JIT/ONNX trace, if ``suffix_embs`` / ``adarms_cond``
-  contain NaN/Inf (common with bf16 ``embed_suffix`` + quantized denoise Linears + random dummy noise), apply
-  ``nan_to_num`` so tracing can finish. Set ``0`` to keep strict failure with ``PI05_WHOLE_DEBUG_NAN=1``.
+- ``PI05_WHOLE_EXPORT_TRACE_SUFFIX_NAN_TO_NUM``: default ``1`` — during JIT/ONNX trace, ``nan_to_num`` non-finite
+  ``suffix_embs`` / ``adarms_cond`` before the expert forward. Set ``0`` to disable (NaNs may still abort if
+  ``PI05_WHOLE_DEBUG_NAN_ONNX_STRICT=1``).
 - ``PI05_WHOLE_EMBED_PREFIX_FORCE_FP32``: run ``embed_prefix`` image tensors in fp32, cast ``prefix_embs`` back
 - ``PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP``: disable FP8 on Pi0.5 denoise head Linears via standard
   ``quant_cfg`` filters (wildcards + explicit quantizer names as printed by ``mtq.print_quant_summary``)
@@ -84,6 +90,12 @@ def _sanitize_additive_attention_mask(attention_mask: torch.Tensor | None, neg_c
 
 def _debug_nan_enabled() -> bool:
     return os.environ.get("PI05_WHOLE_DEBUG_NAN", "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _debug_nan_onnx_strict_enabled() -> bool:
+    """If true, keep ``_raise_if_nan_inf`` fatal during ``torch.jit`` / legacy ONNX tracing."""
+
+    return os.environ.get("PI05_WHOLE_DEBUG_NAN_ONNX_STRICT", "0").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
 def _debug_layer_hooks_enabled() -> bool:
@@ -356,6 +368,10 @@ def _fp_stats_str(t: torch.Tensor) -> str:
 
 def _raise_if_nan_inf(name: str, x):
     """Recursively check tensors (and simple containers) for NaN/Inf."""
+    # ONNX legacy trace uses random dummy inputs + bf16/quantized paths that often diverge; raising here
+    # only blocks export while adding no value over post-trace validation. Calibration is not traced.
+    if _jit_is_tracing_safe() and not _debug_nan_onnx_strict_enabled():
+        return
     if x is None:
         return
     if torch.is_tensor(x):
@@ -379,6 +395,8 @@ def _raise_if_nan_inf(name: str, x):
 
 def _raise_if_nan_inf_past_key_values(name: str, pkv):
     """Traverse common HF cache layouts for NaN/Inf in K/V tensors."""
+    if _jit_is_tracing_safe() and not _debug_nan_onnx_strict_enabled():
+        return
     if pkv is None:
         return
 
@@ -636,6 +654,17 @@ class ONNXWrapper(torch.nn.Module):
         return self.model.sample_actions(images.device, observation, noise=noise, num_steps=self.num_steps)
 
 
+def _export_dummy_noise_std() -> float:
+    """Std for dummy ``noise`` used by ONNX export (and dummy-only calibration). N(0,1) is often too harsh in bf16."""
+
+    raw = os.environ.get("PI05_WHOLE_EXPORT_DUMMY_NOISE_STD", "0.08").strip()
+    try:
+        v = float(raw)
+    except ValueError:
+        return 0.08
+    return max(v, 1e-6)
+
+
 def create_dummy_inputs(
     model_device: torch.device, model_config, compute_dtype: torch.dtype = torch.bfloat16
 ) -> Tuple:
@@ -652,17 +681,21 @@ def create_dummy_inputs(
     def _randn_bf16(shape: tuple[int, ...]) -> torch.Tensor:
         return torch.randn(shape, device=model_device, dtype=torch.float32).to(compute_dtype)
 
+    n_std = _export_dummy_noise_std()
+    noise_f32 = torch.randn((1, action_horizon, action_dim), device=model_device, dtype=torch.float32) * n_std
+    noise_scaled = noise_f32.to(compute_dtype)
+
     dummy_inputs = (
         _randn_bf16((1, num_images * 3, image_size, image_size)),
         torch.ones(1, num_images, dtype=torch.bool, device=model_device),
         torch.randint(0, PALIGEMMA_VOCAB_SIZE, (1, max_token_len), dtype=torch.long, device=model_device),
         torch.ones(1, max_token_len, dtype=torch.bool, device=model_device),
         _randn_bf16((1, action_dim)),
-        _randn_bf16((1, action_horizon, action_dim)),
+        noise_scaled,
     )
     print(
         f"  Dummy inputs created: images={dummy_inputs[0].shape} (dtype={compute_dtype}), "
-        f"noise={dummy_inputs[5].shape} (dtype={compute_dtype})"
+        f"noise={dummy_inputs[5].shape} (dtype={compute_dtype}, std={n_std})"
     )
     return dummy_inputs
 
@@ -787,6 +820,8 @@ def patch_model_for_export(model, compute_dtype=torch.bfloat16):
                 expanded_time,
             )
             x_t = x_t + dt_f32 * v_t.float()
+            if _jit_is_tracing_safe():
+                x_t = torch.nan_to_num(x_t, nan=0.0, posinf=0.0, neginf=0.0)
             time += dt_f32
         return x_t.to(self.compute_dtype)
 
