@@ -15,6 +15,9 @@ Debug / mitigation env vars (optional):
   Linears are not ModelOpt-quantized; FP8 export keeps bf16/fp16 weights and fp32 activations break ``F.linear``).
 - ``PI05_WHOLE_ONNX_TRACE_EMBED_FP32``: default ``1`` — during JIT/ONNX tracing, prefer fp32 ``embed_suffix`` when
   compatible (same restriction as above). Set to ``0`` to disable.
+- ``PI05_WHOLE_EXPORT_TRACE_SUFFIX_NAN_TO_NUM``: default ``1`` — during JIT/ONNX trace, if ``suffix_embs`` / ``adarms_cond``
+  contain NaN/Inf (common with bf16 ``embed_suffix`` + quantized denoise Linears + random dummy noise), apply
+  ``nan_to_num`` so tracing can finish. Set ``0`` to keep strict failure with ``PI05_WHOLE_DEBUG_NAN=1``.
 - ``PI05_WHOLE_EMBED_PREFIX_FORCE_FP32``: run ``embed_prefix`` image tensors in fp32, cast ``prefix_embs`` back
 - ``PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP``: disable FP8 on Pi0.5 denoise head Linears via standard
   ``quant_cfg`` filters (wildcards + explicit quantizer names as printed by ``mtq.print_quant_summary``)
@@ -123,6 +126,7 @@ _EMBED_FP32_INCOMPAT_NOTE_SHOWN: list[bool] = [False]
 # Prefix mask stats line under PI05_WHOLE_DEBUG_NAN: ModelOpt calibration may wrap the root module so
 # ``setattr(self, ...)`` on PI0Pytorch is unreliable across forwards; use this gate reset per forward_loop / export.
 _PI05_PREFIX_MASK_STATS_ONCE: list[bool] = [False]
+_PI05_SUFFIX_TRACE_NAN_SANITIZE_WARNED: list[bool] = [False]
 
 
 def _jit_is_tracing_safe() -> bool:
@@ -130,6 +134,50 @@ def _jit_is_tracing_safe() -> bool:
         return bool(torch.jit.is_tracing())
     except Exception:
         return False
+
+
+def _export_trace_suffix_nan_to_num_enabled() -> bool:
+    """If true, replace non-finite suffix embeds during ONNX JIT trace (see module docstring)."""
+
+    return os.environ.get("PI05_WHOLE_EXPORT_TRACE_SUFFIX_NAN_TO_NUM", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "n",
+        "off",
+    )
+
+
+def _sanitize_suffix_embeds_for_jit_trace_if_needed(
+    suffix_embs,
+    adarms_cond,
+    *,
+    debug_nan: bool,
+):
+    """During ONNX trace, bf16 ``embed_suffix`` under quantized denoise can yield NaN on random dummy inputs."""
+
+    if not _jit_is_tracing_safe() or not _export_trace_suffix_nan_to_num_enabled():
+        return suffix_embs, adarms_cond
+
+    bad = False
+    if torch.is_tensor(suffix_embs) and torch.is_floating_point(suffix_embs):
+        if torch.isnan(suffix_embs).any() or torch.isinf(suffix_embs).any():
+            bad = True
+            suffix_embs = torch.nan_to_num(suffix_embs, nan=0.0, posinf=0.0, neginf=0.0)
+    if torch.is_tensor(adarms_cond) and torch.is_floating_point(adarms_cond):
+        if torch.isnan(adarms_cond).any() or torch.isinf(adarms_cond).any():
+            bad = True
+            adarms_cond = torch.nan_to_num(adarms_cond, nan=0.0, posinf=0.0, neginf=0.0)
+
+    if bad and debug_nan and not _PI05_SUFFIX_TRACE_NAN_SANITIZE_WARNED[0]:
+        print(
+            "  [PI05_WHOLE_DEBUG_NAN] Warning: suffix embeds had NaN/Inf during ONNX JIT trace — "
+            "applied nan_to_num so export can proceed (bf16 embed_suffix + quantized denoise Linears; "
+            "random dummy noise often diverges). For a closer trace to runtime, use calibration-shaped "
+            "inputs or PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP=1 to allow fp32 embed_suffix."
+        )
+        _PI05_SUFFIX_TRACE_NAN_SANITIZE_WARNED[0] = True
+    return suffix_embs, adarms_cond
 
 
 def _embed_suffix_fp32_inputs_compatible(model: torch.nn.Module) -> bool:
@@ -780,6 +828,10 @@ def patch_model_for_export(model, compute_dtype=torch.bfloat16):
         else:
             suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, timestep)
 
+        suffix_embs, adarms_cond = _sanitize_suffix_embeds_for_jit_trace_if_needed(
+            suffix_embs, adarms_cond, debug_nan=debug_nan
+        )
+
         if debug_nan and embed_handles:
             for h in embed_handles:
                 try:
@@ -1074,6 +1126,7 @@ def export_whole_model_to_onnx(
     wrapped_model = ONNXWrapper(model, num_steps)
     print(f"\nExporting whole Pi05 model to: {onnx_path}")
     _PI05_PREFIX_MASK_STATS_ONCE[0] = False
+    _PI05_SUFFIX_TRACE_NAN_SANITIZE_WARNED[0] = False
     with torch.no_grad():
         torch.onnx.export(
             wrapped_model,
