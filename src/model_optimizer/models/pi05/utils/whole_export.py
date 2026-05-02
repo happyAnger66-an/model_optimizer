@@ -357,12 +357,17 @@ class QuantizedMatMul(torch.nn.Module):
         if not self._quantizers_created:
             self._create_quantizers()
 
+        q1, q2 = input1, input2
         if self.input1_quantizer is not None:
-            input1 = self.input1_quantizer(input1)
+            q1 = self.input1_quantizer(input1)
         if self.input2_quantizer is not None:
-            input2 = self.input2_quantizer(input2)
+            q2 = self.input2_quantizer(input2)
 
-        return torch.matmul(input1, input2)
+        # bf16/fp16 matmul for attention logits (Q@K^T) can overflow to inf before softmax,
+        # which yields NaN probabilities and breaks ModelOpt MaxCalibrator (and ONNX export).
+        # Keep I/O dtypes unchanged; only the multiply accumulates in float32.
+        out = torch.matmul(q1.to(torch.float32), q2.to(torch.float32))
+        return out.to(input1.dtype)
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -796,16 +801,26 @@ def quantize_model(
 
         def forward_loop(mdl):
             mdl.eval()
+            n_ok = 0
             for batch_idx, (observation, noise) in enumerate(calibration_data):
                 with torch.no_grad():
                     try:
                         device = next(mdl.parameters()).device
                         _ = mdl.sample_actions(device, observation, noise=noise, num_steps=num_steps)
+                        n_ok += 1
                         if (batch_idx + 1) % 10 == 0:
                             print(f"    Processed {batch_idx + 1}/{num_samples} calibration samples")
                     except Exception as e:
                         print(f"    Warning: Calibration batch {batch_idx} forward failed: {e}")
                         continue
+            if n_ok == 0:
+                raise RuntimeError(
+                    "All calibration batches failed (0 successful forwards). "
+                    "Custom attention TensorQuantizers may be uncalibrated and ONNX export will fail. "
+                    "Check stderr above; common causes: bf16 overflow in attention, NaN in activations, "
+                    "or ModelOpt MaxCalibrator assertions. Try PI05_WHOLE_EMBED_PREFIX_FORCE_FP32=1 or "
+                    "a less aggressive PI05_WHOLE_ATTN_MASK_NEG_CAP."
+                )
     else:
         print("  Using dummy inputs for calibration")
 
