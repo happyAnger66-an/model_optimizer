@@ -158,7 +158,9 @@ class Pi05Wrapper(torch.nn.Module, Model):
         Optional tuning via environment (defaults match Thor ``pytorch_to_onnx``):
         ``PI05_WHOLE_NUM_STEPS``, ``PI05_WHOLE_PRECISION``, ``PI05_WHOLE_NUM_CALIB_SAMPLES``,
         ``PI05_WHOLE_ENABLE_LLM_NVFP4``, ``PI05_WHOLE_QUANTIZE_ATTN_MATMUL`` (0/1),
-        ``PI05_WHOLE_EXPORT_NO_QUANT`` (1 = ONNX export only, skip ModelOpt FP8 quantization).
+        ``PI05_WHOLE_EXPORT_NO_QUANT`` (1 = ONNX export only, skip ModelOpt FP8 quantization),
+        ``PI05_WHOLE_EXPORT_COMPUTE_DTYPE`` (bf16 default; must match calibration data dtype),
+        ``PI05_WHOLE_CALIB_TRACEBACK`` (1 = print traceback on first calibration failure).
         """
         _ = mode  # same signature as pi05 vit/llm/expert; not used for single ONNX graph
 

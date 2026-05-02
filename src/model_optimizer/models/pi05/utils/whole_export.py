@@ -21,6 +21,9 @@ Debug / mitigation env vars (optional):
 - ``export_whole_model_to_onnx(..., quantize=False)``: patch + bf16 ONNX only, skip ``mtq.quantize``
 - ``PI05_WHOLE_DEBUG_PREFIX_MASK_EVERY``: if enabled, log prefix additive mask stats on every ``sample_actions`` call
   (default: log once per model instance to avoid spam during calibration loops)
+- ``PI05_WHOLE_EXPORT_COMPUTE_DTYPE``: ``bf16`` (default), ``fp16``, or ``fp32`` for patch/export compute dtype.
+  Must match calibration tensors: real-data calibration uses the same dtype as the model (``bf16`` recommended for Pi0.5).
+- ``PI05_WHOLE_CALIB_TRACEBACK``: if ``1`` (default), print a full Python traceback on the **first** calibration failure.
 """
 
 from __future__ import annotations
@@ -191,6 +194,24 @@ def _patch_modelopt_quantizers_trt_high_precision_for_onnx(model: torch.nn.Modul
 def _debug_prefix_mask_every_call_enabled() -> bool:
     """If true, log prefix additive mask stats on every ``sample_actions`` invocation."""
     return os.environ.get("PI05_WHOLE_DEBUG_PREFIX_MASK_EVERY", "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _export_compute_dtype_from_env() -> torch.dtype:
+    """Compute dtype for whole-graph export, patch, dummy inputs, and dataset calibration (must agree)."""
+
+    raw = (os.environ.get("PI05_WHOLE_EXPORT_COMPUTE_DTYPE") or "bf16").strip().lower()
+    if raw in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    if raw in ("fp16", "float16", "half"):
+        return torch.float16
+    if raw in ("fp32", "float32", "float"):
+        return torch.float32
+    print(f"  Warning: unknown PI05_WHOLE_EXPORT_COMPUTE_DTYPE={raw!r}, using bfloat16")
+    return torch.bfloat16
+
+
+def _calib_traceback_enabled() -> bool:
+    return os.environ.get("PI05_WHOLE_CALIB_TRACEBACK", "1").strip().lower() not in ("0", "false", "no", "n", "off")
 
 
 def _shape_str(t: torch.Tensor) -> str:
@@ -400,13 +421,16 @@ def quantized_eager_attention_forward(
     if not hasattr(module, "av_matmul"):
         module.add_module("av_matmul", QuantizedMatMul())
 
-    attn_weights = module.qk_matmul(query, key_states.transpose(2, 3)) * scaling
-
+    # Keep logits + mask + softmax in float32. bf16/fp16 logits plus large negative masks can still
+    # produce all-masked rows whose softmax is NaN; that poisons ModelOpt MaxCalibrator collects.
+    attn_scores = module.qk_matmul(query, key_states.transpose(2, 3)).to(torch.float32) * scaling
     if attention_mask is not None:
         causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
-        attn_weights = attn_weights + causal_mask
+        attn_scores = attn_scores + causal_mask.to(torch.float32)
 
-    attn_weights = torch.nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
+    attn_weights = torch.nn.functional.softmax(attn_scores, dim=-1, dtype=torch.float32)
+    attn_weights = torch.nan_to_num(attn_weights, nan=0.0, posinf=0.0, neginf=0.0)
+    attn_weights = attn_weights.to(query.dtype)
     attn_weights = torch.nn.functional.dropout(attn_weights, p=dropout, training=module.training)
 
     attn_output = module.av_matmul(attn_weights, value_states)
@@ -802,6 +826,7 @@ def quantize_model(
         def forward_loop(mdl):
             mdl.eval()
             n_ok = 0
+            tb_printed = False
             for batch_idx, (observation, noise) in enumerate(calibration_data):
                 with torch.no_grad():
                     try:
@@ -811,15 +836,23 @@ def quantize_model(
                         if (batch_idx + 1) % 10 == 0:
                             print(f"    Processed {batch_idx + 1}/{num_samples} calibration samples")
                     except Exception as e:
+                        if _calib_traceback_enabled() and not tb_printed:
+                            import traceback
+
+                            print("    First calibration failure traceback:")
+                            traceback.print_exc()
+                            tb_printed = True
                         print(f"    Warning: Calibration batch {batch_idx} forward failed: {e}")
                         continue
             if n_ok == 0:
                 raise RuntimeError(
                     "All calibration batches failed (0 successful forwards). "
                     "Custom attention TensorQuantizers may be uncalibrated and ONNX export will fail. "
-                    "Check stderr above; common causes: bf16 overflow in attention, NaN in activations, "
-                    "or ModelOpt MaxCalibrator assertions. Try PI05_WHOLE_EMBED_PREFIX_FORCE_FP32=1 or "
-                    "a less aggressive PI05_WHOLE_ATTN_MASK_NEG_CAP."
+                    "Typical causes: (1) model compute_dtype mismatched calibration tensors "
+                    "(use bfloat16 for Pi0.5; see PI05_WHOLE_EXPORT_COMPUTE_DTYPE), "
+                    "(2) NaN in activations / all-masked attention rows, "
+                    "(3) ModelOpt MaxCalibrator on NaN inputs. "
+                    "Try PI05_WHOLE_EMBED_PREFIX_FORCE_FP32=1 or PI05_WHOLE_EMBED_SUFFIX_FORCE_FP32=1."
                 )
     else:
         print("  Using dummy inputs for calibration")
@@ -907,7 +940,7 @@ def prepare_model_for_export(
                 checkpoint_dir,
                 num_calibration_samples,
                 str(device),
-                compute_dtype=torch.bfloat16,
+                compute_dtype=compute_dtype,
             )
 
         model = quantize_model(
@@ -952,7 +985,7 @@ def export_whole_model_to_onnx(
     onnx_path = onnx_dir / onnx_filename
 
     device = next(model.parameters()).device
-    compute_dtype = torch.float16
+    compute_dtype = _export_compute_dtype_from_env()
     dummy_inputs = create_dummy_inputs(device, model.config, compute_dtype)
     model = prepare_model_for_export(
         model,
