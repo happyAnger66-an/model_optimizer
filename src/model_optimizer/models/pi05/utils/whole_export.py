@@ -11,10 +11,10 @@ Debug / mitigation env vars (optional):
 - ``PI05_WHOLE_DEBUG_EMBED_HOOKS``: hooks on ``action_in_proj`` / ``time_mlp_*`` (independent of ``PI05_WHOLE_DEBUG_LAYER_HOOKS``)
 - ``PI05_WHOLE_DEBUG_EMBED_DECOMPOSE``: manually step through Pi0.5 ``embed_suffix`` math
   (more reliable than hooks when ModelOpt wraps/replaces submodules)
-- ``PI05_WHOLE_EMBED_SUFFIX_FORCE_FP32``: always run ``embed_suffix`` in fp32, cast back
-- ``PI05_WHOLE_ONNX_TRACE_EMBED_FP32``: default ``1`` — during ``torch.jit`` / legacy ONNX tracing, run
-  ``embed_suffix`` in fp32 even if ``PI05_WHOLE_EMBED_SUFFIX_FORCE_FP32`` is unset (avoids bf16 NaNs in ``suffix_embs``).
-  Set to ``0`` to disable this auto path.
+- ``PI05_WHOLE_EMBED_SUFFIX_FORCE_FP32``: always run ``embed_suffix`` in fp32, cast back (**only** when denoise
+  Linears are not ModelOpt-quantized; FP8 export keeps bf16/fp16 weights and fp32 activations break ``F.linear``).
+- ``PI05_WHOLE_ONNX_TRACE_EMBED_FP32``: default ``1`` — during JIT/ONNX tracing, prefer fp32 ``embed_suffix`` when
+  compatible (same restriction as above). Set to ``0`` to disable.
 - ``PI05_WHOLE_EMBED_PREFIX_FORCE_FP32``: run ``embed_prefix`` image tensors in fp32, cast ``prefix_embs`` back
 - ``PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP``: disable FP8 on Pi0.5 denoise head Linears via standard
   ``quant_cfg`` filters (wildcards + explicit quantizer names as printed by ``mtq.print_quant_summary``)
@@ -118,19 +118,53 @@ def _embed_suffix_onnx_trace_fp32_enabled() -> bool:
     )
 
 
-def _embed_suffix_should_run_fp32() -> bool:
-    """Use float32 inside ``embed_suffix`` when forced by env or during JIT/ONNX graph capture."""
+_EMBED_FP32_INCOMPAT_NOTE_SHOWN: list[bool] = [False]
 
-    if _embed_suffix_force_fp32_enabled():
-        return True
-    if not _embed_suffix_onnx_trace_fp32_enabled():
-        return False
+
+def _jit_is_tracing_safe() -> bool:
     try:
-        if torch.jit.is_tracing():
-            return True
+        return bool(torch.jit.is_tracing())
     except Exception:
-        pass
-    return False
+        return False
+
+
+def _embed_suffix_fp32_inputs_compatible(model: torch.nn.Module) -> bool:
+    """Return False if ``embed_suffix`` must use ``compute_dtype`` inputs (ModelOpt quantized denoise Linears).
+
+    QuantizedLinear keeps weights in bf16/fp16; passing float32 activations into ``embed_suffix`` causes
+    ``RuntimeError: mat1 and mat2 must have the same dtype, but got Float and BFloat16``.
+    """
+
+    try:
+        from modelopt.torch.quantization.utils import is_quantized_linear
+    except ImportError:
+        return True
+    for name in ("action_in_proj", "time_mlp_in", "time_mlp_out"):
+        mod = getattr(model, name, None)
+        if isinstance(mod, torch.nn.Module) and is_quantized_linear(mod):
+            return False
+    return True
+
+
+def _embed_suffix_should_run_fp32(model: torch.nn.Module) -> bool:
+    """Use float32 inside ``embed_suffix`` when safe and (forced by env or JIT/ONNX trace auto)."""
+
+    wants_fp32 = _embed_suffix_force_fp32_enabled() or (
+        _embed_suffix_onnx_trace_fp32_enabled() and _jit_is_tracing_safe()
+    )
+    if not wants_fp32:
+        return False
+    if not _embed_suffix_fp32_inputs_compatible(model):
+        if not _EMBED_FP32_INCOMPAT_NOTE_SHOWN[0]:
+            print(
+                "  Note: embed_suffix FP32 path skipped — denoise Linears are ModelOpt-quantized "
+                "(weights use compute_dtype; fp32 activations would break F.linear). "
+                "Using compute_dtype for embed_suffix; if you see NaNs, try dummy noise scaling or "
+                "PI05_WHOLE_SKIP_QUANT_ACTION_TIME_MLP=1 for export-only bf16 Linears."
+            )
+            _EMBED_FP32_INCOMPAT_NOTE_SHOWN[0] = True
+        return False
+    return True
 
 
 def _embed_prefix_force_fp32_enabled() -> bool:
@@ -724,7 +758,7 @@ def patch_model_for_export(model, compute_dtype=torch.bfloat16):
         if debug_nan and _debug_embed_decompose_enabled():
             _debug_decompose_pi05_embed_suffix(self, x_t, timestep)
 
-        if _embed_suffix_should_run_fp32():
+        if _embed_suffix_should_run_fp32(self):
             # `create_sinusoidal_pos_embedding` + small MLPs can be sensitive in bf16 under some export stacks.
             # Forcing fp32 here keeps numerics stable while still allowing the rest of the model to use `compute_dtype`.
             x_t32 = x_t.to(torch.float32)
