@@ -30,6 +30,8 @@ Debug / mitigation env vars (optional):
 - ``PI05_WHOLE_ATTN_MASK_NEG_CAP``: additive mask clamp (default ``-1e4``, ``none`` disables)
 - ``PI05_WHOLE_TRT_HP_DTYPE``: override ModelOpt ``_trt_high_precision_dtype`` for ONNX FP8 export
   (default: ``BFloat16`` if model params are bf16, ``Half`` if fp16, else ``Float``)
+- ``PI05_WHOLE_ONNX_AMAX_EPS``: minimum positive ``_amax`` element before ONNX export (default ``1e-8``); avoids
+  ModelOpt ``export_fp8`` ``448.0 / amax`` ``ZeroDivisionError`` when calibration yields zero amax.
 - ``export_whole_model_to_onnx(..., quantize=False)``: patch + bf16 ONNX only, skip ``mtq.quantize``
 - ``PI05_WHOLE_DEBUG_PREFIX_MASK_EVERY``: if enabled, log prefix additive mask stats on every ``sample_actions`` call
   (otherwise at most once per ModelOpt ``forward_loop`` / ONNX export trace; avoids spam when the root module is wrapped)
@@ -317,6 +319,69 @@ def _patch_modelopt_quantizers_trt_high_precision_for_onnx(model: torch.nn.Modul
                 setattr(q, "_trt_high_precision_dtype", hp)
                 patched += 1
     print(f"  ModelOpt ONNX FP8: patched _trt_high_precision_dtype={hp!r} on {patched} quantizer(s)")
+
+
+def _sanitize_modelopt_quantizer_amax_for_onnx_export(model: torch.nn.Module) -> None:
+    """Ensure TensorQuantizer ``_amax`` has no zeros/NaN/Inf before FP8 ONNX symbolic export.
+
+    ``modelopt.torch.quantization.export_onnx.export_fp8`` does ``448.0 / float(amax)``; zero amax raises
+    ``ZeroDivisionError`` (can happen after aggressive calibration or masked tensors).
+    """
+
+    try:
+        from modelopt.torch.quantization.nn import SequentialQuantizer, TensorQuantizer
+    except ImportError:
+        return
+
+    raw = os.environ.get("PI05_WHOLE_ONNX_AMAX_EPS", "1e-8").strip()
+    try:
+        eps = float(raw)
+    except ValueError:
+        eps = 1e-8
+    if eps <= 0:
+        eps = 1e-8
+
+    def _iter_tensor_quantizers(mod: torch.nn.Module):
+        for qn in (
+            "input_quantizer",
+            "output_quantizer",
+            "weight_quantizer",
+            "input1_quantizer",
+            "input2_quantizer",
+        ):
+            q = getattr(mod, qn, None)
+            if isinstance(q, TensorQuantizer):
+                yield q
+            elif isinstance(q, SequentialQuantizer):
+                for sub in q:
+                    if isinstance(sub, TensorQuantizer):
+                        yield sub
+
+    seen: set[int] = set()
+    n_fixed = 0
+    with torch.no_grad():
+        for mod in model.modules():
+            for q in _iter_tensor_quantizers(mod):
+                if id(q) in seen:
+                    continue
+                seen.add(id(q))
+                if not hasattr(q, "_amax"):
+                    continue
+                a = q._amax
+                if not torch.is_tensor(a) or not torch.is_floating_point(a):
+                    continue
+                if getattr(a, "device", None) is not None and a.device.type == "meta":
+                    continue
+                a_det = a.detach()
+                if torch.all(torch.isfinite(a_det)) and torch.all(a_det > 0):
+                    continue
+                a2 = torch.nan_to_num(a_det, nan=eps, posinf=1e12, neginf=eps)
+                a2 = torch.clamp(a2, min=eps)
+                q._amax.data.copy_(a2.to(device=a.device, dtype=a.dtype))
+                n_fixed += 1
+
+    if n_fixed > 0:
+        print(f"  ModelOpt ONNX: sanitized _amax on {n_fixed} TensorQuantizer(s) (min={eps:g}, avoid 448/amax div-by-zero)")
 
 
 def _debug_prefix_mask_every_call_enabled() -> bool:
@@ -1162,6 +1227,8 @@ def export_whole_model_to_onnx(
     print(f"\nExporting whole Pi05 model to: {onnx_path}")
     _PI05_PREFIX_MASK_STATS_ONCE[0] = False
     _PI05_SUFFIX_TRACE_NAN_SANITIZE_WARNED[0] = False
+    if quantize:
+        _sanitize_modelopt_quantizer_amax_for_onnx_export(wrapped_model)
     with torch.no_grad():
         torch.onnx.export(
             wrapped_model,

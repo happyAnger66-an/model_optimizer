@@ -164,7 +164,8 @@ class Pi05Wrapper(torch.nn.Module, Model):
         ``PI05_WHOLE_ONNX_TRACE_EMBED_FP32`` (1 = fp32 ``embed_suffix`` during trace when Linears are not quantized),
         ``PI05_WHOLE_EXPORT_TRACE_SUFFIX_NAN_TO_NUM`` (1 = nan_to_num suffix embeds during ONNX trace if needed),
         ``PI05_WHOLE_DEBUG_NAN_ONNX_STRICT`` (1 = keep NaN raises during ONNX trace; default 0),
-        ``PI05_WHOLE_EXPORT_DUMMY_NOISE_STD`` (dummy noise std for export, default 0.08).
+        ``PI05_WHOLE_EXPORT_DUMMY_NOISE_STD`` (dummy noise std for export, default 0.08),
+        ``PI05_WHOLE_ONNX_AMAX_EPS`` (minimum ``_amax`` before ONNX FP8 export, default 1e-8).
         """
         _ = mode  # same signature as pi05 vit/llm/expert; not used for single ONNX graph
 
