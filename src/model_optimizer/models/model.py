@@ -81,12 +81,16 @@ class Model:
                 if file.endswith(".json"):
                     continue
                 os.remove(os.path.join(export_dir, file))
-            onnx.save_model(onnx_model,
-                            onnx_path,
-                            save_as_external_data=True,
-                            all_tensors_to_one_file=True,
-                            location="onnx_model.data",
-                            convert_attribute=True)
+            # convert_attribute=True can externalize Constant tensor attrs with broken offsets so TensorRT
+            # reports e.g. "Expected size: … Actual size: 0 bytes" when parsing external weights.
+            onnx.save_model(
+                onnx_model,
+                onnx_path,
+                save_as_external_data=True,
+                all_tensors_to_one_file=True,
+                location="onnx_model.data",
+                convert_attribute=False,
+            )
             t2 = time.time()
             print(
                 colored(

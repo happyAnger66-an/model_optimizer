@@ -692,7 +692,7 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
                 save_as_external_data=True,
                 all_tensors_to_one_file=True,
                 location="onnx_model.data",
-                convert_attribute=True,
+                convert_attribute=False,
             )
             t2 = time.time()
             print(
