@@ -20,6 +20,77 @@ from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
 logger = logging.getLogger(__name__)
 
+
+def _patch_denoise_onnx_float_bias_to_bfloat16(onnx_path: str) -> None:
+    """将仍为 FLOAT 的 Linear bias 初始值改为 BFLOAT16。
+
+    TensorRT 强类型 / bf16 构建下，MatMul 常为 BF16 而 ONNX 仍导出 FLOAT bias，
+    会在 ``Add(MatMul, bias)`` 上报类型不一致；统一 bias 为 BF16 与 MatMul 输出对齐。
+    """
+    try:
+        import numpy as np
+        import onnx
+        from onnx import TensorProto, helper, numpy_helper
+    except ImportError:
+        logger.warning("onnx/numpy unavailable; skip bias dtype patch for %s", onnx_path)
+        return
+
+    if not os.path.isfile(onnx_path):
+        return
+
+    try:
+        model = onnx.load(onnx_path, load_external_data=False)
+    except Exception as exc:
+        logger.warning("Failed to load ONNX for bias patch %s: %s", onnx_path, exc)
+        return
+
+    base_dir = os.path.dirname(os.path.abspath(onnx_path))
+    changed: list[str] = []
+
+    for init in model.graph.initializer:
+        if init.data_type != TensorProto.FLOAT:
+            continue
+        if not (init.name.endswith("bias") or init.name.endswith("/bias")):
+            continue
+        try:
+            arr = numpy_helper.to_array(init, base_dir=base_dir)
+        except Exception:
+            continue
+        if arr.size == 0:
+            continue
+        arr_f = np.ascontiguousarray(arr, dtype=np.float32)
+        t_bf = torch.from_numpy(arr_f).to(torch.bfloat16).contiguous()
+        raw = t_bf.view(torch.uint16).detach().cpu().numpy().tobytes()
+        new_tp = helper.make_tensor(
+            init.name,
+            TensorProto.BFLOAT16,
+            [int(d) for d in arr_f.shape],
+            raw,
+            raw=True,
+        )
+        init.CopyFrom(new_tp)
+        changed.append(init.name)
+
+    if not changed:
+        return
+
+    try:
+        onnx.save(model, onnx_path)
+    except Exception as exc:
+        logger.warning("Failed to save ONNX after bias patch %s: %s", onnx_path, exc)
+        return
+
+    preview = changed[:12]
+    if len(changed) > 12:
+        preview.append("...")
+    logger.info(
+        "Patched %d FLOAT->BFLOAT16 bias initializers in %s: %s",
+        len(changed),
+        onnx_path,
+        preview,
+    )
+
+
 # 与 openpi pi0_pytorch 中 _prepare_attention_masks_4d 一致
 _ATTN_MASK_FILL_VALUE = -2.3819763e38
 
@@ -208,6 +279,7 @@ class Pi05DenoiseStep(nn.Module, Model):
                 do_constant_folding=True,
                 **export_kw,
             )
+        _patch_denoise_onnx_float_bias_to_bfloat16(output_path)
         end = time.time()
         logger.info("export onnx to %s done cost:%ss", output_dir, end - start)
         print(
@@ -231,6 +303,7 @@ class Pi05DenoiseStep(nn.Module, Model):
         if is_nvfp4_quantized(quant_cfg):
             print(colored("nvfp4 quantization detected, post processing...", "green"))
             self._nvfp4_post_processing(onnx_path, export_dir)
+        _patch_denoise_onnx_float_bias_to_bfloat16(onnx_path)
 
     def _wrap_past_key_values(
         self, past_keys: torch.Tensor, past_values: torch.Tensor
