@@ -6,3 +6,6 @@ QUANT_CFG = FP8_DEFAULT_CFG
 QUANT_CFG["quant_cfg"]["input_layernorm"] = {"enable": False}
 QUANT_CFG["quant_cfg"]["post_attention_layernorm"] = {"enable": False}
 QUANT_CFG["quant_cfg"]["norm"] = {"enable": False}
+
+QUANT_CFG["quant_cfg"]["vision_tower.vision_model.embeddings.patch_embedding.input_quantizer"] = {"enable": False}
+QUANT_CFG["quant_cfg"]["vision_tower.vision_model.embeddings.patch_embedding.weight_quantizer"] = {"enable": False}
