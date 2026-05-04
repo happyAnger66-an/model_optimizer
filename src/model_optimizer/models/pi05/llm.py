@@ -296,8 +296,13 @@ class LLM(torch.nn.Module, Model):
             if saved_dtype in (torch.bfloat16, torch.float16):
                 self.model.to(torch.float32)
         try:
+            # 根模块必须是 HF PreTrainedModel，ModelOpt 的 register_hf_attentions_on_the_fly 才会注册
+            # *_bmm_quantizer；否则 FP8_KV_CFG 等 attention 配置不会插入子模块。
             quantize_model(
-                self, quant_cfg, calib_dataloader, measure_quant_error=measure_quant_error
+                self.model,
+                quant_cfg,
+                calib_dataloader,
+                measure_quant_error=measure_quant_error,
             )
         finally:
             if awq_fp32_calib and saved_dtype is not None:
@@ -327,20 +332,21 @@ class LLM(torch.nn.Module, Model):
     def export(
         self,
         export_dir,
-        dynamo=True,
-        mode: Literal["native_per_layer", "self_forward"] = "native_per_layer",
+        dynamo: bool = False,
+        mode: Literal["native_per_layer", "self_forward"] = "self_forward",
     ):
         """导出 ``llm.onnx``。
 
         Args:
             export_dir: 输出目录。
-            dynamo: 是否走 Dynamo ONNX 导出（仅 ``native_per_layer`` 常用 ``True``）。
-            llm_onnx_mode:
-                - ``native_per_layer``：:class:`GemmaModelNativeOnnxExport`，输出
-                  ``last_hidden_state`` + 每层 ``present_key_values.{i}``（推荐 TRT / 避开 DynamicCache 图问题）。
-                - ``self_forward``：直接 ``torch.onnx.export(self, ...)``，与 :meth:`forward` 一致，输出
-                  ``past_keys``, ``past_values``, ``last_hidden_state``（与 :meth:`export_onnx` 同类，但保留 KV；
-                  建议 ``dynamo=False``，与 ``export_onnx`` 一致）。
+            dynamo: 是否走 Dynamo ONNX 导出。量化后图（含 ModelOpt Q/DQ）默认用 ``False`` 更稳。
+            mode:
+                - ``self_forward``（默认）：``torch.onnx.export(self, ...)``，与 :meth:`forward` 一致，走
+                  HF 解码器 + 已插入的 attention 量化子模块，输出 ``past_keys`` / ``past_values`` /
+                  ``last_hidden_state``；与 PTQ 路径一致，便于 KV FP8 等配置出现在 ONNX 中。
+                - ``native_per_layer``：:class:`GemmaModelNativeOnnxExport`，手写 matmul 注意力、**不**经过
+                  HF attention 上的 ``*_bmm_quantizer``；输出 ``last_hidden_state`` + 每层
+                  ``present_key_values.{i}``（仅在不依赖 attention 侧 PTQ 时使用）。
         """
         self.eval().cuda()
 
@@ -426,7 +432,7 @@ class LLM(torch.nn.Module, Model):
                 )
             else:
                 raise ValueError(
-                    f"llm_onnx_mode must be 'native_per_layer' or 'self_forward', got {llm_onnx_mode!r}"
+                    f"mode must be 'native_per_layer' or 'self_forward', got {mode!r}"
                 )
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
