@@ -5,6 +5,18 @@
 		},
 		{
 			"path": "../Isaac-GR00T"
+		},
+		{
+			"path": "../TensorRT"
+		},
+		{
+			"path": "../TensorRT-LLM"
+		},
+		{
+			"path": "../accelerated-computing-hub"
+		},
+		{
+			"path": "../TensorRT-Edge-LLM"
 		}
 	],
 	"settings": {}

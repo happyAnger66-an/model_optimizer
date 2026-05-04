@@ -19,10 +19,10 @@ _HEAD_DIM = 256
 
 build_cfg = {
     "precision": "bf16",
+    "strongly_typed_network": True,
     "workspace_mb": 8192,
-    "layer_precision_overrides": {
-      "/action_in_proj": "fp32",
-    },
+    # Do not set layer_precision_overrides for /action_in_proj to fp32: ONNX keeps MatMul activations in
+    # bf16 while bias may stay fp32; TRT then fails on Add(MatMul, bias) with "types Float and BFloat16".
     "min_shapes": {
         "prefix_pad_masks": (1, _PREFIX_LEN),
         "past_keys": (_NUM_LAYERS, 1, _PREFIX_LEN, _HEAD_DIM),

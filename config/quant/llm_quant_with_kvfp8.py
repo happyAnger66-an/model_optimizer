@@ -1,6 +1,6 @@
 import copy
 
-from modelopt.torch.quantization import NVFP4_DEFAULT_CFG, FP8_KV_CFG, FP8_ATTN
+from modelopt.torch.quantization import NVFP4_DEFAULT_CFG, FP8_KV_CFG
 
 # 新版 ModelOpt：quant_cfg 为 dict（Pydantic QuantizeConfig）；旧版可能为 list。
 # 策略：全局仍为 NVFP4_DEFAULT_CFG；对 **第 11–17 层** 的主要 Linear 量化器显式覆盖为 FP8（E4M3，与 FP8_DEFAULT_CFG 一致）。
