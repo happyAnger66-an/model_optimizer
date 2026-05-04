@@ -22,10 +22,7 @@ TensorRT-Edge-LLM 的核心 ONNX/TRT 优化在 **EdgeLLMAttention**（``trt::att
 
 from __future__ import annotations
 
-<<<<<<< HEAD
 import inspect
-=======
->>>>>>> origin/main
 import logging
 import os
 import sys
@@ -38,10 +35,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-<<<<<<< HEAD
 from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
-=======
->>>>>>> origin/main
 from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
 from model_optimizer.quantization.quantization_utils import quantize_model
 from model_optimizer.utils.utils import is_fp4_quantized, is_nvfp4_quantized, set_dynamic_quant
@@ -67,7 +61,6 @@ def _ensure_trt_edgellm_on_path() -> None:
             sys.path.insert(0, p)
 
 
-<<<<<<< HEAD
 _ATTENTION_PLUGIN_FAKE_REGISTERED = False
 
 
@@ -287,8 +280,6 @@ def register_attention_plugin_fake_for_torch_export() -> None:
     _ATTENTION_PLUGIN_FAKE_REGISTERED = True
 
 
-=======
->>>>>>> origin/main
 class GemmaAttentionTrtEdge(nn.Module):
     """
     包装 HuggingFace/OpenPI 的 Gemma 自注意力：保留 ``native`` 的 HF 前向，并附加同权的 ``EdgeLLMAttention``。
@@ -307,7 +298,6 @@ class GemmaAttentionTrtEdge(nn.Module):
         super().__init__()
         if native_attn is None:
             raise ValueError("native_attn is required")
-<<<<<<< HEAD
         # 用属性赋值注册子模块，勿用 add_module：add_module 会 hasattr(self, "native")，
         # 在自定义 __getattr__ 下会先于 _modules 写入触发委托，导致递归或链式 AttributeError。
         self.native = native_attn
@@ -315,13 +305,6 @@ class GemmaAttentionTrtEdge(nn.Module):
         from tensorrt_edgellm.llm_models.layers.layers import EdgeLLMAttention
 
         self.edge = EdgeLLMAttention(native_attn, eagle3_draft=False)
-=======
-        self.add_module("native", native_attn)
-        _ensure_trt_edgellm_on_path()
-        from tensorrt_edgellm.llm_models.layers.layers import EdgeLLMAttention
-
-        self.add_module("edge", EdgeLLMAttention(native_attn, eagle3_draft=False))
->>>>>>> origin/main
 
     def forward(self, *args: Any, **kwargs: Any):
         return self.native.forward(*args, **kwargs)
@@ -330,7 +313,6 @@ class GemmaAttentionTrtEdge(nn.Module):
         try:
             return super().__getattr__(name)
         except AttributeError:
-<<<<<<< HEAD
             # 勿把 native/edge 的缺失转发到内层 GemmaAttention（避免误解析或掩盖错误）。
             if name in ("native", "edge"):
                 raise AttributeError(
@@ -342,9 +324,6 @@ class GemmaAttentionTrtEdge(nn.Module):
                     f"'{type(self).__name__}' object has no attribute '{name}'"
                 ) from None
             return getattr(native, name)
-=======
-            return getattr(self.native, name)
->>>>>>> origin/main
 
 
 def install_gemma_edge_attention_wrappers(
@@ -394,7 +373,6 @@ def _gated_residual(
     return x + y * gate
 
 
-<<<<<<< HEAD
 def _bf16_to_fp16_inplace_for_trt_onnx_export(
     module: nn.Module,
 ) -> list[tuple[torch.nn.Parameter | torch.Tensor, torch.Tensor]]:
@@ -433,8 +411,6 @@ def _restore_bf16_after_trt_onnx_export(
             t.data = orig.clone().to(device=t.device)
 
 
-=======
->>>>>>> origin/main
 class GemmaModelEdgeOnnxExport(nn.Module):
     """
     仅用于 ONNX 导出：复现 Gemma 解码器数据流（RMSNorm + MLP + 最终 norm），
@@ -470,20 +446,11 @@ class GemmaModelEdgeOnnxExport(nn.Module):
         gemma = self.gemma
         device = inputs_embeds.device
         bsz, seq_len, _ = inputs_embeds.shape
-<<<<<<< HEAD
         # TensorRT C++ AttentionPlugin 仅接受 FP16（kHALF），见
         # third_party/TensorRT-Edge-LLM/cpp/plugins/attentionPlugin.cpp supportsFormatCombination。
         # 若此处按权重升为 BF16，ONNX 中插件前后易出现 BFLOAT16，建引擎报
         # "doesn't report any supported format combinations"。导出 TRT 时激活统一用 FP16。
         hidden_states = inputs_embeds.to(torch.float16)
-=======
-        hidden_states = inputs_embeds
-        if (
-            len(gemma.layers) > 0
-            and gemma.layers[0].self_attn.native.q_proj.weight.dtype == torch.bfloat16
-        ):
-            hidden_states = hidden_states.to(torch.bfloat16)
->>>>>>> origin/main
 
         position_ids_i64 = position_ids
         if position_ids_i64.dim() != 2:
@@ -667,12 +634,9 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
         self.config = config
         self.model.config._attn_implementation = "eager"
 
-<<<<<<< HEAD
     def get_calibrate_dataset(self, calib_data):
         return open_pi05_calib_for_quantize(calib_data, component="pi05_llm")
 
-=======
->>>>>>> origin/main
     def _wrap_past_key_values(self, input_keys, input_values):
         k_v_cache = DynamicCache()
         num_layers = input_keys.shape[0]
@@ -746,7 +710,6 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
         val_datas = self.get_calibrate_dataset(val_data)
 
         def val_loop(model: torch.nn.Module, output_datas) -> None:
-<<<<<<< HEAD
             try:
                 n = len(val_datas)
             except TypeError:
@@ -756,10 +719,6 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
             else:
                 print("Val model (streaming calib data, total unknown)...")
             pbar = tqdm(val_datas, total=n, desc="Val", unit="num_samples")
-=======
-            print(f"Val model on {len(val_datas)} samples...")
-            pbar = tqdm(val_datas, desc="Val", unit="num_samples")
->>>>>>> origin/main
             for data in pbar:
                 if isinstance(data, dict):
                     data = {k: v.to(model.device) for k, v in data.items()}
@@ -787,17 +746,11 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
         val_loop(self, self.val_datas_before)
         return Pi05Metric(self.val_datas_before)
 
-<<<<<<< HEAD
     def quantize(self, quant_cfg, calib_data, export_dir, *, measure_quant_error: bool = False):
         calib_dataloader = self.get_calibrate_dataset(calib_data)
         quantize_model(
             self, quant_cfg, calib_dataloader, measure_quant_error=measure_quant_error
         )
-=======
-    def quantize(self, quant_cfg, calib_data, export_dir):
-        calib_dataloader = self.get_calibrate_dataset(calib_data)
-        quantize_model(self, quant_cfg, calib_dataloader)
->>>>>>> origin/main
         self.is_quantized = True
         set_dynamic_quant(self, "fp16")
         self.export(export_dir, dynamo=False)
@@ -842,15 +795,11 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
         )
 
         register_attention_plugin_onnx_symbolic_functions()
-<<<<<<< HEAD
         register_attention_plugin_fake_for_torch_export()
-=======
->>>>>>> origin/main
 
         # 不用 torch.onnx.export(self)：self.forward 仍走 GemmaModel + native 注意力。
         # 必须用 GemmaModelEdgeOnnxExport 显式走 layer.self_attn.edge.forward，图中才有 trt::attention_plugin。
         gemma = self.model._hf_gemma
-<<<<<<< HEAD
         weight_swaps = _bf16_to_fp16_inplace_for_trt_onnx_export(gemma)
         try:
             export_net = GemmaModelEdgeOnnxExport(gemma).eval().cuda()
@@ -874,29 +823,6 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
                 "dynamo": dynamo,
                 "do_constant_folding": True,
                 "dynamic_axes": {
-=======
-        export_net = GemmaModelEdgeOnnxExport(gemma).eval().cuda()
-
-        inputs_embeds = torch.randn(
-            (1, 968, 2048), dtype=torch.bfloat16, device="cuda"
-        )
-        attention_mask = torch.randn((1, 1, 968, 968), dtype=torch.float32, device="cuda")
-        position_ids = torch.randint(1, 1000, (1, 968), dtype=torch.int64, device="cuda")
-
-        onnx_path = f"{output_dir}/llm.onnx"
-        with torch.inference_mode():
-            torch.onnx.export(
-                export_net,
-                (inputs_embeds, attention_mask, position_ids),
-                onnx_path,
-                export_params=True,
-                input_names=["inputs_embeds", "attention_mask", "position_ids"],
-                output_names=["past_keys", "past_values", "last_hidden_state"],
-                opset_version=19,
-                dynamo=dynamo,
-                do_constant_folding=True,
-                dynamic_axes={
->>>>>>> origin/main
                     "inputs_embeds": {0: "batch_size", 1: "seq_len"},
                     "attention_mask": {
                         0: "batch_size",
@@ -908,7 +834,6 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
                     "past_values": {2: "seq_len"},
                     "last_hidden_state": {0: "batch_size", 1: "seq_len"},
                 },
-<<<<<<< HEAD
             }
             if dynamo:
                 tbl = trt_attention_plugin_custom_translation_table()
@@ -923,9 +848,6 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
                 )
         finally:
             _restore_bf16_after_trt_onnx_export(weight_swaps)
-=======
-            )
->>>>>>> origin/main
 
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
@@ -953,7 +875,6 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
         )
 
         register_attention_plugin_onnx_symbolic_functions()
-<<<<<<< HEAD
         register_attention_plugin_fake_for_torch_export()
 
         # 同 instance export：必须 trace GemmaModelEdgeOnnxExport，见类文档与 export() 内注释。
@@ -995,38 +916,6 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
                 )
         finally:
             _restore_bf16_after_trt_onnx_export(weight_swaps)
-=======
-
-        # 同 instance export：必须 trace GemmaModelEdgeOnnxExport，见类文档与 export() 内注释。
-        gemma = llm_model.model._hf_gemma
-        export_net = GemmaModelEdgeOnnxExport(gemma).eval().cuda()
-
-        inputs_embeds = torch.randn((1, 968, 2048), dtype=torch.float16, device="cuda")
-        attention_mask = torch.randn((1, 1, 968, 968), dtype=torch.float32, device="cuda")
-        position_ids = torch.randint(1, 1000, (1, 968), dtype=torch.int64, device="cuda")
-
-        with torch.inference_mode():
-            torch.onnx.export(
-                export_net,
-                (inputs_embeds, attention_mask, position_ids),
-                f"{output_dir}/llm.onnx",
-                input_names=["inputs_embeds", "attention_mask", "position_ids"],
-                output_names=["past_keys", "past_values", "last_hidden_state"],
-                opset_version=19,
-                dynamo=False,
-                do_constant_folding=True,
-                dynamic_axes={
-                    "inputs_embeds": {0: "batch_size", 1: "seq_len"},
-                    "attention_mask": {
-                        0: "batch_size",
-                        2: "seq_len",
-                        3: "seq_len",
-                    },
-                    "position_ids": {0: "batch_size", 1: "seq_len"},
-                    "last_hidden_state": {0: "batch_size", 1: "seq_len"},
-                },
-            )
->>>>>>> origin/main
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")
         return llm_model
