@@ -27,6 +27,41 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 
+def _calib_batch_to_model_device_dtype(
+    model: torch.nn.Module, batch: Dict[str, Any]
+) -> Dict[str, Any]:
+    """将校准 batch 移到 ``model`` 所在设备，并把 **浮点** 张量对齐到模型参数 dtype。
+
+    ``Pi05`` 的 ``LLM.quantize`` 把 **内部** ``GemmaModel``（``self.model``）交给 ``mtq.quantize``，
+    校准循环里调用的是 ``model(**data)``，**不会**经过 ``LLM.forward`` 里对 ``inputs_embeds`` 的
+    dtype 对齐。AWQ 族标定会把解码器暂转 ``float32``，而磁盘上的 ``inputs_embeds`` 常为
+    ``bfloat16``，否则会在 ``F.linear`` 等处出现 ``mat1`` 与 ``mat2`` dtype 不一致。
+    """
+    try:
+        device = model.device  # type: ignore[attr-defined]
+    except Exception:
+        device = next(model.parameters()).device
+    try:
+        param_dtype = next(model.parameters()).dtype
+    except StopIteration:
+        param_dtype = None
+
+    out: Dict[str, Any] = {}
+    for key, value in batch.items():
+        if isinstance(value, torch.Tensor):
+            tensor = value.to(device)
+            if (
+                param_dtype is not None
+                and value.is_floating_point()
+                and param_dtype.is_floating_point
+            ):
+                tensor = tensor.to(param_dtype)
+            out[key] = tensor
+        else:
+            out[key] = value
+    return out
+
+
 def _tensor_qdq_error_analysis(
     model: torch.nn.Module,
     calib_dataloader: DataLoader,
@@ -225,7 +260,7 @@ def quantize_model(
 
         for data in pbar:
             if isinstance(data, dict):
-                data = {k: v.to(model.device) for k, v in data.items()}
+                data = _calib_batch_to_model_device_dtype(model, data)
                 model(**data, **kwargs)
             else:
                 data = data.to(model.device)
@@ -234,7 +269,7 @@ def quantize_model(
     def analysis_forward_batch(m: torch.nn.Module, data: Any) -> None:
         kwargs = _phi4mm_kwargs(m)
         if isinstance(data, dict):
-            data = {k: v.to(m.device) for k, v in data.items()}
+            data = _calib_batch_to_model_device_dtype(m, data)
             m(**data, **kwargs)
         else:
             data = data.to(m.device)
