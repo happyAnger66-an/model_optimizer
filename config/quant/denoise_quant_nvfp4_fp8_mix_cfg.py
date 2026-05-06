@@ -27,7 +27,9 @@ _LLM_LINEAR_SUFFIXES = (
 
 
 def _apply_layerwise_fp8_11_17(qc: dict) -> None:
-    for i in range(0, 18):
+    for i in range(3, 18):
+        if i in [6, 10, 14, 17]:
+            continue
         for sub in _LLM_LINEAR_SUFFIXES:
             qc[f"*layers.{i}.{sub}.weight_quantizer"] = dict(_FP8_LINEAR)
             qc[f"*layers.{i}.{sub}.input_quantizer"] = dict(_FP8_LINEAR)
