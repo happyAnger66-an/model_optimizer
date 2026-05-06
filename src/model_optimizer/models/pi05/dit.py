@@ -369,9 +369,13 @@ class Pi05DenoiseStep(nn.Module, Model):
             max_period=4.0,
             device=device,
         )
-        time_emb = time_emb.to(dtype=timestep.dtype)
+        # 与 ``action_in_proj`` / ``time_mlp_*`` 的权重 dtype 对齐；标定数据里 ``x_t``/``timestep`` 可能为
+        # bf16（``_calib_batch_to_device_only`` 保留 dtype），而投影层常为 fp32，否则 ``F.linear`` 报
+        # ``mat1 and mat2 must have the same dtype``.
+        mlp_w_dtype = self.time_mlp_in.weight.dtype
+        time_emb = time_emb.to(dtype=mlp_w_dtype)
 
-        action_emb = self.action_in_proj(noisy_actions)
+        action_emb = self.action_in_proj(noisy_actions.to(dtype=self.action_in_proj.weight.dtype))
 
         x = self.time_mlp_in(time_emb)
         x = F.silu(x)

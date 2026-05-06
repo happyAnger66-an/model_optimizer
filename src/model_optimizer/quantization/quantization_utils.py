@@ -257,7 +257,7 @@ def quantize_model(
         quant_config: Quantization configuration dictionary
         calib_dataloader: DataLoader for calibration data
         forward_context: If set, calibration and QDQ analysis move tensors with
-            ``_calib_batch_to_model_device_dtype(forward_context, ...)`` and invoke
+            :func:`_calib_batch_to_device_only` (device only, dtype preserved) and invoke
             ``forward_context`` instead of ``model(**data)``. Use this when ``model`` is an
             HF decoder subtree (e.g. ``gemma_expert``) for ``FP8_KV_CFG``, while the runnable
             forward lives on a wrapper (e.g. :class:`Pi05DenoiseStep`).
