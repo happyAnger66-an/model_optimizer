@@ -62,6 +62,27 @@ def _calib_batch_to_model_device_dtype(
     return out
 
 
+def _calib_batch_to_device_only(model: torch.nn.Module, batch: Dict[str, Any]) -> Dict[str, Any]:
+    """将校准 batch 中张量移到 ``model`` 所在设备，**不改变 dtype**。
+
+    用于 ``forward_context`` + 子模块量化的路径：``Pi05DenoiseStep`` 上 ``action_in_proj`` 等常为
+    ``float32``，而 ``gemma_expert`` 为 ``bfloat16``。若用 :func:`_calib_batch_to_model_device_dtype`
+    按 ``next(model.parameters())`` 统一 cast，易把 ``x_t`` 转成 bf16 导致与 fp32 权重 ``mat1/mat2``
+    dtype 不一致。
+    """
+    try:
+        device = model.device  # type: ignore[attr-defined]
+    except Exception:
+        device = next(model.parameters()).device
+    out: Dict[str, Any] = {}
+    for key, value in batch.items():
+        if isinstance(value, torch.Tensor):
+            out[key] = value.to(device)
+        else:
+            out[key] = value
+    return out
+
+
 def _tensor_qdq_error_analysis(
     model: torch.nn.Module,
     calib_dataloader: DataLoader,
@@ -263,7 +284,10 @@ def quantize_model(
         """Run one calibration forward; ``qm`` is the quantize root (may equal ``ctx``)."""
         kwargs = _phi4mm_kwargs(qm)
         if isinstance(batch, dict):
-            batch = _calib_batch_to_model_device_dtype(ctx, batch)
+            if forward_context is not None:
+                batch = _calib_batch_to_device_only(ctx, batch)
+            else:
+                batch = _calib_batch_to_model_device_dtype(ctx, batch)
             if forward_context is not None:
                 # Pi05DenoiseStep.forward: positional only (matches calib collector keys).
                 forward_context(
