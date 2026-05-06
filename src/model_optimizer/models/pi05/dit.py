@@ -15,7 +15,10 @@ from transformers.cache_utils import DynamicCache
 
 from ..model import Model
 from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
-from model_optimizer.quantization.quantization_utils import quantize_model
+from model_optimizer.quantization.quantization_utils import (
+    quant_config_targets_hf_bmm_kv,
+    quantize_model,
+)
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
 logger = logging.getLogger(__name__)
@@ -292,9 +295,23 @@ class Pi05DenoiseStep(nn.Module, Model):
 
     def quantize(self, quant_cfg, calib_data, export_dir, *, measure_quant_error: bool = False):
         calib_dataloader = self.get_calibrate_dataset(calib_data)
-        quantize_model(
-            self, quant_cfg, calib_dataloader, measure_quant_error=measure_quant_error
-        )
+        # FP8_KV_CFG / *_bmm_quantizer：ModelOpt 要求 ``mtq.quantize`` 的根模块为 HF PreTrainedModel，
+        # 与 LLM.quantize(self.model, ...) 一致；标定仍走完整 ``forward`` 以覆盖 action/time 投影与 expert。
+        if quant_config_targets_hf_bmm_kv(quant_cfg):
+            quantize_model(
+                self.gemma_expert,
+                quant_cfg,
+                calib_dataloader,
+                forward_context=self,
+                measure_quant_error=measure_quant_error,
+            )
+        else:
+            quantize_model(
+                self,
+                quant_cfg,
+                calib_dataloader,
+                measure_quant_error=measure_quant_error,
+            )
         self.is_quantized = True
         set_dynamic_quant(self, "bf16")
 

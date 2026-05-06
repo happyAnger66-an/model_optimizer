@@ -184,6 +184,19 @@ def _print_qdq_report(report: Dict[str, Dict[str, float]], *, top_k: int = 32) -
         )
 
 
+def quant_config_targets_hf_bmm_kv(quant_cfg: Dict[str, Any]) -> bool:
+    """True if ``quant_cfg`` requests HF attention BMM quantizers (e.g. :class:`FP8_KV_CFG`).
+
+    ModelOpt registers ``*_bmm_quantizer`` hooks when the **root** passed to ``mtq.quantize``
+    is a HuggingFace ``PreTrainedModel``. Wrappers such as :class:`Pi05DenoiseStep` must then
+    pass ``gemma_expert`` as the quantize root and run calibration via the wrapper ``forward``.
+    """
+    qc = quant_cfg.get("quant_cfg")
+    if not isinstance(qc, dict):
+        return False
+    return any("bmm_quantizer" in str(k) for k in qc)
+
+
 def enable_huggingface_checkpointing_patch() -> None:
     from modelopt.torch.opt.plugins.huggingface import (
         _LIBRARY_CLASSES_FOR_PATCHING, _PATCHED_CLASSES,
@@ -211,6 +224,7 @@ def quantize_model(
     quant_config: Dict[str, Any],
     calib_dataloader: DataLoader,
     *,
+    forward_context: Optional[torch.nn.Module] = None,
     measure_quant_error: bool = False,
     qdq_error_report: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> torch.nn.Module:
@@ -218,9 +232,14 @@ def quantize_model(
     Quantize a PyTorch model using the specified configuration and calibration data.
     
     Args:
-        model: PyTorch model to quantize
+        model: PyTorch module passed to ``mtq.quantize`` (quantization root).
         quant_config: Quantization configuration dictionary
         calib_dataloader: DataLoader for calibration data
+        forward_context: If set, calibration and QDQ analysis move tensors with
+            ``_calib_batch_to_model_device_dtype(forward_context, ...)`` and invoke
+            ``forward_context`` instead of ``model(**data)``. Use this when ``model`` is an
+            HF decoder subtree (e.g. ``gemma_expert``) for ``FP8_KV_CFG``, while the runnable
+            forward lives on a wrapper (e.g. :class:`Pi05DenoiseStep`).
         measure_quant_error: If True, after ``mtq.quantize`` runs an extra pass over
             ``calib_dataloader`` and prints per-``TensorQuantizer`` tensor I/O QDQ metrics.
         qdq_error_report: If not ``None``, filled with the same metrics returned by
@@ -238,13 +257,35 @@ def quantize_model(
             kwargs["use_cache"] = False
         return kwargs
 
+    ctx = forward_context if forward_context is not None else model
+
+    def _run_calib_forward(qm: torch.nn.Module, batch: Any) -> None:
+        """Run one calibration forward; ``qm`` is the quantize root (may equal ``ctx``)."""
+        kwargs = _phi4mm_kwargs(qm)
+        if isinstance(batch, dict):
+            batch = _calib_batch_to_model_device_dtype(ctx, batch)
+            if forward_context is not None:
+                # Pi05DenoiseStep.forward: positional only (matches calib collector keys).
+                forward_context(
+                    batch["prefix_pad_masks"],
+                    batch["past_keys"],
+                    batch["past_values"],
+                    batch["x_t"],
+                    batch["timestep"],
+                )
+            else:
+                qm(**batch, **kwargs)
+        else:
+            batch = batch.to(ctx.device)  # type: ignore[attr-defined]
+            qm(batch, **kwargs)
+
     # Define calibration loop
-    def calibrate_loop(model: torch.nn.Module) -> None:
+    def calibrate_loop(qmodel: torch.nn.Module) -> None:
         """
         Calibration loop that adjusts weights and scaling factors.
         
         Args:
-            model: Model to calibrate
+            qmodel: Model to calibrate
         """
         try:
             n = len(calib_dataloader)
@@ -256,24 +297,11 @@ def quantize_model(
             print("Calibrating model (streaming calibration data, total unknown)...")
         pbar = tqdm(calib_dataloader, total=n, desc="Calibrating", unit="num_samples")
 
-        kwargs = _phi4mm_kwargs(model)
-
         for data in pbar:
-            if isinstance(data, dict):
-                data = _calib_batch_to_model_device_dtype(model, data)
-                model(**data, **kwargs)
-            else:
-                data = data.to(model.device)
-                model(data, **kwargs)
+            _run_calib_forward(qmodel, data)
 
     def analysis_forward_batch(m: torch.nn.Module, data: Any) -> None:
-        kwargs = _phi4mm_kwargs(m)
-        if isinstance(data, dict):
-            data = _calib_batch_to_model_device_dtype(m, data)
-            m(**data, **kwargs)
-        else:
-            data = data.to(m.device)
-            m(data, **kwargs)
+        _run_calib_forward(m, data)
 
     # Get quantization config and perform quantization
     mtq.quantize(model, quant_config, forward_loop=calibrate_loop)
