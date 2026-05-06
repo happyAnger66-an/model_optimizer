@@ -24,11 +24,26 @@ from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 logger = logging.getLogger(__name__)
 
 
-def _patch_denoise_onnx_float_bias_to_bfloat16(onnx_path: str) -> None:
-    """将仍为 FLOAT 的 Linear bias 初始值改为 BFLOAT16。
+# 这些子模块在 ``forward`` 里于 ``suffix_embs.to(expert_dtype)`` **之前** 仍为 FP32 计算图；
+# ONNX 上 MatMul 输出为 Float 时，若把对应 bias 强行改为 BF16，会在 ``Add(MatMul, bias)``
+# 触发 TRT ``ElementWiseOperation SUM must have same input types``。
+_SKIP_FLOAT_BIAS_TO_BF16_SUBSTR: tuple[str, ...] = (
+    "action_in_proj",
+    "time_mlp_in",
+    "time_mlp_out",
+    "action_out_proj",
+)
 
-    TensorRT 强类型 / bf16 构建下，MatMul 常为 BF16 而 ONNX 仍导出 FLOAT bias，
-    会在 ``Add(MatMul, bias)`` 上报类型不一致；统一 bias 为 BF16 与 MatMul 输出对齐。
+
+def _patch_denoise_onnx_float_bias_to_bfloat16(onnx_path: str) -> None:
+    """将仍为 FLOAT 的 Linear bias 初始值改为 BFLOAT16（仅针对 MatMul 已为 BF16 的分支）。
+
+    TensorRT 强类型 / bf16 构建下，**部分**子图 MatMul 已为 BF16 而 ONNX 仍导出 FLOAT bias 时，
+    统一 bias 为 BF16 与 MatMul 输出对齐。
+
+    **不**转换 :data:`_SKIP_FLOAT_BIAS_TO_BF16_SUBSTR` 下的 bias：denoise 里 ``action_in_proj`` /
+    ``time_mlp_*`` / ``action_out_proj`` 与 ``x_t`` 常为 FP32，MatMul 输出为 Float；强行改 bias
+    会与 Float 的 MatMul 输出在 ``Add`` 上 dtype 冲突。
     """
     try:
         import numpy as np
@@ -54,6 +69,8 @@ def _patch_denoise_onnx_float_bias_to_bfloat16(onnx_path: str) -> None:
         if init.data_type != TensorProto.FLOAT:
             continue
         if not (init.name.endswith("bias") or init.name.endswith("/bias")):
+            continue
+        if any(s in init.name for s in _SKIP_FLOAT_BIAS_TO_BF16_SUBSTR):
             continue
         try:
             arr = numpy_helper.to_array(init, base_dir=base_dir)
