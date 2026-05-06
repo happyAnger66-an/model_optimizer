@@ -4,16 +4,22 @@
 			"path": "."
 		},
 		{
-			"path": "../Isaac-GR00T"
+			"path": "../../e2e/TensorRT-LLM"
 		},
 		{
-			"path": "../TensorRT"
+			"path": "../../e2e/TensorRT"
 		},
 		{
-			"path": "../TensorRT-LLM"
+			"path": "../../../codes/openpi"
 		},
 		{
-			"path": "../accelerated-computing-hub"
+			"path": "../../e2e/cutlass"
+		},
+		{
+			"path": "../../../codes/sh_vla"
+		},
+		{
+			"path": "../starVLA"
 		},
 		{
 			"path": "../TensorRT-Edge-LLM"

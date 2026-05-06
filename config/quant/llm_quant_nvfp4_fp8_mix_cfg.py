@@ -1,6 +1,8 @@
 import copy
 
-from modelopt.torch.quantization import NVFP4_DEFAULT_CFG
+from modelopt.torch.quantization import NVFP4_DEFAULT_CFG,FP8_KV_CFG
+
+from model_optimizer.quantization.cfg import add_nvfp4_input_layernorm_explicit
 
 # 新版 ModelOpt：quant_cfg 为 dict（Pydantic QuantizeConfig）；旧版可能为 list。
 # 策略：全局仍为 NVFP4_DEFAULT_CFG；对 **第 11–17 层** 的主要 Linear 量化器显式覆盖为 FP8（E4M3，与 FP8_DEFAULT_CFG 一致）。
@@ -25,7 +27,9 @@ _LLM_LINEAR_SUFFIXES = (
 
 
 def _apply_layerwise_fp8(qc: dict) -> None:
-    for i in range(0, 18):
+    for i in range(3, 18):
+        if i in [6, 10, 14, 17]:
+            continue
         for sub in _LLM_LINEAR_SUFFIXES:
             qc[f"*layers.{i}.{sub}.weight_quantizer"] = dict(_FP8_LINEAR)
             qc[f"*layers.{i}.{sub}.input_quantizer"] = dict(_FP8_LINEAR)
@@ -34,6 +38,7 @@ def _apply_layerwise_fp8(qc: dict) -> None:
 if isinstance(_qc, dict):
     merged = dict(_qc)
     _apply_layerwise_fp8(merged)
+    add_nvfp4_input_layernorm_explicit(merged)
     QUANT_CFG["quant_cfg"] = merged
 else:
     # 旧版 list：在列表末尾追加更具体的 FP8 项（后项覆盖先项）
@@ -48,3 +53,26 @@ else:
                     }
                 )
     QUANT_CFG["quant_cfg"] = list(_qc) + extra
+
+
+FP8_ATTN = {
+    "quant_cfg": {
+        "*q_bmm_quantizer": {
+            "num_bits": (4, 3),
+            "axis": None,
+            "enable": True
+        },
+        "*k_bmm_quantizer": {
+            "num_bits": (4, 3),
+            "axis": None,
+            "enable": True
+        },
+        "*v_bmm_quantizer": {
+            "num_bits": (4, 3),
+            "axis": None,
+            "enable": True
+        },
+    }
+}
+QUANT_CFG["quant_cfg"].update(FP8_KV_CFG["quant_cfg"])
+QUANT_CFG["quant_cfg"].update(FP8_ATTN["quant_cfg"])
