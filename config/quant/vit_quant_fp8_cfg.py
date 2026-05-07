@@ -38,6 +38,6 @@ _VIT_ENCODER_LAYER0_QUANTIZER_SKIP_SUFFIXES: tuple[str, ...] = (
 )
 _VIT_LAYER0_PREFIX = "vision_tower.vision_model.encoder.layers.{i}."
 
-for i in range(0, 27):
+for i in range(27, 27):
     for sub in _VIT_ENCODER_LAYER0_QUANTIZER_SKIP_SUFFIXES:
         QUANT_CFG["quant_cfg"][f"vision_tower.vision_model.encoder.layers.{i}.{sub}"] = {"enable": False}

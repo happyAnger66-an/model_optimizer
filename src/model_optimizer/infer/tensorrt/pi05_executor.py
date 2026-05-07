@@ -83,6 +83,10 @@ class Pi05TensorRTExecutor(Executor):
 
         self.config = config
         self._setup_trt_engine()
+        # ``PI0Pytorch`` 构造里会把 ``sample_actions`` 包成 ``torch.compile``；TRT 在
+        # 运行时替换 ``embed_*`` / ``forward`` / ``denoise_step`` 后，再对整条推理
+        # 图做 dynamo/inductor 易与 TRT 子图不兼容。每次换 engine 后恢复为类上原始实现。
+        self._restore_eager_sample_actions()
       #  self._release_pytorch_model()
       #  self.pi05_model.paligemma_with_expert.embed_image = partial(
       #      embed_image, self.pi05_model.paligemma_with_expert.paligemma.model)
@@ -322,6 +326,19 @@ class Pi05TensorRTExecutor(Executor):
                 self.pi05_model.denoise_step = types.MethodType(
                     denoise_step_trt, self.pi05_model
                 )
+
+    def _restore_eager_sample_actions(self) -> None:
+        """将 ``sample_actions`` 从实例上的 ``torch.compile`` 恢复为类定义的 Python 方法。
+
+        ``PI0Pytorch.__init__`` 中 ``self.sample_actions = torch.compile(...)`` 只写在实例
+        ``__dict__`` 里，类属性仍是原始 ``def sample_actions``。用 ``MethodType`` 绑定到
+        当前 ``pi05_model`` 后，调用链会走已挂好的 TRT 包装，且不再触发整图编译。
+        """
+        model = self.pi05_model
+        raw_fn = type(model).__dict__.get("sample_actions")
+        if not isinstance(raw_fn, types.FunctionType):
+            return
+        model.sample_actions = types.MethodType(raw_fn, model)
 
     def _release_pytorch_model(self):
         if self.config.vit_engine:

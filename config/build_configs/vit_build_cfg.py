@@ -1,5 +1,5 @@
 build_cfg = {
-    "precision": "fp16",
+    "precision": "bf16",
     "workspace_mb": 8192,
     "min_shapes": {
         "pixel_values": (1, 3, 224, 224),
