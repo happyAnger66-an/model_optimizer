@@ -17,6 +17,9 @@
 #   # 仅探测 HTTP ``/healthz``（与 ``WebsocketPolicyServer`` 一致）
 #   python scripts/deployment/pi05/client_policy.py --health-only --host 127.0.0.1 --port 8000
 #
+#   # 与 ``standalone_inference_script.get_input_data(input_data_file=None)`` 相同：合成 LIBERO 风格观测
+#   python scripts/deployment/pi05/client_policy.py --libero-example --num-samples 20 --host 127.0.0.1 --port 8000
+#
 # 依赖：``openpi``、``openpi-client``（``WebsocketClientPolicy`` / ``msgpack_numpy``）、
 # ``tyro``、``lerobot``（与 WebUI 相同）、可选 ``tqdm``。
 
@@ -42,7 +45,10 @@ class Args:
     """与 ``serve_policy.py`` / ``lerobot_eval_webui`` 相同：``get_config`` 名或 ``TrainConfig`` 的 ``.py`` 路径。"""
 
     dataset_root: Path | None = None
-    """LeRobot 根目录；传给 ``LeRobotDataset(..., root=...)``，与 WebUI ``--dataset-root`` 一致。"""
+    """LeRobot 根目录；传给 ``LeRobotDataset(..., root=...)``，与 WebUI ``--dataset-root`` 一致。``--libero-example`` 时忽略。"""
+
+    libero_example: bool = False
+    """为 True 时不加载 LeRobot；每步调用 ``openpi.policies.libero_policy.make_libero_example()``（与 ``standalone_inference_script.py`` 无校准数据文件时的合成观测一致），共 ``num_samples`` 次远程 ``infer``。"""
 
     host: str = "127.0.0.1"
     """WebSocket 主机；勿用 ``0.0.0.0`` 作为客户端目标。"""
@@ -52,7 +58,7 @@ class Args:
 
     start_index: int = 0
     num_samples: int = 500
-    """与 WebUI 一致：在 ``[start_index, start_index + num_samples)`` 与 ``len(dataset)`` 交集中取帧。"""
+    """数据集模式：与 WebUI 一致，在 ``[start_index, start_index + num_samples)`` 与 ``len(dataset)`` 交集中取帧。``--libero-example`` 时：远程 ``infer`` 调用次数。"""
 
     rel_eps: float = 1e-8
     """相对误差分母 ``max(|gt|, rel_eps)``，与 WebUI ``--rel-eps`` 一致。"""
@@ -105,6 +111,57 @@ def main(args: Args) -> None:
     if args.health_only:
         body = _http_healthz(args.host, args.port)
         print(f"healthz OK: {body!r}")
+        return
+
+    if args.libero_example:
+        from openpi.policies.libero_policy import make_libero_example
+        from openpi_client import websocket_client_policy as _websocket_client_policy
+
+        if args.num_samples < 1:
+            raise ValueError("num_samples must be >= 1 when using --libero-example")
+
+        client = _websocket_client_policy.WebsocketClientPolicy(
+            host=args.host, port=args.port, api_key=args.api_key
+        )
+        meta = client.get_server_metadata()
+        if not args.quiet:
+            print("server metadata:", meta)
+
+        supports_score = bool(meta.get("supports_score_endpoint"))
+        if args.score_once and not supports_score:
+            logging.warning("已设 --score-once 但服务端未声明 supports_score_endpoint，跳过 score。")
+
+        process_ms: list[float] = []
+
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            tqdm = lambda x, **kw: x  # type: ignore[assignment, misc]
+
+        for chunk_i in tqdm(range(args.num_samples), desc="libero_example infer"):
+            obs = make_libero_example()
+            if args.score_once and supports_score and chunk_i == 0:
+                try:
+                    score_out = client.infer({**obs, "_request_type": "score"})
+                    if not args.quiet:
+                        print(
+                            "score (first step):",
+                            {k: score_out[k] for k in score_out if k != "value_logits"},
+                        )
+                except Exception as e:
+                    logging.warning("score 请求失败: %s", e)
+
+            out = client.infer(obs)
+            st = out.get("server_timing") or {}
+            if "process_ms" in st:
+                process_ms.append(float(st["process_ms"]))
+
+        if process_ms:
+            print(
+                "server_timing process_ms: "
+                f"mean={np.mean(process_ms):.2f} std={np.std(process_ms):.2f} "
+                f"n={len(process_ms)}"
+            )
         return
 
     from lerobot_eval_webui.dataset import (
