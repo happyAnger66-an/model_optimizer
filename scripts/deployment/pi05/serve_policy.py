@@ -23,6 +23,8 @@
 #     --denoise-engine denoise.engine --embed-prefix-engine embed_prefix.engine \\
 #     --port 8000
 #
+#   # 默认会在监听端口前用 ``make_libero_example()`` 做一次 ``infer`` 预热（``--no-warmup`` 可关）
+#
 # 依赖：已安装 openpi（含 ``openpi.policies``、``openpi.serving.websocket_policy_server``）、
 # ``tyro``、``addict``、GPU 上 TensorRT 相关环境与 ``model_optimizer`` 包。
 
@@ -32,6 +34,7 @@ import dataclasses
 import importlib.util
 import logging
 import socket
+import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -115,6 +118,12 @@ class Args:
     denoise_engine: str = ""
     embed_prefix_engine: str = ""
 
+    warmup: bool = True
+    """为 True 时，在启动 WebSocket 前用 ``openpi.policies.libero_policy.make_libero_example()`` 调用 ``policy.infer``，完成一次与真实请求一致的端到端推理（含 TRT / ``torch.compile`` 等首次开销）。"""
+
+    warmup_runs: int = 1
+    """``warmup`` 时连续 ``infer`` 次数；``>1`` 可用于进一步稳定 GPU 状态。"""
+
 
 def _build_trt_engine_config(args: Args) -> addict.Dict | None:
     if not args.trt_engine_path.strip():
@@ -163,6 +172,20 @@ def _apply_inference_backend(policy: _policy.Policy, args: Args) -> None:
     raise ValueError(f"Unknown inference_mode: {args.inference_mode!r}")
 
 
+def _run_serve_warmup(policy: _policy.Policy, *, runs: int) -> None:
+    """与 ``standalone_inference_script`` / ``client_policy --libero-example`` 一致的合成观测，做一次端到端 ``infer``。"""
+    from openpi.policies.libero_policy import make_libero_example
+
+    if runs < 1:
+        raise ValueError(f"warmup_runs must be >= 1, got {runs}")
+    for i in range(runs):
+        obs = make_libero_example()
+        t0 = time.monotonic()
+        policy.infer(obs)
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        logging.info("serve_policy warmup infer %s/%s finished in %.2f ms", i + 1, runs, elapsed_ms)
+
+
 def main(args: Args) -> None:
     train_cfg = load_train_config(args.config_name)
     policy = _policy_config.create_trained_policy(
@@ -180,6 +203,15 @@ def main(args: Args) -> None:
 
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
+
+    if args.warmup:
+        logging.info(
+            "Running warmup (%s run(s)) with make_libero_example() …", args.warmup_runs
+        )
+        _run_serve_warmup(policy, runs=args.warmup_runs)
+        logging.info("Warmup done.")
+    else:
+        logging.info("Warmup skipped (--no-warmup).")
 
     policy_metadata = policy.metadata
     hostname = socket.gethostname()
