@@ -37,6 +37,15 @@ _SKIP_FLOAT_BIAS_TO_BF16_SUBSTR: tuple[str, ...] = (
     "gemma_expert",
 )
 
+# 与 ``_SKIP_FLOAT_BIAS_TO_BF16_SUBSTR`` 中投影子串对应；量化导出后 MatMul 常为 BF16，bias 仍为 FLOAT，
+# 需按图单独把 FLOAT bias 升为 BF16（见 :func:`_patch_denoise_onnx_prefix_proj_float_bias_for_bf16_matmul_add`）。
+_PREFIX_PROJ_BIAS_SUBSTR: tuple[str, ...] = (
+    "action_in_proj",
+    "time_mlp_in",
+    "time_mlp_out",
+    "action_out_proj",
+)
+
 
 def _patch_denoise_onnx_float_bias_to_bfloat16(onnx_path: str) -> None:
     """将仍为 FLOAT 的 Linear bias 初始值改为 BFLOAT16（仅针对 MatMul 已为 BF16 的分支）。
@@ -110,6 +119,180 @@ def _patch_denoise_onnx_float_bias_to_bfloat16(onnx_path: str) -> None:
         len(changed),
         onnx_path,
         preview,
+    )
+
+
+def _onnx_tensor_elem_type(model, tensor_name: str) -> int | None:
+    """返回 ONNX 图中张量的 ``TensorProto`` elem_type，未知则 ``None``。"""
+    from onnx import TensorProto
+
+    for vi in model.graph.value_info:
+        if vi.name == tensor_name and vi.type.HasField("tensor_type"):
+            return int(vi.type.tensor_type.elem_type)
+    for out in model.graph.output:
+        if out.name == tensor_name and out.type.HasField("tensor_type"):
+            return int(out.type.tensor_type.elem_type)
+    for inp in model.graph.input:
+        if inp.name == tensor_name and inp.type.HasField("tensor_type"):
+            return int(inp.type.tensor_type.elem_type)
+    for init in model.graph.initializer:
+        if init.name == tensor_name:
+            return int(init.data_type)
+    return None
+
+
+def _onnx_producer_map(model):
+    """tensor 名 -> 产出该 tensor 的 node（假定单生产者）。"""
+    m: dict[str, object] = {}
+    for node in model.graph.node:
+        for o in node.output:
+            m[o] = node
+    return m
+
+
+def _onnx_trace_to_matmul_or_gemm(producers: dict, tensor_name: str, *, max_hops: int = 8):
+    """沿单输入链回退，直到 ``MatMul`` / ``Gemm`` 或无法继续。"""
+    cur = tensor_name
+    for _ in range(max_hops):
+        node = producers.get(cur)
+        if node is None:
+            return None
+        if node.op_type in ("MatMul", "Gemm"):
+            return node
+        if not node.input:
+            return None
+        # Cast / Transpose / Reshape / Squeeze 等常见一元前驱
+        if len(node.input) >= 1 and node.op_type in (
+            "Cast",
+            "Transpose",
+            "Reshape",
+            "Flatten",
+            "Squeeze",
+            "Unsqueeze",
+        ):
+            cur = node.input[0]
+            continue
+        return None
+    return None
+
+
+def _onnx_matmul_gemm_output_elem_type(model, mm_node, out_tensor: str) -> int | None:
+    """推断 ``MatMul``/``Gemm`` 主输出 ``out_tensor`` 的元素类型。"""
+    from onnx import TensorProto
+
+    t = _onnx_tensor_elem_type(model, out_tensor)
+    if t is not None and t != TensorProto.UNDEFINED:
+        return t
+    if mm_node.op_type == "MatMul" and len(mm_node.input) >= 2:
+        t0 = _onnx_tensor_elem_type(model, mm_node.input[0])
+        t1 = _onnx_tensor_elem_type(model, mm_node.input[1])
+        if t0 == TensorProto.BFLOAT16 and t1 == TensorProto.BFLOAT16:
+            return TensorProto.BFLOAT16
+        if t0 == TensorProto.FLOAT and t1 == TensorProto.FLOAT:
+            return TensorProto.FLOAT
+    if mm_node.op_type == "Gemm" and len(mm_node.input) >= 2:
+        t0 = _onnx_tensor_elem_type(model, mm_node.input[0])
+        t1 = _onnx_tensor_elem_type(model, mm_node.input[1])
+        if t0 == TensorProto.BFLOAT16 and t1 == TensorProto.BFLOAT16:
+            return TensorProto.BFLOAT16
+        if t0 == TensorProto.FLOAT and t1 == TensorProto.FLOAT:
+            return TensorProto.FLOAT
+    return None
+
+
+def _patch_denoise_onnx_prefix_proj_float_bias_for_bf16_matmul_add(onnx_path: str) -> None:
+    """``action_*`` / ``time_mlp_*`` 上 ``Add(MatMul|Gemm, bias)``：主支为 BF16、initializer bias 为 FLOAT 时升 bias。
+
+    与 :func:`_patch_denoise_onnx_float_bias_to_bfloat16` 互补：投影层被排除在全局 FLOAT→BF16 之外，以免
+    MatMul 仍为 Float 时误升 bias；量化后 MatMul 常为 BF16，此时必须升 bias 否则 TRT 强类型 ``Add`` 失败。
+    """
+    try:
+        import numpy as np
+        import onnx
+        from onnx import TensorProto, helper, numpy_helper
+    except ImportError:
+        logger.warning("onnx/numpy unavailable; skip prefix bias patch for %s", onnx_path)
+        return
+
+    if not os.path.isfile(onnx_path):
+        return
+
+    try:
+        model = onnx.load(onnx_path, load_external_data=False)
+    except Exception as exc:
+        logger.warning("Failed to load ONNX for prefix bias patch %s: %s", onnx_path, exc)
+        return
+
+    try:
+        from onnx import shape_inference
+
+        model = shape_inference.infer_shapes(model)
+    except Exception:
+        pass
+
+    init_by_name = {init.name: init for init in model.graph.initializer}
+    producers = _onnx_producer_map(model)
+    changed: list[str] = []
+
+    for node in model.graph.node:
+        if node.op_type != "Add" or len(node.input) != 2:
+            continue
+        a, b = node.input[0], node.input[1]
+        bias_name: str | None = None
+        other: str | None = None
+        if a in init_by_name and (a.endswith("bias") or a.endswith("/bias")):
+            bias_name, other = a, b
+        elif b in init_by_name and (b.endswith("bias") or b.endswith("/bias")):
+            bias_name, other = b, a
+        else:
+            continue
+        if not any(s in bias_name for s in _PREFIX_PROJ_BIAS_SUBSTR):
+            continue
+        bias_init = init_by_name.get(bias_name)
+        if bias_init is None or bias_init.data_type != TensorProto.FLOAT:
+            continue
+        mm = _onnx_trace_to_matmul_or_gemm(producers, other)
+        if mm is None:
+            continue
+        out_elem = _onnx_matmul_gemm_output_elem_type(model, mm, other)
+        if out_elem != TensorProto.BFLOAT16:
+            continue
+        try:
+            arr = numpy_helper.to_array(
+                bias_init,
+                base_dir=os.path.dirname(os.path.abspath(onnx_path)),
+            )
+            if arr.size == 0:
+                continue
+            arr_f = np.ascontiguousarray(arr, dtype=np.float32)
+            t_bf = torch.from_numpy(arr_f).to(torch.bfloat16).contiguous()
+            raw = t_bf.view(torch.uint16).detach().cpu().numpy().tobytes()
+            new_tp = helper.make_tensor(
+                bias_name,
+                TensorProto.BFLOAT16,
+                [int(d) for d in arr_f.shape],
+                raw,
+                raw=True,
+            )
+            bias_init.CopyFrom(new_tp)
+            changed.append(bias_name)
+        except Exception as exc:
+            logger.warning("Skip prefix bias patch for %s: %s", bias_name, exc)
+
+    if not changed:
+        return
+
+    try:
+        onnx.save(model, onnx_path)
+    except Exception as exc:
+        logger.warning("Failed to save ONNX after prefix bias patch %s: %s", onnx_path, exc)
+        return
+
+    logger.info(
+        "Patched %d prefix FLOAT->BFLOAT16 bias(es) for BF16 MatMul/Gemm Add in %s: %s",
+        len(changed),
+        onnx_path,
+        changed[:12],
     )
 
 
@@ -380,8 +563,9 @@ class Pi05DenoiseStep(nn.Module, Model):
                 do_constant_folding=True,
                 **export_kw,
             )
-        #_patch_denoise_onnx_float_bias_to_bfloat16(output_path)
-        #_patch_denoise_onnx_gemma_bf16_bias_to_float_if_fp8(output_path)
+        _patch_denoise_onnx_float_bias_to_bfloat16(output_path)
+        _patch_denoise_onnx_prefix_proj_float_bias_for_bf16_matmul_add(output_path)
+        _patch_denoise_onnx_gemma_bf16_bias_to_float_if_fp8(output_path)
         end = time.time()
         logger.info("export onnx to %s done cost:%ss", output_dir, end - start)
         print(
@@ -420,6 +604,7 @@ class Pi05DenoiseStep(nn.Module, Model):
             print(colored("nvfp4 quantization detected, post processing...", "green"))
             self._nvfp4_post_processing(onnx_path, export_dir)
         _patch_denoise_onnx_float_bias_to_bfloat16(onnx_path)
+        _patch_denoise_onnx_prefix_proj_float_bias_for_bf16_matmul_add(onnx_path)
         _patch_denoise_onnx_gemma_bf16_bias_to_float_if_fp8(onnx_path)
 
     def _wrap_past_key_values(
