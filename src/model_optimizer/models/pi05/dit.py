@@ -200,15 +200,22 @@ def _onnx_matmul_gemm_output_elem_type(model, mm_node, out_tensor: str) -> int |
     return None
 
 
-def _onnx_prefix_matmul_add_needs_bf16_bias(model, mm_node, out_tensor: str) -> bool:
-    """判断 ``Add(MatMul/Gemm, bias)`` 主路在 TRT 中是否按 BF16 与 bias 对齐。
+def _onnx_prefix_linear_needs_bf16_bias(model, lin_node, out_tensor: str) -> bool:
+    """判断 ``MatMul`` / ``Gemm``（仅 A、B 两路）在 TRT 中是否按 BF16 计算，从而 bias 需为 BF16。
 
     ModelOpt / ONNX 导出里 ``DequantizeLinear`` 等输出在图中常标为 **FLOAT**，但 TRT 仍按 BF16
-    执行后续 ``MatMul``；仅靠 ``value_info`` 会漏判，故结合 **MatMul 输入张量名** 启发式。
+    执行；仅靠 ``value_info`` 会漏判，故结合 **A/B 输入张量名** 启发式（不含 Gemm 第三路 C=bias）。
     """
     from onnx import TensorProto
 
-    hay = " ".join(mm_node.input).lower()
+    if lin_node.op_type == "MatMul":
+        ins = list(lin_node.input)
+    elif lin_node.op_type == "Gemm":
+        ins = list(lin_node.input[:2])
+    else:
+        return False
+
+    hay = " ".join(ins).lower()
     qdq_or_lowprec = any(
         k in hay
         for k in (
@@ -216,6 +223,10 @@ def _onnx_prefix_matmul_add_needs_bf16_bias(model, mm_node, out_tensor: str) -> 
             "quantize",
             "quantizer",
             "trt_fp8",
+            "trt_fp4",
+            "fp4qdq",
+            "qdq",
+            "nvfp4",
             "_f16",
             "bfloat16",
             "fp8",
@@ -226,7 +237,7 @@ def _onnx_prefix_matmul_add_needs_bf16_bias(model, mm_node, out_tensor: str) -> 
     if qdq_or_lowprec:
         return True
 
-    t = _onnx_matmul_gemm_output_elem_type(model, mm_node, out_tensor)
+    t = _onnx_matmul_gemm_output_elem_type(model, lin_node, out_tensor)
     if t == TensorProto.BFLOAT16:
         return True
     if t == TensorProto.FLOAT:
@@ -236,10 +247,13 @@ def _onnx_prefix_matmul_add_needs_bf16_bias(model, mm_node, out_tensor: str) -> 
 
 
 def _patch_denoise_onnx_prefix_proj_float_bias_for_bf16_matmul_add(onnx_path: str) -> None:
-    """``action_*`` / ``time_mlp_*`` 上 ``Add(MatMul|Gemm, bias)``：主支为 BF16、initializer bias 为 FLOAT 时升 bias。
+    """``action_*`` / ``time_mlp_*`` 上 FLOAT bias 与 BF16 线性输出对齐。
 
-    与 :func:`_patch_denoise_onnx_float_bias_to_bfloat16` 互补：投影层被排除在全局 FLOAT→BF16 之外，以免
-    MatMul 仍为 Float 时误升 bias；量化后 MatMul 常为 BF16，此时必须升 bias 否则 TRT 强类型 ``Add`` 失败。
+    - ``Add(MatMul, bias_initializer)``（如 ``action_in_proj``）
+    - ``Gemm`` 第三路 **C=bias**（如 ``time_mlp_in`` / ``time_mlp_out`` 导出为 Gemm 融合 bias）
+
+    与 :func:`_patch_denoise_onnx_float_bias_to_bfloat16` 互补：投影层被排除在全局 FLOAT→BF16 之外；
+    量化/NVFP4 路径下 TRT 按 BF16 做矩阵乘时，bias 必须为 BF16，否则 ``Gemm`` / ``Add`` 强类型失败。
     """
     try:
         import numpy as np
@@ -289,7 +303,7 @@ def _patch_denoise_onnx_prefix_proj_float_bias_for_bf16_matmul_add(onnx_path: st
         mm = _onnx_trace_to_matmul_or_gemm(producers, other)
         if mm is None:
             continue
-        if not _onnx_prefix_matmul_add_needs_bf16_bias(model, mm, other):
+        if not _onnx_prefix_linear_needs_bf16_bias(model, mm, other):
             continue
         try:
             arr = numpy_helper.to_array(
@@ -313,6 +327,44 @@ def _patch_denoise_onnx_prefix_proj_float_bias_for_bf16_matmul_add(onnx_path: st
         except Exception as exc:
             logger.warning("Skip prefix bias patch for %s: %s", bias_name, exc)
 
+    # ``Gemm`` 融合 bias 为第三输入 C，无单独 ``Add``（如 ``time_mlp_in`` / ``time_mlp_out``）。
+    for node in model.graph.node:
+        if node.op_type != "Gemm" or len(node.input) < 3:
+            continue
+        bias_name = node.input[2]
+        bias_init = init_by_name.get(bias_name)
+        if bias_init is None or bias_init.data_type != TensorProto.FLOAT:
+            continue
+        if not (bias_name.endswith("bias") or bias_name.endswith("/bias")):
+            continue
+        if not any(s in bias_name for s in _PREFIX_PROJ_BIAS_SUBSTR):
+            continue
+        out_tensor = node.output[0] if node.output else ""
+        if not _onnx_prefix_linear_needs_bf16_bias(model, node, out_tensor):
+            continue
+        try:
+            arr = numpy_helper.to_array(
+                bias_init,
+                base_dir=os.path.dirname(os.path.abspath(onnx_path)),
+            )
+            if arr.size == 0:
+                continue
+            arr_f = np.ascontiguousarray(arr, dtype=np.float32)
+            t_bf = torch.from_numpy(arr_f).to(torch.bfloat16).contiguous()
+            raw = t_bf.view(torch.uint16).detach().cpu().numpy().tobytes()
+            new_tp = helper.make_tensor(
+                bias_name,
+                TensorProto.BFLOAT16,
+                [int(d) for d in arr_f.shape],
+                raw,
+                raw=True,
+            )
+            bias_init.CopyFrom(new_tp)
+            if bias_name not in changed:
+                changed.append(bias_name)
+        except Exception as exc:
+            logger.warning("Skip prefix Gemm bias patch for %s: %s", bias_name, exc)
+
     if not changed:
         return
 
@@ -323,7 +375,7 @@ def _patch_denoise_onnx_prefix_proj_float_bias_for_bf16_matmul_add(onnx_path: st
         return
 
     logger.info(
-        "Patched %d prefix FLOAT->BFLOAT16 bias(es) for BF16 MatMul/Gemm Add in %s: %s",
+        "Patched %d prefix FLOAT->BFLOAT16 bias(es) for BF16 MatMul+Add / Gemm in %s: %s",
         len(changed),
         onnx_path,
         changed[:12],
