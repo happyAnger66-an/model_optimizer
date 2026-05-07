@@ -170,6 +170,7 @@ class Vit(torch.nn.Module, Model):
         set_dynamic_quant(self, "bf16")
 
         self.export(export_dir, dynamo=False)
+        onnx_path = f"{export_dir}/vit.onnx"
         if is_nvfp4_quantized(quant_cfg):
             print(colored("nvfp4 quantization detected, post processing...", "green"))
-            self._nvfp4_post_processing(export_dir)
+            self._nvfp4_post_processing(onnx_path, export_dir)
