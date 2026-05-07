@@ -200,6 +200,41 @@ def _onnx_matmul_gemm_output_elem_type(model, mm_node, out_tensor: str) -> int |
     return None
 
 
+def _onnx_prefix_matmul_add_needs_bf16_bias(model, mm_node, out_tensor: str) -> bool:
+    """判断 ``Add(MatMul/Gemm, bias)`` 主路在 TRT 中是否按 BF16 与 bias 对齐。
+
+    ModelOpt / ONNX 导出里 ``DequantizeLinear`` 等输出在图中常标为 **FLOAT**，但 TRT 仍按 BF16
+    执行后续 ``MatMul``；仅靠 ``value_info`` 会漏判，故结合 **MatMul 输入张量名** 启发式。
+    """
+    from onnx import TensorProto
+
+    hay = " ".join(mm_node.input).lower()
+    qdq_or_lowprec = any(
+        k in hay
+        for k in (
+            "dequant",
+            "quantize",
+            "quantizer",
+            "trt_fp8",
+            "_f16",
+            "bfloat16",
+            "fp8",
+            "mxfp",
+            "float8",
+        )
+    )
+    if qdq_or_lowprec:
+        return True
+
+    t = _onnx_matmul_gemm_output_elem_type(model, mm_node, out_tensor)
+    if t == TensorProto.BFLOAT16:
+        return True
+    if t == TensorProto.FLOAT:
+        return False
+    # 类型缺失且无名线索：保守不升 bias（避免纯 FP32 导出误伤）
+    return False
+
+
 def _patch_denoise_onnx_prefix_proj_float_bias_for_bf16_matmul_add(onnx_path: str) -> None:
     """``action_*`` / ``time_mlp_*`` 上 ``Add(MatMul|Gemm, bias)``：主支为 BF16、initializer bias 为 FLOAT 时升 bias。
 
@@ -254,8 +289,7 @@ def _patch_denoise_onnx_prefix_proj_float_bias_for_bf16_matmul_add(onnx_path: st
         mm = _onnx_trace_to_matmul_or_gemm(producers, other)
         if mm is None:
             continue
-        out_elem = _onnx_matmul_gemm_output_elem_type(model, mm, other)
-        if out_elem != TensorProto.BFLOAT16:
+        if not _onnx_prefix_matmul_add_needs_bf16_bias(model, mm, other):
             continue
         try:
             arr = numpy_helper.to_array(
