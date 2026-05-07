@@ -419,8 +419,8 @@ class Pi05DenoiseStep(nn.Module, Model):
         if is_nvfp4_quantized(quant_cfg):
             print(colored("nvfp4 quantization detected, post processing...", "green"))
             self._nvfp4_post_processing(onnx_path, export_dir)
-        #_patch_denoise_onnx_float_bias_to_bfloat16(onnx_path)
-        #_patch_denoise_onnx_gemma_bf16_bias_to_float_if_fp8(onnx_path)
+        _patch_denoise_onnx_float_bias_to_bfloat16(onnx_path)
+        _patch_denoise_onnx_gemma_bf16_bias_to_float_if_fp8(onnx_path)
 
     def _wrap_past_key_values(
         self, past_keys: torch.Tensor, past_values: torch.Tensor
