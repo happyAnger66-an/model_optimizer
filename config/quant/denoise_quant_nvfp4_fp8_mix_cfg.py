@@ -11,6 +11,29 @@ from model_optimizer.quantization.cfg import add_nvfp4_input_layernorm_explicit
 QUANT_CFG = copy.deepcopy(NVFP4_DEFAULT_CFG)
 _qc = QUANT_CFG["quant_cfg"]
 
+QUANT_CFG["quant_cfg"]["input_layernorm"] = {"enable": False}
+QUANT_CFG["quant_cfg"]["post_attention_layernorm"] = {"enable": False}
+QUANT_CFG["quant_cfg"]["norm"] = {"enable": False}
+
+_PI05_DENOISE_QUANTIZER_SKIP_NAMES: tuple[str, ...] = (
+    # As printed by ``mtq.print_quant_summary`` for PI0Pytorch (Pi0.5).
+    "action_in_proj.input_quantizer",
+    "action_in_proj.output_quantizer",
+    "action_in_proj.weight_quantizer",
+    "action_out_proj.input_quantizer",
+    "action_out_proj.output_quantizer",
+    "action_out_proj.weight_quantizer",
+#    "time_mlp_in.input_quantizer",
+#    "time_mlp_in.output_quantizer",
+#    "time_mlp_in.weight_quantizer",
+#    "time_mlp_out.input_quantizer",
+#    "time_mlp_out.output_quantizer",
+#    "time_mlp_out.weight_quantizer",
+)
+
+for name in _PI05_DENOISE_QUANTIZER_SKIP_NAMES:
+    QUANT_CFG["quant_cfg"][name] = {"enable": False}
+
 # 与 modelopt FP8_DEFAULT_CFG 中 Linear 一致：num_bits=(4,3), axis=None
 _FP8_LINEAR = {"num_bits": (4, 3), "axis": None}
 
@@ -22,7 +45,7 @@ _LLM_LINEAR_SUFFIXES = (
 #    "self_attn.o_proj",
     "mlp.gate_proj",
     "mlp.up_proj",
-#    "mlp.down_proj",
+    "mlp.down_proj",
 )
 
 
