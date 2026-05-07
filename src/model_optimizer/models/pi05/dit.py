@@ -395,11 +395,114 @@ def _onnx_graph_has_fp8_dequantize(model) -> bool:
     return False
 
 
-def _patch_denoise_onnx_gemma_bf16_bias_to_float_if_fp8(onnx_path: str) -> None:
-    """FP8 导出图中 Gemm 输入经 DQ 为 Float 时，将 ``gemma_expert`` 下仍为 BF16 的 bias 改为 Float。
+def _onnx_hay_suggests_fp4_linear(hay: str) -> bool:
+    """A/B 子串中是否出现 NVFP4 / FP4 QDQ 权重路径（与纯 FP8 区分）。"""
+    h = hay.lower()
+    return any(
+        k in h
+        for k in (
+            "trt_fp4",
+            "fp4qdq",
+            "nvfp4",
+            "mxfp4",
+            "e2m1",
+        )
+    )
 
-    否则 TRT 解析 ``Gemm``（Float 累加结果 + BF16 bias 广播）会在融合 ``Add`` 上报
-    ``ElementWiseOperation SUM must have same input types``。
+
+def _patch_denoise_onnx_gemma_float_bias_to_bf16_for_fp4_bf16_gemm(onnx_path: str) -> None:
+    """``gemma_expert`` 上 NVFP4 权重 + BF16 计算时 ``Gemm`` 的 C=bias 常为 FLOAT。
+
+    TRT 按 BF16 做 ``alpha*A@B`` 后与 bias 相加；FLOAT bias 会报 ``BFloat16`` / ``Float`` 不一致。
+    纯 FP8（无 FP4 子串）路径不在这里升 bias，避免与 Float 累加 Gemm 冲突。
+    """
+    try:
+        import numpy as np
+        import onnx
+        from onnx import TensorProto, helper, numpy_helper
+    except ImportError:
+        logger.warning("onnx/numpy unavailable; skip gemma FP4 bias patch for %s", onnx_path)
+        return
+
+    if not os.path.isfile(onnx_path):
+        return
+
+    try:
+        model = onnx.load(onnx_path, load_external_data=False)
+    except Exception as exc:
+        logger.warning("Failed to load ONNX for gemma FP4 bias patch %s: %s", onnx_path, exc)
+        return
+
+    try:
+        from onnx import shape_inference
+
+        model = shape_inference.infer_shapes(model)
+    except Exception:
+        pass
+
+    init_by_name = {init.name: init for init in model.graph.initializer}
+    base_dir = os.path.dirname(os.path.abspath(onnx_path))
+    changed: list[str] = []
+
+    for node in model.graph.node:
+        if node.op_type != "Gemm" or len(node.input) < 3:
+            continue
+        bias_name = node.input[2]
+        bias_init = init_by_name.get(bias_name)
+        if bias_init is None or bias_init.data_type != TensorProto.FLOAT:
+            continue
+        if "gemma_expert" not in bias_name:
+            continue
+        if not (bias_name.endswith("bias") or bias_name.endswith("/bias")):
+            continue
+        hay = " ".join(node.input[:2]).lower()
+        if not _onnx_hay_suggests_fp4_linear(hay):
+            continue
+        out_tensor = node.output[0] if node.output else ""
+        if not _onnx_prefix_linear_needs_bf16_bias(model, node, out_tensor):
+            continue
+        try:
+            arr = numpy_helper.to_array(bias_init, base_dir=base_dir)
+            if arr.size == 0:
+                continue
+            arr_f = np.ascontiguousarray(arr, dtype=np.float32)
+            t_bf = torch.from_numpy(arr_f).to(torch.bfloat16).contiguous()
+            raw = t_bf.view(torch.uint16).detach().cpu().numpy().tobytes()
+            new_tp = helper.make_tensor(
+                bias_name,
+                TensorProto.BFLOAT16,
+                [int(d) for d in arr_f.shape],
+                raw,
+                raw=True,
+            )
+            bias_init.CopyFrom(new_tp)
+            changed.append(bias_name)
+        except Exception as exc:
+            logger.warning("Skip gemma FP4 bias patch for %s: %s", bias_name, exc)
+
+    if not changed:
+        return
+
+    try:
+        onnx.save(model, onnx_path)
+    except Exception as exc:
+        logger.warning("Failed to save ONNX after gemma FP4 bias patch %s: %s", onnx_path, exc)
+        return
+
+    logger.info(
+        "Patched %d gemma_expert FLOAT->BFLOAT16 Gemm bias(es) (FP4+BF16 path) in %s: %s",
+        len(changed),
+        onnx_path,
+        changed[:12],
+    )
+
+
+def _patch_denoise_onnx_gemma_bf16_bias_to_float_if_fp8(onnx_path: str) -> None:
+    """含 FP8 子图时，仅对 **Float 累加** 的 ``gemma_expert`` ``Gemm`` 把 BF16 bias 降为 FLOAT。
+
+    旧实现曾对该子串下 **所有** BF16 bias 做 ``BFLOAT16->FLOAT``，在 NVFP4+BF16 混合图中会破坏
+    已为 BF16 的 ``Gemm``，导致 ``BF16`` / ``Float`` 反号错误。现按 **逐 ``Gemm``** 判断：
+    跳过 A/B 任一为 BF16 类型或 FP4+BF16 启发式命中的层；其余在 FP8 图中将 bias 与 Float 主乘对齐。
     """
     try:
         import numpy as np
@@ -421,22 +524,55 @@ def _patch_denoise_onnx_gemma_bf16_bias_to_float_if_fp8(onnx_path: str) -> None:
     if not _onnx_graph_has_fp8_dequantize(model):
         return
 
-    base_dir = os.path.dirname(os.path.abspath(onnx_path))
-    changed: list[str] = []
+    try:
+        from onnx import shape_inference
 
+        model = shape_inference.infer_shapes(model)
+    except Exception:
+        pass
+
+    init_by_name = {init.name: init for init in model.graph.initializer}
+    base_dir = os.path.dirname(os.path.abspath(onnx_path))
+    bias_to_float: set[str] = set()
+
+    for node in model.graph.node:
+        if node.op_type != "Gemm" or len(node.input) < 3:
+            continue
+        bias_name = node.input[2]
+        init = init_by_name.get(bias_name)
+        if init is None or init.data_type != TensorProto.BFLOAT16:
+            continue
+        if "gemma_expert" not in bias_name:
+            continue
+        if not (bias_name.endswith("bias") or bias_name.endswith("/bias")):
+            continue
+
+        hay = " ".join(node.input[:2]).lower()
+        out_tensor = node.output[0] if node.output else ""
+        t0 = _onnx_tensor_elem_type(model, node.input[0])
+        t1 = _onnx_tensor_elem_type(model, node.input[1])
+
+        if t0 == TensorProto.BFLOAT16 or t1 == TensorProto.BFLOAT16:
+            continue
+        if _onnx_hay_suggests_fp4_linear(hay) and _onnx_prefix_linear_needs_bf16_bias(
+            model, node, out_tensor
+        ):
+            continue
+        bias_to_float.add(bias_name)
+
+    if not bias_to_float:
+        return
+
+    changed: list[str] = []
     for init in model.graph.initializer:
-        if "gemma_expert" not in init.name:
-            continue
-        if not (init.name.endswith("bias") or init.name.endswith("/bias")):
-            continue
-        if init.data_type != TensorProto.BFLOAT16:
+        if init.name not in bias_to_float:
             continue
         try:
             arr = numpy_helper.to_array(init, base_dir=base_dir)
             arr_f = np.ascontiguousarray(arr, dtype=np.float32)
             new_tp = numpy_helper.from_array(arr_f, name=init.name)
         except Exception as exc:
-            logger.warning("Skip gemma bias patch for %s: %s", init.name, exc)
+            logger.warning("Skip gemma BF16->float for %s: %s", init.name, exc)
             continue
         init.CopyFrom(new_tp)
         changed.append(init.name)
@@ -454,7 +590,7 @@ def _patch_denoise_onnx_gemma_bf16_bias_to_float_if_fp8(onnx_path: str) -> None:
     if len(changed) > 12:
         preview.append("...")
     logger.info(
-        "Patched %d BFLOAT16->FLOAT gemma_expert bias initializers (FP8 graph) in %s: %s",
+        "Patched %d BFLOAT16->FLOAT gemma_expert Gemm bias(es) (FP8 float-accum path) in %s: %s",
         len(changed),
         onnx_path,
         preview,
@@ -651,6 +787,7 @@ class Pi05DenoiseStep(nn.Module, Model):
             )
         _patch_denoise_onnx_float_bias_to_bfloat16(output_path)
         _patch_denoise_onnx_prefix_proj_float_bias_for_bf16_matmul_add(output_path)
+        _patch_denoise_onnx_gemma_float_bias_to_bf16_for_fp4_bf16_gemm(output_path)
         _patch_denoise_onnx_gemma_bf16_bias_to_float_if_fp8(output_path)
         end = time.time()
         logger.info("export onnx to %s done cost:%ss", output_dir, end - start)
@@ -691,6 +828,7 @@ class Pi05DenoiseStep(nn.Module, Model):
             self._nvfp4_post_processing(onnx_path, export_dir)
         _patch_denoise_onnx_float_bias_to_bfloat16(onnx_path)
         _patch_denoise_onnx_prefix_proj_float_bias_for_bf16_matmul_add(onnx_path)
+        _patch_denoise_onnx_gemma_float_bias_to_bf16_for_fp4_bf16_gemm(onnx_path)
         _patch_denoise_onnx_gemma_bf16_bias_to_float_if_fp8(onnx_path)
 
     def _wrap_past_key_values(
