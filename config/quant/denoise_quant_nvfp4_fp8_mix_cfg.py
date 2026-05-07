@@ -26,10 +26,8 @@ _LLM_LINEAR_SUFFIXES = (
 )
 
 
-def _apply_layerwise_fp8_11_17(qc: dict) -> None:
-    for i in range(3, 18):
-        if i in [6, 10, 14, 17]:
-            continue
+def _apply_layerwise_fp8(qc: dict) -> None:
+    for i in range(0, 18):
         for sub in _LLM_LINEAR_SUFFIXES:
             qc[f"*layers.{i}.{sub}.weight_quantizer"] = dict(_FP8_LINEAR)
             qc[f"*layers.{i}.{sub}.input_quantizer"] = dict(_FP8_LINEAR)
@@ -37,7 +35,7 @@ def _apply_layerwise_fp8_11_17(qc: dict) -> None:
 
 if isinstance(_qc, dict):
     merged = dict(_qc)
-    _apply_layerwise_fp8_11_17(merged)
+    _apply_layerwise_fp8(merged)
     add_nvfp4_input_layernorm_explicit(merged)
     QUANT_CFG["quant_cfg"] = merged
 else:
