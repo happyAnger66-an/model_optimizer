@@ -4,8 +4,6 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-import modelopt.torch.quantization as mtq
-
 from model_optimizer.utils.utils import is_fp4_quantized
 import time
 import os
@@ -102,6 +100,7 @@ class Model:
         self.quantize_start(quant_cfg, calib_data, None)
 
         calibrate_loop = self.get_model_calibrate_loop(calib_data)
+        import modelopt.torch.quantization as mtq
         mtq.quantize(self.model, quant_cfg,
                      forward_loop=calibrate_loop)
         print(f'quantize summary')
