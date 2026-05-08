@@ -20,6 +20,9 @@
 #   # 与 ``standalone_inference_script.get_input_data(input_data_file=None)`` 相同：合成 LIBERO 风格观测
 #   python scripts/deployment/pi05/client_policy.py --libero-example --num-samples 20 --host 127.0.0.1 --port 8000
 #
+#   # LeRobot-record / GR00T 风格合成观测（``openpi.policies.gr00t_policy.make_gr00t_lerobot_example``）
+#   python scripts/deployment/pi05/client_policy.py --gr00t-lerobot-example --num-samples 20 --host 127.0.0.1 --port 8000
+#
 # 依赖：``openpi``、``openpi-client``（``WebsocketClientPolicy`` / ``msgpack_numpy``）、
 # ``tyro``、``lerobot``（与 WebUI 相同）、可选 ``tqdm``。
 
@@ -45,10 +48,13 @@ class Args:
     """与 ``serve_policy.py`` / ``lerobot_eval_webui`` 相同：``get_config`` 名或 ``TrainConfig`` 的 ``.py`` 路径。"""
 
     dataset_root: Path | None = None
-    """LeRobot 根目录；传给 ``LeRobotDataset(..., root=...)``，与 WebUI ``--dataset-root`` 一致。``--libero-example`` 时忽略。"""
+    """LeRobot 根目录；传给 ``LeRobotDataset(..., root=...)``，与 WebUI ``--dataset-root`` 一致。合成观测模式（``--libero-example`` / ``--gr00t-lerobot-example``）时忽略。"""
 
     libero_example: bool = False
-    """为 True 时不加载 LeRobot；每步调用 ``openpi.policies.libero_policy.make_libero_example()``（与 ``standalone_inference_script.py`` 无校准数据文件时的合成观测一致），共 ``num_samples`` 次远程 ``infer``。"""
+    """为 True 时不加载 LeRobot；每步 ``openpi.policies.libero_policy.make_libero_example()``，共 ``num_samples`` 次远程 ``infer``。与 ``--gr00t-lerobot-example`` 互斥。"""
+
+    gr00t_lerobot_example: bool = False
+    """为 True 时不加载 LeRobot；每步 ``openpi.policies.gr00t_policy.make_gr00t_lerobot_example()``（LeRobot-record 多相机键名），共 ``num_samples`` 次远程 ``infer``。与 ``--libero-example`` 互斥。"""
 
     host: str = "127.0.0.1"
     """WebSocket 主机；勿用 ``0.0.0.0`` 作为客户端目标。"""
@@ -58,7 +64,7 @@ class Args:
 
     start_index: int = 0
     num_samples: int = 500
-    """数据集模式：与 WebUI 一致，在 ``[start_index, start_index + num_samples)`` 与 ``len(dataset)`` 交集中取帧。``--libero-example`` 时：远程 ``infer`` 调用次数。"""
+    """数据集模式：与 WebUI 一致，在 ``[start_index, start_index + num_samples)`` 与 ``len(dataset)`` 交集中取帧。合成观测模式（``--libero-example`` / ``--gr00t-lerobot-example``）时：远程 ``infer`` 调用次数。"""
 
     rel_eps: float = 1e-8
     """相对误差分母 ``max(|gt|, rel_eps)``，与 WebUI ``--rel-eps`` 一致。"""
@@ -113,12 +119,28 @@ def main(args: Args) -> None:
         print(f"healthz OK: {body!r}")
         return
 
-    if args.libero_example:
-        from openpi.policies.libero_policy import make_libero_example
+    if args.libero_example or args.gr00t_lerobot_example:
+        if args.libero_example and args.gr00t_lerobot_example:
+            raise ValueError(
+                "--libero-example 与 --gr00t-lerobot-example 互斥，请只选其一。"
+            )
         from openpi_client import websocket_client_policy as _websocket_client_policy
 
+        if args.libero_example:
+            from openpi.policies.libero_policy import make_libero_example as _make_synthetic_obs
+
+            synthetic_desc = "libero_example infer"
+        else:
+            from openpi.policies.gr00t_policy import (
+                make_gr00t_lerobot_example as _make_synthetic_obs,
+            )
+
+            synthetic_desc = "gr00t_lerobot_example infer"
+
         if args.num_samples < 1:
-            raise ValueError("num_samples must be >= 1 when using --libero-example")
+            raise ValueError(
+                "num_samples must be >= 1 when using --libero-example or --gr00t-lerobot-example"
+            )
 
         client = _websocket_client_policy.WebsocketClientPolicy(
             host=args.host, port=args.port, api_key=args.api_key
@@ -138,8 +160,8 @@ def main(args: Args) -> None:
         except ImportError:
             tqdm = lambda x, **kw: x  # type: ignore[assignment, misc]
 
-        for chunk_i in tqdm(range(args.num_samples), desc="libero_example infer"):
-            obs = make_libero_example()
+        for chunk_i in tqdm(range(args.num_samples), desc=synthetic_desc):
+            obs = _make_synthetic_obs()
             if args.score_once and supports_score and chunk_i == 0:
                 try:
                     score_out = client.infer({**obs, "_request_type": "score"})
