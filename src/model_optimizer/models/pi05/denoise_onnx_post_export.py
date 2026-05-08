@@ -386,7 +386,7 @@ def _step_gemma_fp8_bf16_bias_to_float_gemm(model: Any, base_dir: str) -> list[s
     imports = _try_import_onnx()
     if imports is None:
         return []
-    np, onnx, TensorProto, numpy_helper = imports
+    np, onnx, TensorProto, _helper, numpy_helper = imports  # noqa: F841
 
     if not _onnx_graph_has_fp8_dequantize(model):
         return []
