@@ -61,6 +61,7 @@ class Vit(torch.nn.Module, Model):
         super().__init__(**kwargs)
         self.config = config
         self.vision_tower = vision_tower
+        self.model = vision_tower
         self.device = self.vision_tower.device
         self.multi_modal_projector = multi_modal_projector
 
