@@ -23,8 +23,16 @@ from model_optimizer.infer.tensorrt.trt_torch import Engine
 
 
 class Pi05Model(Model):
-    def __init__(self, model_name_or_policy, model_path=None, pi05_model=None):
+    def __init__(
+        self,
+        model_name_or_policy,
+        model_path=None,
+        pi05_model=None,
+        *,
+        train_config_ref=None,
+    ):
         self.pytorch_device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._train_config_ref = train_config_ref
 
         if model_path is None:
             policy = model_name_or_policy
@@ -32,6 +40,7 @@ class Pi05Model(Model):
                 policy = model_name_or_policy._policy
             self.pi05_model = policy._model
             self.embedding_layer = None
+            self._train_config_ref = None
             return
 
         super().__init__(model_name_or_policy, model_path)
@@ -45,10 +54,6 @@ class Pi05Model(Model):
     def __getattr__(self, name):
         return getattr(self.pi05_model, name)
 
-    @property
-    def model(self):
-        return self.pi05_model
-    
     def val(self, dataset, batch_size, max_data=100, output_dir=None):
         pass
 
@@ -75,6 +80,10 @@ class Pi05Model(Model):
     def config(self):
         return self.pi05_model.config
 
+    @property
+    def model(self):
+        return self.pi05_model
+
     def load(self):
         if self.pi05_model is not None:
             print(colored("pi05_model is already set", "red"))
@@ -82,7 +91,12 @@ class Pi05Model(Model):
         self.pi05_model = self._get_pi0_model()
 
     def _get_pi0_model(self):
-        config = _config.get_config(self.model_name)
+        if self._train_config_ref:
+            from model_optimizer.openpi_train_config import load_train_config
+
+            config = load_train_config(self._train_config_ref)
+        else:
+            config = _config.get_config(self.model_name)
         print(colored(f'pi05 model config: {config}', "dark_grey"))
         policy = policy_config.create_trained_policy(config, self.model_path)
         pi05_model = policy._model
@@ -116,14 +130,10 @@ class Pi05Model(Model):
         return self
 
     @classmethod
-    def construct_from_name_path(cls, model_name, model_path):
+    def construct_from_name_path(cls, model_name, model_path, train_config=None):
         real_name = model_name.split("/")[0]
         print(f'pi05 model name: {real_name}')
-        return cls(real_name, model_path)
-
-    @property
-    def model(self):
-        return self.pi05_model
+        return cls(real_name, model_path, train_config_ref=train_config)
 
     def forward(self, *args, **kwargs):
         raise NotImplementedError

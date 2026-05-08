@@ -113,9 +113,12 @@ class Vit(torch.nn.Module, Model):
         return self
 
     @classmethod
-    def construct_from_name_path(cls, model_name, model_path):
+    def construct_from_name_path(cls, model_name, model_path, train_config=None):
         from .model_pi05 import Pi05Model
-        pi05_model = Pi05Model.construct_from_name_path(model_name, model_path)
+
+        pi05_model = Pi05Model.construct_from_name_path(
+            model_name, model_path, train_config
+        )
         return cls.construct_model(pi05_model)
 
     @classmethod

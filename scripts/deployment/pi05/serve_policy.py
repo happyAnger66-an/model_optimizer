@@ -31,11 +31,9 @@
 from __future__ import annotations
 
 import dataclasses
-import importlib.util
 import logging
 import socket
 import time
-from pathlib import Path
 from typing import Any, Literal
 
 import torch
@@ -49,31 +47,7 @@ except ImportError as e:  # pragma: no cover
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
-from openpi.training import config as _config
-
-
-def load_train_config(config_ref: str) -> _config.TrainConfig:
-    """与 ``standalone_inference_script.load_train_config`` 相同：注册名或 ``TrainConfig`` 的 ``.py`` 路径。"""
-    path = Path(config_ref).expanduser()
-    if path.is_file() and path.suffix == ".py":
-        mod_name = f"_serve_policy_cfg_{path.stem}"
-        spec = importlib.util.spec_from_file_location(mod_name, str(path.resolve()))
-        if spec is None or spec.loader is None:
-            raise ValueError(f"Cannot load config module from {config_ref!r}")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        tc = _config.TrainConfig
-        for attr in ("cfg", "config", "train_config"):
-            if hasattr(mod, attr):
-                obj = getattr(mod, attr)
-                if isinstance(obj, tc):
-                    logging.info("Loaded TrainConfig from %s (attribute %r)", path, attr)
-                    return obj
-        raise ValueError(
-            f"File {path} does not define a TrainConfig instance. "
-            "Define one of: cfg, config, or train_config = TrainConfig(...)."
-        )
-    return _config.get_config(config_ref)
+from model_optimizer.openpi_train_config import load_train_config
 
 
 @dataclasses.dataclass

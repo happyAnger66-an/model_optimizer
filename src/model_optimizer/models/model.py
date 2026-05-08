@@ -39,7 +39,9 @@ class Model:
             f'{self.model_name} val method is not implemented')
 
     @classmethod
-    def construct_from_name_path(cls, model_name, model_path):
+    def construct_from_name_path(cls, model_name, model_path, train_config=None):
+        """``train_config``：OpenPI 注册名或 ``TrainConfig`` 的 ``.py`` 路径；仅 Pi05 等子类使用。"""
+        _ = train_config
         return cls(model_name, model_path)
 
     def export_onnx(self, *args, **kwargs):

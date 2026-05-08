@@ -94,6 +94,15 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
     parser.add_argument('--export_dir', type=str, required=True)
     parser.add_argument('--simplifier', type=bool, default=True)
     parser.add_argument('--verify_data', type=str, default=None)
+    parser.add_argument(
+        '--train_config',
+        type=str,
+        default=None,
+        help=(
+            'OpenPI TrainConfig：``get_config`` 注册名或含 ``cfg``/``config``/``train_config`` 的 '
+            '``.py`` 路径；Pi05 加载 checkpoint 时优先于此项，否则用 ``--model_name`` 的注册前缀。'
+        ),
+    )
     parser.add_argument('--mode', type=str, default="native_per_layer")
     print(f'[cli] convert_model args {args[1:]}')
     args = parser.parse_args(args[1:])
@@ -113,20 +122,25 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
         export_dir,
         f"[export] export_type={args.export_type}, simplifier={args.simplifier}, verify_data={args.verify_data}",
     )
+    if args.train_config:
+        write_running_log(export_dir, f"[export] train_config={args.train_config}")
     # 立刻推进到 1/N：避免前端长时间停在 0/N（例如首次 import/初始化较慢时）。
     tracker.advance(step_name="准备完成")
 
     from ..models.registry import get_model_cls
     model_cls = get_model_cls(model_name)
     tracker.advance(step_name="加载模型/构建导出包装")
-    model = model_cls.construct_from_name_path(model_name, model_path)
+    model = model_cls.construct_from_name_path(
+        model_name, model_path, args.train_config
+    )
     tracker.advance(step_name="执行导出（生成 ONNX）")
     export_model_path = model.export(export_dir, mode=args.mode)
     write_running_log(export_dir, f"[export] export_model_path={export_model_path}")
 
     if args.verify_data:
         export_model = model_cls.construct_from_name_path(
-            model_name, export_model_path)
+            model_name, export_model_path, args.train_config
+        )
         export_model.val(args.verify_data, batch_size=1,
                          output_dir=export_dir)
 

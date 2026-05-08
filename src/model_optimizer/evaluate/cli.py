@@ -36,6 +36,15 @@ def eval_cli(args):
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--hook_layers', type=bool, default=False)
+    parser.add_argument(
+        '--train_config',
+        type=str,
+        default=None,
+        help=(
+            'OpenPI TrainConfig：注册名或 ``TrainConfig`` 的 ``.py`` 路径；与 export 子命令 '
+            '``--train_config`` 语义一致。'
+        ),
+    )
     args = parser.parse_args(args[1:])
     print(f'[cli] eval args {args}')
 
@@ -44,7 +53,9 @@ def eval_cli(args):
     
     from model_optimizer.models.registry import get_model_cls
     model_cls = get_model_cls(model_name)
-    model = model_cls.construct_from_name_path(model_name, model_path)
+    model = model_cls.construct_from_name_path(
+        model_name, model_path, args.train_config
+    )
 
 
     model.val(args.dataset, args.batch_size, args.max_data, args.output_dir)

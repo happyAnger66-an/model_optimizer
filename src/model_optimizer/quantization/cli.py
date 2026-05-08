@@ -70,6 +70,15 @@ def quantize_cli(args):
                         help='验证数据文件路径，用于验证量化后的模型 (可选)')
     parser.add_argument('--export_dir', type=str, required=True,
                         help='导出目录，量化后的模型将保存到此目录 (必需)')
+    parser.add_argument(
+        '--train_config',
+        type=str,
+        default=None,
+        help=(
+            'OpenPI TrainConfig：``get_config`` 注册名或含 ``cfg``/``config``/``train_config`` 的 '
+            '``.py`` 路径（与 ``model-optimizer-cli export --train_config`` 一致）；Pi05 等模型加载 checkpoint 时使用。'
+        ),
+    )
     parser.add_argument('--input_shapes', type=str, default=None,
                         help='输入数据形状，用于量化校准的输入数据 (可选)')
     parser.add_argument(
@@ -87,7 +96,9 @@ def quantize_cli(args):
 
     from ..models.registry import get_model_cls
     model_cls = get_model_cls(model_name)
-    model = model_cls.construct_from_name_path(model_name, model_path)
+    model = model_cls.construct_from_name_path(
+        model_name, model_path, args.train_config
+    )
 
     old_metric, new_metric = None, None
     if args.verify:

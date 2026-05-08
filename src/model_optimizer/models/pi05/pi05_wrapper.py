@@ -61,7 +61,9 @@ class Pi05Wrapper(torch.nn.Module, Model):
         return self.pi05_model
 
     @classmethod
-    def construct_from_name_path(cls, model_name: str, model_path: str) -> Pi05Wrapper:
+    def construct_from_name_path(
+        cls, model_name: str, model_path: str, train_config=None
+    ) -> Pi05Wrapper:
         """Used by ``model-opt export --model_name pi05_libero/wrapper --model_path ...``.
 
         ``model_name`` must be ``<config_prefix>/wrapper`` (e.g. ``pi05_libero/wrapper``);
@@ -72,7 +74,12 @@ class Pi05Wrapper(torch.nn.Module, Model):
 
         real_name = model_name.split("/")[0]
         print(f"pi05 wrapper: loading config {real_name} from {model_path}")
-        config = _config.get_config(real_name)
+        if train_config:
+            from model_optimizer.openpi_train_config import load_train_config
+
+            config = load_train_config(train_config)
+        else:
+            config = _config.get_config(real_name)
         policy = policy_config.create_trained_policy(config, model_path)
         return cls(
             policy._model,

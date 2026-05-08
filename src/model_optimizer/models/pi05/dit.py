@@ -388,8 +388,10 @@ class Pi05DenoiseStep(nn.Module, Model):
         )
 
     @classmethod
-    def construct_from_name_path(cls, model_name: str, model_path: str):
+    def construct_from_name_path(cls, model_name: str, model_path: str, train_config=None):
         from .model_pi05 import Pi05Model
 
-        wrapper = Pi05Model.construct_from_name_path(model_name, model_path)
+        wrapper = Pi05Model.construct_from_name_path(
+            model_name, model_path, train_config
+        )
         return cls.construct_model(wrapper, dtype=torch.bfloat16)
