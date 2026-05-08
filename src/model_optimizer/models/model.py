@@ -6,7 +6,6 @@ import torch.nn as nn
 
 import modelopt.torch.quantization as mtq
 
-from modelopt.onnx.quantization.qdq_utils import fp4qdq_to_2dq
 from model_optimizer.utils.utils import is_fp4_quantized
 import time
 import os
@@ -60,6 +59,7 @@ class Model:
 
 #        onnx_path = f"{export_dir}/llm.onnx"
         if is_fp4_quantized(self):
+            from modelopt.onnx.quantization.qdq_utils import fp4qdq_to_2dq
             t1 = time.time()
             onnx.shape_inference.infer_shapes_path(onnx_path)
             onnx_model = onnx.load(onnx_path)

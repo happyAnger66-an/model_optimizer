@@ -2,8 +2,6 @@ import json
 import torch.nn as nn
 from addict import Dict
 
-from modelopt.torch.quantization.utils import is_quantized_linear
-
 def is_nvfp4_quantized(quant_cfg) -> bool:
     if "*input_quantizer" in quant_cfg["quant_cfg"]:
         input_quantize_cfg = quant_cfg["quant_cfg"]["*input_quantizer"]
@@ -15,6 +13,7 @@ def is_nvfp4_linear(module: nn.Module) -> bool:
     """Check if the module is a quantized linear layer with NVFP4 quantization. The test is designed for identification purpose only, not designed to be comprehensive.
     Adapted from TensorRT Model Optimizer: https://github.com/NVIDIA/TensorRT-Model-Optimizer/blob/main/modelopt/torch/_deploy/utils/torch_onnx.py
     """
+    from modelopt.torch.quantization.utils import is_quantized_linear  # noqa: F401
     if is_quantized_linear(module):
         return module.input_quantizer.block_sizes is not None and module.input_quantizer.block_sizes.get(
             "scale_bits", None) == (4, 3)
