@@ -9,7 +9,6 @@ from termcolor import colored
 import logging
 
 from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
-from model_optimizer.quantization.quantization_utils import quantize_model
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
 logger = logging.getLogger(__name__)
@@ -164,6 +163,7 @@ class Vit(torch.nn.Module, Model):
     def quantize(self, quant_cfg, calib_data, export_dir, *, measure_quant_error: bool = False):
         # tokenizer = get_tokenizer(model_dir)
         calib_dataloader = self.get_calibrate_dataset(calib_data)
+        from model_optimizer.quantization.quantization_utils import quantize_model  # noqa: F401
         quantize_model(
             self, quant_cfg, calib_dataloader, measure_quant_error=measure_quant_error
         )

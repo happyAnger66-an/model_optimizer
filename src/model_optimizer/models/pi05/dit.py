@@ -15,10 +15,6 @@ from transformers.cache_utils import DynamicCache
 
 from ..model import Model
 from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
-from model_optimizer.quantization.quantization_utils import (
-    quant_config_targets_hf_bmm_kv,
-    quantize_model,
-)
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
 from .denoise_onnx_post_export import apply_denoise_onnx_post_export_patches
@@ -229,6 +225,8 @@ class Pi05DenoiseStep(nn.Module, Model):
         calib_dataloader = self.get_calibrate_dataset(calib_data)
         # FP8_KV_CFG / *_bmm_quantizer：ModelOpt 要求 ``mtq.quantize`` 的根模块为 HF PreTrainedModel，
         # 与 LLM.quantize(self.model, ...) 一致；标定仍走完整 ``forward`` 以覆盖 action/time 投影与 expert。
+        from model_optimizer.quantization.quantization_utils import quantize_model  # noqa: F401
+        from model_optimizer.quantization.quantization_utils import quant_config_targets_hf_bmm_kv  # noqa: F401
         if quant_config_targets_hf_bmm_kv(quant_cfg):
             quantize_model(
                 self.gemma_expert,

@@ -13,8 +13,6 @@ from transformers.cache_utils import DynamicCache
 
 from termcolor import colored
 
-from model_optimizer.quantization.quantization_utils import quantize_model
-from modelopt.onnx.quantization.qdq_utils import fp4qdq_to_2dq
 from model_optimizer.utils.utils import is_fp4_quantized, set_dynamic_quant, is_nvfp4_quantized
 from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
 from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
@@ -217,6 +215,7 @@ class LLM(torch.nn.Module, Model):
                     "NVFP4 quantization detected in the model, \
                         compressing some weights to NVFP4", "green")
             )
+            from modelopt.onnx.quantization.qdq_utils import fp4qdq_to_2dq  # noqa: F401
             onnx_model = fp4qdq_to_2dq(onnx_model)
             print(
                 colored(
@@ -298,6 +297,7 @@ class LLM(torch.nn.Module, Model):
         try:
             # 根模块必须是 HF PreTrainedModel，ModelOpt 的 register_hf_attentions_on_the_fly 才会注册
             # *_bmm_quantizer；否则 FP8_KV_CFG 等 attention 配置不会插入子模块。
+            from model_optimizer.quantization.quantization_utils import quantize_model  # noqa: F401
             quantize_model(
                 self.model,
                 quant_cfg,
