@@ -17,9 +17,8 @@ from ..model import Model
 from .vit import _force_vision_eager_attention_temporarily, _sdp_math_backend_only
 from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
 from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
-from model_optimizer.quantization.quantization_utils import quantize_model
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
-from modelopt.torch.quantization.utils import export_torch_mode
+#from modelopt.torch.quantization.utils import export_torch_mode
 
 logger = logging.getLogger(__name__)
 
@@ -418,6 +417,7 @@ class Pi05EmbedPrefix(nn.Module, Model):
 
     def quantize(self, quant_cfg, calib_data, export_dir, *, measure_quant_error: bool = False):
         calib_dataloader = self.get_calibrate_dataset(calib_data)
+        from model_optimizer.quantization.quantization_utils import quantize_model  # noqa: F401
         quantize_model(
             self, quant_cfg, calib_dataloader, measure_quant_error=measure_quant_error
         )
