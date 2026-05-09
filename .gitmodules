@@ -7,3 +7,6 @@
 [submodule "third_party/Model-Optimizer"]
 	path = third_party/Model-Optimizer
 	url = git@github.com:happyAnger66-an/Model-Optimizer.git
+[submodule "third_party/FlashRT"]
+	path = third_party/FlashRT
+	url = git@github.com:happyAnger66-an/FlashRT.git
