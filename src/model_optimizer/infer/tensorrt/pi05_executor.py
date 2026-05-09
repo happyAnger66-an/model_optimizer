@@ -92,6 +92,10 @@ class Pi05TensorRTExecutor(Executor):
         )
 
         maybe_install_pi0_stage_profiler(self.pi05_model)
+        # Policy 在构造时缓存了 ``_sample_actions = model.sample_actions``（见
+        # openpi ``policies/policy.py``），此后只改 ``model.sample_actions`` 不会
+        # 影响 ``infer()``；不刷新则仍走 torch.compile 包装，profiler / TRT 路径均可能 hook 不到。
+        self._sync_policy_sample_actions_ref()
       #  self._release_pytorch_model()
       #  self.pi05_model.paligemma_with_expert.embed_image = partial(
       #      embed_image, self.pi05_model.paligemma_with_expert.paligemma.model)
@@ -332,12 +336,21 @@ class Pi05TensorRTExecutor(Executor):
                     denoise_step_trt, self.pi05_model
                 )
 
+    def _sync_policy_sample_actions_ref(self) -> None:
+        """让 ``Policy.infer`` 使用的 ``_sample_actions`` 与当前 ``model.sample_actions`` 一致。"""
+        pol = self.policy
+        if hasattr(pol, "_sample_actions"):
+            pol._sample_actions = self.pi05_model.sample_actions
+
     def _restore_eager_sample_actions(self) -> None:
         """将 ``sample_actions`` 从实例上的 ``torch.compile`` 恢复为类定义的 Python 方法。
 
         ``PI0Pytorch.__init__`` 中 ``self.sample_actions = torch.compile(...)`` 只写在实例
         ``__dict__`` 里，类属性仍是原始 ``def sample_actions``。用 ``MethodType`` 绑定到
         当前 ``pi05_model`` 后，调用链会走已挂好的 TRT 包装，且不再触发整图编译。
+
+        注意：还须调用 :meth:`_sync_policy_sample_actions_ref`，否则 ``Policy`` 仍持有
+        构造时缓存的 ``torch.compile`` 可调用对象。
         """
         model = self.pi05_model
         raw_fn = type(model).__dict__.get("sample_actions")

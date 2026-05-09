@@ -7,7 +7,8 @@
 # 环境变量
 # --------
 # - ``PI05_PI0_PROFILE`` 或 ``MO_PI0_STAGE_PROFILE``：设为 ``1``/``true``/``yes`` 等则启用。
-# - ``PI05_PROFILE_WARMUP``：非负整数，前 N 次完整 ``sample_actions`` 调用**不写入**统计（默认 ``0``）。
+# - ``PI05_PROFILE_WARMUP``：非负整数 W；前 W 次完整 ``sample_actions`` 调用**不写入**统计（默认 ``0``）。
+#   从第 **W+1** 次起才计时。若整个进程内 ``sample_actions`` 总次数 ≤ W，退出摘要里各阶段均为 n=0。
 #
 # 进程退出时（``atexit``）打印各阶段 ``mean / p90 / p99 / min / max``（毫秒）。
 
@@ -173,14 +174,30 @@ class Pi0StageProfiler:
         _register_atexit_dump(self)
 
     def dump_summary(self) -> None:
+        n_sa = len(self.latencies[self.KEY_SA])
+        total_inv = int(self._sa_invocation)
         lines = [
             "Pi0 stage profiler summary (ms, post-warmup):",
             f"  warmup_skips(sample_actions)={self.warmup_skips}",
+            f"  sample_actions total invocations (including warmup)={total_inv}, "
+            f"recorded={n_sa}",
             _format_line(self.KEY_SA, self.latencies[self.KEY_SA]),
             _format_line(self.KEY_PRE, self.latencies[self.KEY_PRE]),
             _format_line(self.KEY_PGE_FWD, self.latencies[self.KEY_PGE_FWD]),
             _format_line(self.KEY_DENOISE, self.latencies[self.KEY_DENOISE]),
         ]
+        if n_sa == 0 and total_inv > 0:
+            w = self.warmup_skips
+            lines.append(
+                f"  hint: warmup skips first {w} call(s); need at least {w + 1} "
+                f"sample_actions invocations to record 1 sample (had {total_inv}). "
+                f"Lower {_ENV_WARMUP} or run more inferences before exit."
+            )
+        elif total_inv == 0:
+            lines.append(
+                "  hint: no sample_actions() observed after profiler install; "
+                "nothing to profile."
+            )
         msg = "\n".join(lines)
         logger.info("%s", msg)
 
