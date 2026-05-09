@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import atexit
+import inspect
 import logging
 import os
 import threading
@@ -97,14 +98,20 @@ class Pi0StageProfiler:
             return
 
         # --- _preprocess_observation ---
+        # ``m._preprocess_observation`` 已是绑定方法，勿再传入 ``self``。
         _orig_pre = m._preprocess_observation
+        _pre_has_train = "train" in inspect.signature(_orig_pre).parameters
 
         def _pre(self, observation, *, train=True):
             if not prof._record_this_call:
-                return _orig_pre(self, observation, train=train)
+                if _pre_has_train:
+                    return _orig_pre(observation, train=train)
+                return _orig_pre(observation)
             t0 = time.perf_counter()
             try:
-                return _orig_pre(self, observation, train=train)
+                if _pre_has_train:
+                    return _orig_pre(observation, train=train)
+                return _orig_pre(observation)
             finally:
                 prof._append_ms(prof.KEY_PRE, (time.perf_counter() - t0) * 1000.0)
 
@@ -116,10 +123,10 @@ class Pi0StageProfiler:
 
         def _pge_fwd(self, *args, **kwargs):
             if not prof._record_this_call:
-                return _orig_pge_fwd(self, *args, **kwargs)
+                return _orig_pge_fwd(*args, **kwargs)
             t0 = time.perf_counter()
             try:
-                return _orig_pge_fwd(self, *args, **kwargs)
+                return _orig_pge_fwd(*args, **kwargs)
             finally:
                 prof._append_ms(prof.KEY_PGE_FWD, (time.perf_counter() - t0) * 1000.0)
 
@@ -130,11 +137,13 @@ class Pi0StageProfiler:
 
         def _den(self, state, prefix_pad_masks, past_key_values, x_t, timestep):
             if not prof._record_this_call:
-                return _orig_den(self, state, prefix_pad_masks, past_key_values, x_t, timestep)
+                return _orig_den(
+                    state, prefix_pad_masks, past_key_values, x_t, timestep
+                )
             t0 = time.perf_counter()
             try:
                 return _orig_den(
-                    self, state, prefix_pad_masks, past_key_values, x_t, timestep
+                    state, prefix_pad_masks, past_key_values, x_t, timestep
                 )
             finally:
                 prof._append_ms(prof.KEY_DENOISE, (time.perf_counter() - t0) * 1000.0)
@@ -149,7 +158,9 @@ class Pi0StageProfiler:
             prof._record_this_call = prof._sa_invocation > prof.warmup_skips
             t0 = time.perf_counter()
             try:
-                return _orig_sa(self, device, observation, noise=noise, num_steps=num_steps)
+                return _orig_sa(
+                    device, observation, noise=noise, num_steps=num_steps
+                )
             finally:
                 dt_ms = (time.perf_counter() - t0) * 1000.0
                 if prof._record_this_call:
