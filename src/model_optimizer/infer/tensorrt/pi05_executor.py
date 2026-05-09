@@ -11,6 +11,7 @@ import torch
 
 from ..executor import Executor
 from ...models.pi05.model_pi05 import Pi05Model
+from .trt_hook_timer import trt_hook_timer
 from .trt_torch import Engine
 
 from transformers.modeling_outputs import BaseModelOutputWithPooling, BaseModelOutputWithPast
@@ -166,6 +167,9 @@ class Pi05TensorRTExecutor(Executor):
                         out = (out.to(torch.float32) * scale).to(out.dtype)
                     return out
 
+                get_image_features = trt_hook_timer("trt.vit.get_image_features")(
+                    get_image_features
+                )
                 self.pi05_model.paligemma_with_expert.paligemma.model.get_image_features = get_image_features
 
             embed_prefix_engine_name = getattr(
@@ -198,6 +202,7 @@ class Pi05TensorRTExecutor(Executor):
                         out["prefix_att_masks"],
                     )
 
+                embed_prefix_trt = trt_hook_timer("trt.embed_prefix")(embed_prefix_trt)
                 self.pi05_model.embed_prefix = types.MethodType(
                     embed_prefix_trt, self.pi05_model
                 )
@@ -261,6 +266,7 @@ class Pi05TensorRTExecutor(Executor):
                     )
                     return output
 
+                llm_forward = trt_hook_timer("trt.llm.forward")(llm_forward)
                 self.pi05_model.paligemma_with_expert.paligemma.model.language_model.forward = llm_forward
 
 
@@ -302,6 +308,7 @@ class Pi05TensorRTExecutor(Executor):
 #                            (past_key_values[i][0], past_key_values[i][1]))
                     return expert_engine(attention_mask, position_ids, inputs_embeds, adarms_cond, input_keys, input_values)
 
+                expert_forward = trt_hook_timer("trt.expert.forward")(expert_forward)
                 self.pi05_model.paligemma_with_expert.gemma_expert.model.forward = expert_forward
 
             denoise_engine_name = getattr(self.config, "denoise_engine", None)
@@ -332,6 +339,7 @@ class Pi05TensorRTExecutor(Executor):
                         return outputs["v_t"]
                     return outputs
 
+                denoise_step_trt = trt_hook_timer("trt.denoise_step")(denoise_step_trt)
                 self.pi05_model.denoise_step = types.MethodType(
                     denoise_step_trt, self.pi05_model
                 )

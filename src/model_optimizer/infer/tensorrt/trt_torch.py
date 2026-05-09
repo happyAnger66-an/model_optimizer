@@ -276,7 +276,7 @@ class Engine(object):
             #    f"total time: {np.mean(self.time_results['total'])*1000:.2f} ± {np.std(self.time_results['total'])*1000:.2f} ms", "green"))
 
         if return_list:
-            print(f"return_list: {return_list}")
+            #print(f"return_list: {return_list}")
             return [outputs[item[0]] for item in self.out_meta]
         else:
             #            output = BaseModelOutputWithPooling(
