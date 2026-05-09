@@ -1,10 +1,11 @@
+import math
 import numbers
 import os
+import pathlib
 import types
 import warnings
 from collections.abc import Mapping
 from functools import partial
-import math
 
 from termcolor import colored
 import torch
@@ -172,10 +173,88 @@ class Pi05TensorRTExecutor(Executor):
                 )
                 self.pi05_model.paligemma_with_expert.paligemma.model.get_image_features = get_image_features
 
+            use_flashrt_siglip = bool(
+                getattr(self.config, "use_flashrt_siglip_embed_prefix", False)
+            )
             embed_prefix_engine_name = getattr(
                 self.config, "embed_prefix_engine", None
             )
-            if embed_prefix_engine_name:
+            if use_flashrt_siglip and embed_prefix_engine_name:
+                raise ValueError(
+                    "config.use_flashrt_siglip_embed_prefix=True is incompatible with "
+                    "config.embed_prefix_engine (TRT whole-graph embed_prefix). "
+                    "Disable one of them."
+                )
+            if use_flashrt_siglip:
+                ckpt = getattr(self.config, "flashrt_checkpoint_dir", None)
+                if not ckpt:
+                    ckpt = str(pathlib.Path(self.config.engine_path).parent)
+                ckpt = str(pathlib.Path(ckpt).resolve())
+                nv = int(
+                    getattr(
+                        self.config,
+                        "num_views",
+                        getattr(self.config, "num_image_views", 2),
+                    )
+                )
+                from model_optimizer.infer.flash.siglip import FlashRtSiglipVision
+
+                self._flashrt_siglip = FlashRtSiglipVision(
+                    ckpt,
+                    num_views=nv,
+                    use_cuda_graph=bool(
+                        getattr(self.config, "flashrt_siglip_use_cuda_graph", True)
+                    ),
+                )
+                self._orig_embed_prefix_for_flashrt = self.pi05_model.embed_prefix
+                _ex = self
+
+                def embed_prefix_flashrt_hybrid(self_m, images, img_masks, lang_tokens, lang_masks):
+                    """FlashRT Thor 视觉栈 + PyTorch 语言嵌入（与 ``PI0Pytorch.embed_prefix`` 同返回）。"""
+                    v = _ex._flashrt_siglip.forward_from_torch_images(images)
+                    v_b = v.unsqueeze(0)
+                    pad_parts = []
+                    for m in img_masks:
+                        m = m.to(device=v_b.device, dtype=v_b.dtype)
+                        if m.dim() != 2:
+                            raise ValueError(f"img_mask must be 2D, got {tuple(m.shape)}")
+                        if m.shape[1] == 1:
+                            m = m[:, None].expand(-1, 256)
+                        elif m.shape[1] != 256:
+                            raise ValueError(
+                                "Each img_mask must be [B,1] or [B,256] per view; "
+                                f"got {tuple(m.shape)}"
+                            )
+                        pad_parts.append(m)
+                    img_pad = torch.cat(pad_parts, dim=1)
+
+                    def _lang():
+                        le = self_m.paligemma_with_expert.embed_language_tokens(
+                            lang_tokens
+                        )
+                        d = float(le.shape[-1])
+                        return le * math.sqrt(d)
+
+                    lang_emb = _lang()
+                    embs = torch.cat([v_b, lang_emb], dim=1)
+                    pad_masks = torch.cat([img_pad, lang_masks], dim=1)
+                    bsize = pad_masks.shape[0]
+                    seq_len = embs.shape[1]
+                    att_t = torch.zeros(
+                        (1, seq_len), device=embs.device, dtype=torch.bool
+                    ).expand(bsize, -1)
+                    return embs, pad_masks, att_t
+
+                self.pi05_model.embed_prefix = types.MethodType(
+                    embed_prefix_flashrt_hybrid, self.pi05_model
+                )
+                print(
+                    colored(
+                        f"embed_prefix: FlashRT SigLIP vision + PyTorch lang (ckpt={ckpt}, nv={nv})",
+                        "green",
+                    )
+                )
+            elif embed_prefix_engine_name:
                 print(
                     colored(
                         f"replace embed_prefix with {embed_prefix_engine_name}",
