@@ -87,6 +87,11 @@ class Pi05TensorRTExecutor(Executor):
         # 运行时替换 ``embed_*`` / ``forward`` / ``denoise_step`` 后，再对整条推理
         # 图做 dynamo/inductor 易与 TRT 子图不兼容。每次换 engine 后恢复为类上原始实现。
         self._restore_eager_sample_actions()
+        from model_optimizer.infer.tensorrt.pi0_stage_profiler import (
+            maybe_install_pi0_stage_profiler,
+        )
+
+        maybe_install_pi0_stage_profiler(self.pi05_model)
       #  self._release_pytorch_model()
       #  self.pi05_model.paligemma_with_expert.embed_image = partial(
       #      embed_image, self.pi05_model.paligemma_with_expert.paligemma.model)
