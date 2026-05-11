@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from ..model import Model
 import contextlib
 import os
@@ -9,9 +11,40 @@ from termcolor import colored
 import logging
 
 from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
+from model_optimizer.ops import patch_vision_siglip_mlp_custom_op
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
 logger = logging.getLogger(__name__)
+
+
+def _effective_siglip_mlp_custom_op(flag: bool | None) -> bool:
+    """CLI/构造参数优先；未显式传入时可由环境变量 ``MODEL_OPTIMIZER_SIGLIP_MLP_CUSTOM_OP`` 开启。"""
+    if flag is not None:
+        return bool(flag)
+    return os.environ.get("MODEL_OPTIMIZER_SIGLIP_MLP_CUSTOM_OP", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _maybe_register_siglip_mlp_trt_export(vit: "Vit") -> None:
+    """与 TensorRT-Edge-LLM 一致：在 ONNX 导出前注册 ``trt::SiglipMlpPlugin`` symbolic。"""
+    if not getattr(vit, "siglip_mlp_custom_op", False):
+        return
+    if os.environ.get("MODEL_OPTIMIZER_SIGLIP_MLP_TRT_EXPORT", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return
+    import model_optimizer.ops.siglip_mlp_plugin as _siglip_plugin  # noqa: F401 — registers custom op
+
+    from model_optimizer.ops.siglip_mlp_plugin import (
+        register_siglip_mlp_plugin_onnx_symbolic_functions,
+    )
+
+    register_siglip_mlp_plugin_onnx_symbolic_functions()
 
 
 @contextlib.contextmanager
@@ -56,13 +89,37 @@ def _force_vision_eager_attention_temporarily(vision_tower: torch.nn.Module):
 
 
 class Vit(torch.nn.Module, Model):
-    def __init__(self, config, vision_tower, multi_modal_projector, **kwargs):
+    """Pi05 视觉塔封装。
+
+    SigLIP encoder MLP 融合：构造参数 ``siglip_mlp_custom_op=True`` 或环境变量
+    ``MODEL_OPTIMIZER_SIGLIP_MLP_CUSTOM_OP=1`` 启用（见 :mod:`model_optimizer.ops.siglip_mlp`），
+    不修改上游 ``modeling_siglip.py``。
+
+    ONNX 导出为 ``trt::SiglipMlpPlugin``：同时开启上述融合与
+    ``MODEL_OPTIMIZER_SIGLIP_MLP_TRT_EXPORT=1``；导出前注册 symbolic（类比
+    ``onnx_export/llm_export.py`` 中对 ``register_attention_plugin_onnx_symbolic_functions`` 的调用）。
+    前向在 :class:`~model_optimizer.ops.siglip_mlp.SiglipMlpCustomOpWrapper` 内直接调用
+    ``siglip_mlp_plugin(...)``，与 ``layers.py`` 直接调用 ``attention_plugin(...)`` 一致。
+    """
+
+    def __init__(
+        self,
+        config,
+        vision_tower,
+        multi_modal_projector,
+        *,
+        siglip_mlp_custom_op: bool | None = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.config = config
         self.vision_tower = vision_tower
         self.model = vision_tower
         self.device = self.vision_tower.device
         self.multi_modal_projector = multi_modal_projector
+        self.siglip_mlp_custom_op = _effective_siglip_mlp_custom_op(siglip_mlp_custom_op)
+        if self.siglip_mlp_custom_op:
+            patch_vision_siglip_mlp_custom_op(self.vision_tower, enabled=True)
 
     def get_calibrate_dataset(self, calib_data):
         return open_pi05_calib_for_quantize(calib_data, component="pi05_vit")
@@ -88,6 +145,7 @@ class Vit(torch.nn.Module, Model):
         start = time.time()
         logger.info("Start export onnx ...")
         print(colored(f"Start Vit export onnx...", "green"))
+        _maybe_register_siglip_mlp_trt_export(self)
         with torch.inference_mode():
             with _force_vision_eager_attention_temporarily(self.vision_tower):
                 with _sdp_math_backend_only():
@@ -113,19 +171,36 @@ class Vit(torch.nn.Module, Model):
         return self
 
     @classmethod
-    def construct_from_name_path(cls, model_name, model_path, train_config=None):
+    def construct_from_name_path(
+        cls,
+        model_name,
+        model_path,
+        train_config=None,
+        *,
+        siglip_mlp_custom_op: bool | None = None,
+    ):
         from .model_pi05 import Pi05Model
 
         pi05_model = Pi05Model.construct_from_name_path(
             model_name, model_path, train_config
         )
-        return cls.construct_model(pi05_model)
+        return cls.construct_model(pi05_model, siglip_mlp_custom_op=siglip_mlp_custom_op)
 
     @classmethod
-    def construct_model(cls, pi05_model, dtype=torch.bfloat16):
-        vit_model = cls(pi05_model.paligemma_with_expert.paligemma.config,
-                        pi05_model.paligemma_with_expert.paligemma.model.vision_tower,
-                        pi05_model.paligemma_with_expert.paligemma.model.multi_modal_projector)
+    def construct_model(
+        cls,
+        pi05_model,
+        dtype=torch.bfloat16,
+        *,
+        siglip_mlp_custom_op: bool | None = None,
+    ):
+        eff = _effective_siglip_mlp_custom_op(siglip_mlp_custom_op)
+        vit_model = cls(
+            pi05_model.paligemma_with_expert.paligemma.config,
+            pi05_model.paligemma_with_expert.paligemma.model.vision_tower,
+            pi05_model.paligemma_with_expert.paligemma.model.multi_modal_projector,
+            siglip_mlp_custom_op=eff,
+        )
         # pi05_model.paligemma_with_expert.paligemma.model.multi_modal_projector).to(dtype)
         return vit_model
 
@@ -141,6 +216,7 @@ class Vit(torch.nn.Module, Model):
         os.makedirs(output_dir, exist_ok=True)
         start = time.time()
         logger.info("Start export onnx ...")
+        _maybe_register_siglip_mlp_trt_export(vit_model)
         with torch.inference_mode():
             with _force_vision_eager_attention_temporarily(vit_model.vision_tower):
                 with _sdp_math_backend_only():
