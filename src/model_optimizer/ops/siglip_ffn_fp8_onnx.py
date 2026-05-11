@@ -3,132 +3,113 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 
-"""以 ONNX 描述 ``trt::SiglipFfFp8Plugin`` 单节点图（不经过 TorchScript FP8 导出）。"""
+"""构建仅含 ``trt::SiglipMlpPlugin`` 的 ONNX 图，用于 TensorRT 插件与引擎的端到端测试。
+
+与 :func:`model_optimizer.ops.siglip_mlp_plugin.siglip_mlp_plugin` / ONNX 导出节点一致；
+权重以 initializer 固化，运行时输入仅为 ``x``（FP16）。
+"""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import onnx
 import torch
+import torch.nn as nn
 from onnx import TensorProto, helper, numpy_helper
+
+from model_optimizer.ops.siglip_mlp_plugin import ONNX_OPSET_VERSION, register_siglip_mlp_plugin_onnx_symbolic_functions
 
 logger = logging.getLogger(__name__)
 
 _SCHEMA_REGISTERED = False
 
 
-def register_siglip_ffn_fp8_onnx_schema() -> None:
-    """注册 ``trt::SiglipFfFp8Plugin`` 的 ONNX schema（便于 checker / 工具链）。"""
+class TinySiglipMlpTrt(nn.Module):
+    """最小 SigLIP MLP（参数名与 :func:`build_siglip_mlp_trt_onnx_from_module` 约定一致）。"""
+
+    def __init__(self, d: int, h: int, *, device: torch.device | None = None, dtype: torch.dtype = torch.float16) -> None:
+        super().__init__()
+        dev = device or torch.device("cpu")
+        self.fc1_w = nn.Parameter(torch.randn(h, d, device=dev, dtype=dtype))
+        self.fc1_b = nn.Parameter(torch.randn(h, device=dev, dtype=dtype))
+        self.fc2_w = nn.Parameter(torch.randn(d, h, device=dev, dtype=dtype))
+        self.fc2_b = nn.Parameter(torch.randn(d, device=dev, dtype=dtype))
+
+
+def register_siglip_mlp_trt_onnx_schema() -> None:
+    """注册 ``trt::SiglipMlpPlugin`` 的 ONNX schema（与 ``siglip_mlp_plugin`` 一致）。"""
 
     global _SCHEMA_REGISTERED
     if _SCHEMA_REGISTERED:
         return
-    from onnx.defs import OpSchema
-
-    schema = OpSchema(
-        name="SiglipFfFp8Plugin",
-        domain="trt",
-        since_version=20,
-        doc="Fused SigLIP encoder FFN FP8 (FlashRT-compatible).",
-        inputs=[
-            OpSchema.FormalParameter(
-                name="x", description="FP8 activations [S, D]", type_str="tensor(float8e4m3fn)"
-            ),
-            OpSchema.FormalParameter(
-                name="residual", description="Residual FP16 [S, D]", type_str="tensor(float16)"
-            ),
-            OpSchema.FormalParameter(
-                name="up_w", description="Up weight FP8 [D, H]", type_str="tensor(float8e4m3fn)"
-            ),
-            OpSchema.FormalParameter(
-                name="down_w", description="Down weight FP8 [H, D]", type_str="tensor(float8e4m3fn)"
-            ),
-            OpSchema.FormalParameter(name="up_b", description="Up bias FP16 [H]", type_str="tensor(float16)"),
-            OpSchema.FormalParameter(name="down_b", description="Down bias FP16 [D]", type_str="tensor(float16)"),
-            OpSchema.FormalParameter(
-                name="unit_scale", description="Device scale scalar [1]", type_str="tensor(float)"
-            ),
-        ],
-        outputs=[
-            OpSchema.FormalParameter(name="y", description="Output FP16 [S, D]", type_str="tensor(float16)")
-        ],
-        type_constraints=[],
-        attributes=[
-            OpSchema.Attribute("alpha_up", OpSchema.AttrType.FLOAT, "Up GEMM alpha", required=False),
-            OpSchema.Attribute("alpha_down", OpSchema.AttrType.FLOAT, "Down GEMM alpha", required=False),
-        ],
-    )
-    try:
-        onnx.defs.register_schema(schema)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("SiglipFfFp8Plugin schema not registered: %s", exc)
+    register_siglip_mlp_plugin_onnx_symbolic_functions()
     _SCHEMA_REGISTERED = True
+    logger.debug("SiglipMlpPlugin ONNX schema registered via siglip_mlp_plugin.")
 
 
-def _fp8_tensor_to_uint8_numpy(t: torch.Tensor) -> np.ndarray:
-    if t.dtype != torch.float8_e4m3fn:
-        raise TypeError(f"expected float8_e4m3fn, got {t.dtype}")
-    return t.contiguous().view(torch.uint8).cpu().numpy()
-
-
-def build_siglip_ffn_fp8_onnx_from_module(
-    module: torch.nn.Module,
+def build_siglip_mlp_trt_onnx_from_module(
+    module: nn.Module,
     *,
     s: int,
     onnx_path: str | Path,
-    alpha_up: float = 1.0,
-    alpha_down: float = 1.0,
+    act_id: int = 0,
 ) -> Path:
-    """从 :class:`TinySiglipFfFp8Mlp` 等模块导出仅含 ``SiglipFfFp8Plugin`` 的 ONNX 图。
+    """从带 ``fc1_w``/``fc1_b``/``fc2_w``/``fc2_b`` 的模块导出 ``SiglipMlpPlugin`` 单节点图（FP16）。"""
 
-    权重与 bias 以 initializer 固化；运行时输入为 ``x``、``residual``。
-    """
-
-    register_siglip_ffn_fp8_onnx_schema()
+    register_siglip_mlp_trt_onnx_schema()
     m = module
-    d = int(m.d)  # type: ignore[attr-defined]
-    h = int(m.h)  # type: ignore[attr-defined]
+    w1 = m.fc1_w.detach().float().cpu().numpy().astype(np.float16)  # type: ignore[attr-defined]
+    b1 = m.fc1_b.detach().float().cpu().numpy().astype(np.float16)  # type: ignore[attr-defined]
+    w2 = m.fc2_w.detach().float().cpu().numpy().astype(np.float16)  # type: ignore[attr-defined]
+    b2 = m.fc2_b.detach().float().cpu().numpy().astype(np.float16)  # type: ignore[attr-defined]
 
-    init_upw = numpy_helper.from_array(_fp8_tensor_to_uint8_numpy(m.up_w), name="up_w")  # type: ignore[attr-defined]
-    init_dnw = numpy_helper.from_array(_fp8_tensor_to_uint8_numpy(m.down_w), name="down_w")  # type: ignore[attr-defined]
-    init_upb = numpy_helper.from_array(m.up_b.detach().float().cpu().numpy().astype(np.float16), name="up_b")  # type: ignore[attr-defined]
-    init_dnb = numpy_helper.from_array(m.down_b.detach().float().cpu().numpy().astype(np.float16), name="down_b")  # type: ignore[attr-defined]
-    init_us = numpy_helper.from_array(
-        m.unit_scale.detach().float().cpu().numpy().astype(np.float32), name="unit_scale"  # type: ignore[attr-defined]
-    )
-
-    vi_x = helper.make_tensor_value_info("x", TensorProto.FLOAT8E4M3FN, [s, d])
-    vi_res = helper.make_tensor_value_info("residual", TensorProto.FLOAT16, [s, d])
+    d = int(w1.shape[1])
+    h = int(w1.shape[0])
+    vi_x = helper.make_tensor_value_info("x", TensorProto.FLOAT16, [s, d])
     vo = helper.make_tensor_value_info("y", TensorProto.FLOAT16, [s, d])
 
     node = helper.make_node(
-        "SiglipFfFp8Plugin",
-        inputs=["x", "residual", "up_w", "down_w", "up_b", "down_b", "unit_scale"],
+        "SiglipMlpPlugin",
+        inputs=["x", "fc1_w", "fc1_b", "fc2_w", "fc2_b"],
         outputs=["y"],
         domain="trt",
     )
-    node.attribute.extend(
-        [
-            helper.make_attribute("alpha_up", float(alpha_up)),
-            helper.make_attribute("alpha_down", float(alpha_down)),
-        ]
-    )
+    node.attribute.extend([helper.make_attribute("act_id", int(act_id))])
 
     graph = helper.make_graph(
         [node],
-        "siglip_ffn_fp8",
-        [vi_x, vi_res],
+        "siglip_mlp_trt",
+        [vi_x],
         [vo],
-        initializer=[init_upw, init_dnw, init_upb, init_dnb, init_us],
+        initializer=[
+            numpy_helper.from_array(w1, name="fc1_w"),
+            numpy_helper.from_array(b1, name="fc1_b"),
+            numpy_helper.from_array(w2, name="fc2_w"),
+            numpy_helper.from_array(b2, name="fc2_b"),
+        ],
     )
     model = helper.make_model(
         graph,
-        opset_imports=[helper.make_opsetid("", 20), helper.make_opsetid("trt", 1)],
+        opset_imports=[helper.make_opsetid("", int(ONNX_OPSET_VERSION)), helper.make_opsetid("trt", 1)],
     )
     onnx_path = Path(onnx_path)
     onnx.save(model, str(onnx_path))
     return onnx_path
+
+
+def register_siglip_ffn_fp8_onnx_schema() -> None:
+    """Deprecated: 请使用 :func:`register_siglip_mlp_trt_onnx_schema`。"""
+
+    register_siglip_mlp_trt_onnx_schema()
+
+
+def build_siglip_ffn_fp8_onnx_from_module(*_args: object, **_kwargs: object) -> Path:
+    """Deprecated: 旧 FP8 单测入口已移除；请使用 :class:`TinySiglipMlpTrt` + :func:`build_siglip_mlp_trt_onnx_from_module`。"""
+
+    raise RuntimeError(
+        "build_siglip_ffn_fp8_onnx_from_module was removed. "
+        "Use TinySiglipMlpTrt + build_siglip_mlp_trt_onnx_from_module (see tests/test_siglip_mlp_trt_e2e.py)."
+    )

@@ -1,4 +1,4 @@
-# SigLIP encoder FFN FP8 fused plugin (FlashRT-compatible path).
+# SigLIP MLP TensorRT plugin (ONNX ``trt::SiglipMlpPlugin`` / PyTorch ``trt::siglip_mlp_plugin``).
 #
 # Requires CUDA + TensorRT.
 #
@@ -18,9 +18,6 @@
 #     -DCUDAToolkit_ROOT=/usr/local/cuda-13.0 -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.0/bin/nvcc
 
 find_package(CUDAToolkit REQUIRED)
-if(NOT EXISTS "${CUDAToolkit_INCLUDE_DIRS}/cuda_fp8.h")
-  message(FATAL_ERROR "SigLIP FP8 TRT plugin needs cuda_fp8.h (CUDA 12.8+). CUDAToolkit_INCLUDE_DIRS=${CUDAToolkit_INCLUDE_DIRS}. Set CUDAToolkit_ROOT to a newer toolkit.")
-endif()
 
 if(NOT DEFINED ENV{TENSORRT_ROOT} AND NOT TensorRT_ROOT)
   message(FATAL_ERROR "Set TensorRT_ROOT (or env TENSORRT_ROOT). See comments at top of this CMakeLists.txt.")
@@ -68,34 +65,67 @@ if(NOT NVINFER_LIB)
     "Install libnvinfer or set CMAKE_PREFIX_PATH / adjust TensorRT_ROOT.")
 endif()
 
-add_library(trt_siglip_ffn_fp8_plugin SHARED
-  siglip_ffn_fp8_plugin.cpp
-  siglip_ffn_fp8_gelu_bias_res.cu
+add_library(trt_siglip_mlp_plugin SHARED
+  siglip_mlp_plugin.cpp
+  siglip_mlp_plugin.cu
 )
 
-set_target_properties(trt_siglip_ffn_fp8_plugin PROPERTIES
+set_target_properties(trt_siglip_mlp_plugin PROPERTIES
   CXX_STANDARD 17
   CUDA_STANDARD 17
   POSITION_INDEPENDENT_CODE ON
 )
 
-target_include_directories(trt_siglip_ffn_fp8_plugin PRIVATE
+target_include_directories(trt_siglip_mlp_plugin PRIVATE
   "${TRT_INCLUDE}"
   "${CUDAToolkit_INCLUDE_DIRS}"
 )
 
-target_link_libraries(trt_siglip_ffn_fp8_plugin PRIVATE
+target_link_libraries(trt_siglip_mlp_plugin PRIVATE
   CUDA::cudart
-  CUDA::cublasLt
+  CUDA::cublas
   "${NVINFER_LIB}"
 )
 
-target_compile_options(trt_siglip_ffn_fp8_plugin PRIVATE
+target_compile_options(trt_siglip_mlp_plugin PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr -O3>
 )
 
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-  set_property(TARGET trt_siglip_ffn_fp8_plugin PROPERTY CUDA_ARCHITECTURES native)
+  set_property(TARGET trt_siglip_mlp_plugin PROPERTY CUDA_ARCHITECTURES native)
 endif()
 
-message(STATUS "trt_siglip_ffn_fp8_plugin: TensorRT_ROOT=${TensorRT_ROOT} NVINFER_LIB=${NVINFER_LIB}")
+message(STATUS "trt_siglip_mlp_plugin: TensorRT_ROOT=${TensorRT_ROOT} NVINFER_LIB=${NVINFER_LIB}")
+
+# ── FP8 FFN TensorRT plugin (FlashRT static bridge: libflash_rt_trt_bridge.a) ──
+set(FLASHRT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../third_party/FlashRT" CACHE PATH
+  "FlashRT source tree; build FlashRT first so flash_rt/libflash_rt_trt_bridge.a exists.")
+
+find_library(FLASHRT_TRT_BRIDGE_LIB
+  NAMES flash_rt_trt_bridge libflash_rt_trt_bridge
+  PATHS "${FLASHRT_ROOT}/flash_rt"
+  NO_DEFAULT_PATH
+)
+
+if(FLASHRT_TRT_BRIDGE_LIB)
+  add_library(trt_siglip_ffn_fp8_flashrt_plugin SHARED siglip_ffn_fp8_flashrt_plugin.cpp)
+  set_target_properties(trt_siglip_ffn_fp8_flashrt_plugin PROPERTIES
+    CXX_STANDARD 17
+    POSITION_INDEPENDENT_CODE ON
+  )
+  target_include_directories(trt_siglip_ffn_fp8_flashrt_plugin PRIVATE
+    "${TRT_INCLUDE}"
+    "${CUDAToolkit_INCLUDE_DIRS}"
+    "${FLASHRT_ROOT}/csrc/trt_bridge"
+  )
+  target_link_libraries(trt_siglip_ffn_fp8_flashrt_plugin PRIVATE
+    "${FLASHRT_TRT_BRIDGE_LIB}"
+    CUDA::cudart
+    CUDA::cublas
+    CUDA::cublasLt
+    "${NVINFER_LIB}"
+  )
+  message(STATUS "trt_siglip_ffn_fp8_flashrt_plugin: FLASHRT_TRT_BRIDGE_LIB=${FLASHRT_TRT_BRIDGE_LIB}")
+else()
+  message(STATUS "flash_rt_trt_bridge.a not found under ${FLASHRT_ROOT}/flash_rt — skipping trt_siglip_ffn_fp8_flashrt_plugin (build third_party/FlashRT)")
+endif()

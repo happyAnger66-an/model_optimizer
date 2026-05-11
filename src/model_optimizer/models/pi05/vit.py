@@ -12,6 +12,7 @@ import logging
 
 from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
 from model_optimizer.ops import patch_vision_siglip_mlp_custom_op
+from model_optimizer.ops.siglip_ffn_fp8 import patch_vision_siglip_ffn_fp8_flashrt_custom_op
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,42 @@ def _effective_siglip_mlp_custom_op(flag: bool | None) -> bool:
         "true",
         "yes",
     )
+
+
+def _effective_siglip_ffn_fp8_flashrt_custom_op(flag: bool | None) -> bool:
+    """构造参数优先；未传入时由 ``MODEL_OPTIMIZER_SIGLIP_FFN_FP8_FLASHRT_CUSTOM_OP`` 开启。"""
+    if flag is not None:
+        return bool(flag)
+    return os.environ.get("MODEL_OPTIMIZER_SIGLIP_FFN_FP8_FLASHRT_CUSTOM_OP", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _ffn_flashrt_trt_export_enabled() -> bool:
+    """与 :class:`~model_optimizer.ops.siglip_ffn_fp8.SiglipFfFp8FlashrtMlpWrapper` 一致：导出 ONNX 为 ``trt::SiglipFfFp8FlashrtPlugin``。"""
+    return os.environ.get("MODEL_OPTIMIZER_SIGLIP_FFN_FP8_FLASHRT_TRT_EXPORT", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _maybe_register_siglip_ffn_fp8_flashrt_trt_export() -> None:
+    """在 ``torch.onnx.export`` 前注册 ``trt::siglip_ffn_fp8_flashrt_plugin`` → ``trt::SiglipFfFp8FlashrtPlugin`` symbolic。"""
+    if not _ffn_flashrt_trt_export_enabled():
+        return
+    from model_optimizer.ops.siglip_ffn_fp8_flashrt_export import (
+        register_siglip_ffn_fp8_flashrt_plugin_onnx_symbolic_functions,
+    )
+
+    register_siglip_ffn_fp8_flashrt_plugin_onnx_symbolic_functions()
+
+
+def _vit_onnx_opset_version() -> int:
+    """FlashRT FP8 导出路径使用 FLOAT8 / 更高 opset，默认 20；其余保持 19。"""
+    return 20 if _ffn_flashrt_trt_export_enabled() else 19
 
 
 def _maybe_register_siglip_mlp_trt_export(vit: "Vit") -> None:
@@ -100,6 +137,12 @@ class Vit(torch.nn.Module, Model):
     ``onnx_export/llm_export.py`` 中对 ``register_attention_plugin_onnx_symbolic_functions`` 的调用）。
     前向在 :class:`~model_optimizer.ops.siglip_mlp.SiglipMlpCustomOpWrapper` 内直接调用
     ``siglip_mlp_plugin(...)``，与 ``layers.py`` 直接调用 ``attention_plugin(...)`` 一致。
+
+    **FFN FP8 + FlashRT（TensorRT）**：构造 ``siglip_ffn_fp8_flashrt_custom_op=True`` 或环境变量
+    ``MODEL_OPTIMIZER_SIGLIP_FFN_FP8_FLASHRT_CUSTOM_OP=1`` 为各层 ``mlp`` 包
+    :class:`~model_optimizer.ops.siglip_ffn_fp8.SiglipFfFp8FlashrtMlpWrapper`；量化后导出 ONNX 时再设
+    ``MODEL_OPTIMIZER_SIGLIP_FFN_FP8_FLASHRT_TRT_EXPORT=1``（与 ``export`` / ``quantize`` 末尾导出一致）。
+    该路径与 ``siglip_mlp_custom_op`` 互斥（优先 FlashRT 包装）。
     """
 
     def __init__(
@@ -109,6 +152,7 @@ class Vit(torch.nn.Module, Model):
         multi_modal_projector,
         *,
         siglip_mlp_custom_op: bool | None = None,
+        siglip_ffn_fp8_flashrt_custom_op: bool | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -117,8 +161,19 @@ class Vit(torch.nn.Module, Model):
         self.model = vision_tower
         self.device = self.vision_tower.device
         self.multi_modal_projector = multi_modal_projector
-        self.siglip_mlp_custom_op = _effective_siglip_mlp_custom_op(siglip_mlp_custom_op)
-        if self.siglip_mlp_custom_op:
+        self.siglip_ffn_fp8_flashrt_custom_op = _effective_siglip_ffn_fp8_flashrt_custom_op(
+            siglip_ffn_fp8_flashrt_custom_op
+        )
+        eff_mlp = _effective_siglip_mlp_custom_op(siglip_mlp_custom_op)
+        if self.siglip_ffn_fp8_flashrt_custom_op and eff_mlp:
+            logger.warning(
+                "Vit: siglip_ffn_fp8_flashrt_custom_op and siglip_mlp_custom_op both requested; "
+                "using FlashRT FFN wrapper only (SiglipMlpPlugin path disabled)."
+            )
+        self.siglip_mlp_custom_op = bool(eff_mlp) and not self.siglip_ffn_fp8_flashrt_custom_op
+        if self.siglip_ffn_fp8_flashrt_custom_op:
+            patch_vision_siglip_ffn_fp8_flashrt_custom_op(self.vision_tower, enabled=True)
+        elif self.siglip_mlp_custom_op:
             patch_vision_siglip_mlp_custom_op(self.vision_tower, enabled=True)
 
     def get_calibrate_dataset(self, calib_data):
@@ -145,7 +200,9 @@ class Vit(torch.nn.Module, Model):
         start = time.time()
         logger.info("Start export onnx ...")
         print(colored(f"Start Vit export onnx...", "green"))
+        _maybe_register_siglip_ffn_fp8_flashrt_trt_export()
         _maybe_register_siglip_mlp_trt_export(self)
+        _opset = _vit_onnx_opset_version()
         with torch.inference_mode():
             with _force_vision_eager_attention_temporarily(self.vision_tower):
                 with _sdp_math_backend_only():
@@ -156,7 +213,7 @@ class Vit(torch.nn.Module, Model):
                         # Add position_ids to input names
                         input_names=["pixel_values"],
                         output_names=["image_features"],
-                        opset_version=19,
+                        opset_version=_opset,
                         dynamo=dynamo,
                         do_constant_folding=True,
                         #                dynamic_axes={
@@ -178,13 +235,18 @@ class Vit(torch.nn.Module, Model):
         train_config=None,
         *,
         siglip_mlp_custom_op: bool | None = None,
+        siglip_ffn_fp8_flashrt_custom_op: bool | None = None,
     ):
         from .model_pi05 import Pi05Model
 
         pi05_model = Pi05Model.construct_from_name_path(
             model_name, model_path, train_config
         )
-        return cls.construct_model(pi05_model, siglip_mlp_custom_op=siglip_mlp_custom_op)
+        return cls.construct_model(
+            pi05_model,
+            siglip_mlp_custom_op=siglip_mlp_custom_op,
+            siglip_ffn_fp8_flashrt_custom_op=siglip_ffn_fp8_flashrt_custom_op,
+        )
 
     @classmethod
     def construct_model(
@@ -193,13 +255,16 @@ class Vit(torch.nn.Module, Model):
         dtype=torch.bfloat16,
         *,
         siglip_mlp_custom_op: bool | None = None,
+        siglip_ffn_fp8_flashrt_custom_op: bool | None = None,
     ):
-        eff = _effective_siglip_mlp_custom_op(siglip_mlp_custom_op)
+        eff_flash = _effective_siglip_ffn_fp8_flashrt_custom_op(siglip_ffn_fp8_flashrt_custom_op)
+        eff_mlp = _effective_siglip_mlp_custom_op(siglip_mlp_custom_op)
         vit_model = cls(
             pi05_model.paligemma_with_expert.paligemma.config,
             pi05_model.paligemma_with_expert.paligemma.model.vision_tower,
             pi05_model.paligemma_with_expert.paligemma.model.multi_modal_projector,
-            siglip_mlp_custom_op=eff,
+            siglip_mlp_custom_op=eff_mlp,
+            siglip_ffn_fp8_flashrt_custom_op=eff_flash,
         )
         # pi05_model.paligemma_with_expert.paligemma.model.multi_modal_projector).to(dtype)
         return vit_model
@@ -216,7 +281,9 @@ class Vit(torch.nn.Module, Model):
         os.makedirs(output_dir, exist_ok=True)
         start = time.time()
         logger.info("Start export onnx ...")
+        _maybe_register_siglip_ffn_fp8_flashrt_trt_export()
         _maybe_register_siglip_mlp_trt_export(vit_model)
+        _opset = _vit_onnx_opset_version()
         with torch.inference_mode():
             with _force_vision_eager_attention_temporarily(vit_model.vision_tower):
                 with _sdp_math_backend_only():
@@ -227,7 +294,7 @@ class Vit(torch.nn.Module, Model):
                         # Add position_ids to input names
                         input_names=["pixel_values"],
                         output_names=["vit_embeds"],
-                        opset_version=19,
+                        opset_version=_opset,
                         dynamo=False,
                         do_constant_folding=True,
                         dynamic_axes={
@@ -247,7 +314,12 @@ class Vit(torch.nn.Module, Model):
             self, quant_cfg, calib_dataloader, measure_quant_error=measure_quant_error
         )
         self.is_quantized = True
-        set_dynamic_quant(self, "bf16")
+        _dyn = (
+            "fp16"
+            if _ffn_flashrt_trt_export_enabled() and is_nvfp4_quantized(quant_cfg)
+            else "bf16"
+        )
+        set_dynamic_quant(self, _dyn)
 
         self.export(export_dir, dynamo=False)
         onnx_path = f"{export_dir}/vit.onnx"

@@ -23,6 +23,12 @@
 		},
 		{
 			"path": "../TensorRT-Edge-LLM"
+		},
+		{
+			"path": "../tokenspeed"
+		},
+		{
+			"path": "../cutlass"
 		}
 	],
 	"settings": {}

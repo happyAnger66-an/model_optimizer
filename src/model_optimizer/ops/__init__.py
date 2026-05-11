@@ -15,14 +15,24 @@ from .siglip_mlp_plugin import (
     siglip_mlp_plugin,
 )
 from .siglip_ffn_fp8 import (
+    SiglipFfFp8FlashrtMlpWrapper,
     TinySiglipFfFp8Mlp,
+    discover_siglip_ffn_fp8_flashrt_plugin_so,
     discover_siglip_ffn_fp8_plugin_so,
+    discover_siglip_mlp_trt_plugin_so,
     gpu_supports_fp8_trt,
+    patch_vision_siglip_ffn_fp8_flashrt_custom_op,
     siglip_ffn_fp8_eager,
 )
+from .siglip_ffn_fp8_flashrt_export import (
+    register_siglip_ffn_fp8_flashrt_plugin_onnx_symbolic_functions,
+)
 from .siglip_ffn_fp8_onnx import (
-    build_siglip_ffn_fp8_onnx_from_module,
+    TinySiglipMlpTrt,
+    build_siglip_mlp_trt_onnx_from_module,
+    register_siglip_mlp_trt_onnx_schema,
     register_siglip_ffn_fp8_onnx_schema,
+    build_siglip_ffn_fp8_onnx_from_module,
 )
 
 __all__ = [
@@ -31,10 +41,18 @@ __all__ = [
     "siglip_mlp_eager",
     "register_siglip_mlp_plugin_onnx_symbolic_functions",
     "siglip_mlp_plugin",
+    "SiglipFfFp8FlashrtMlpWrapper",
+    "patch_vision_siglip_ffn_fp8_flashrt_custom_op",
+    "register_siglip_ffn_fp8_flashrt_plugin_onnx_symbolic_functions",
     "siglip_ffn_fp8_eager",
     "TinySiglipFfFp8Mlp",
+    "discover_siglip_ffn_fp8_flashrt_plugin_so",
     "discover_siglip_ffn_fp8_plugin_so",
+    "discover_siglip_mlp_trt_plugin_so",
     "gpu_supports_fp8_trt",
+    "TinySiglipMlpTrt",
+    "register_siglip_mlp_trt_onnx_schema",
+    "build_siglip_mlp_trt_onnx_from_module",
     "register_siglip_ffn_fp8_onnx_schema",
     "build_siglip_ffn_fp8_onnx_from_module",
 ]

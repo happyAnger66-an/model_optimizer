@@ -2,32 +2,36 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 //
-// TensorRT IPluginV2DynamicExt: fused SigLIP encoder FFN FP8 path (FlashRT-compatible).
+// TensorRT IPluginV2DynamicExt: SigLIP encoder FFN FP8 via FlashRT static bridge
+// (``frt_siglip_ffn_fp8_*`` / ``GemmRunner`` + ``quantize_fp8_static_fp16``).
 
 #include <NvInfer.h>
 
 #include <cuda_runtime_api.h>
 
+#include <cstdint>
 #include <cstring>
 #include <string>
 
-#include "siglip_ffn_fp8_cuda_api.h"
+#include "flash_rt_trt_api.h"
 
 namespace mopt_trt {
 
 int32_t constexpr kNbInputs = 7;
 
-class SiglipFfFp8Plugin final : public nvinfer1::IPluginV2DynamicExt {
+class SiglipFfFp8FlashrtPlugin final : public nvinfer1::IPluginV2DynamicExt {
 public:
-    SiglipFfFp8Plugin(float alpha_up, float alpha_down)
+    SiglipFfFp8FlashrtPlugin(float alpha_up, float alpha_down)
         : m_alpha_up(alpha_up)
         , m_alpha_down(alpha_down) {}
 
-    nvinfer1::AsciiChar const* getPluginType() const noexcept override { return "SiglipFfFp8Plugin"; }
+    nvinfer1::AsciiChar const* getPluginType() const noexcept override { return "SiglipFfFp8FlashrtPlugin"; }
 
     nvinfer1::AsciiChar const* getPluginVersion() const noexcept override { return "1"; }
 
     int32_t getNbOutputs() const noexcept override { return 1; }
+
+    int32_t getNbInputs() const noexcept override { return kNbInputs; }
 
     nvinfer1::DimsExprs getOutputDimensions(int32_t outputIndex, nvinfer1::DimsExprs const* inputs, int32_t nbInputs,
         nvinfer1::IExprBuilder& exprBuilder) noexcept override {
@@ -72,15 +76,16 @@ public:
             m_h = in[2].desc.dims.d[1];
         }
         int32_t s_max = 1;
-        if (in[0].desc.dims.nbDims >= 1) {
-            int32_t v = in[0].max.d[0];
-            if (v > 0) {
-                s_max = v;
+        if (in[0].desc.dims.nbDims > 1) {
+            for (int32_t i = 0; i < in[0].desc.dims.nbDims - 1; ++i) {
+                int32_t mx = in[0].max.d[i];
+                int32_t use = mx > 0 ? mx : (in[0].desc.dims.d[i] > 0 ? in[0].desc.dims.d[i] : 1);
+                s_max *= use;
             }
         }
-        m_s_max = s_max;
+        m_s_max = s_max > 0 ? s_max : 1;
         if (m_d > 0 && m_h > 0 && m_s_max > 0) {
-            m_workspace_bytes = mopt_siglip_ffn_query_workspace_bytes(m_s_max, m_d, m_h);
+            m_workspace_bytes = frt_siglip_ffn_fp8_workspace_bytes(m_s_max, m_d, m_h);
         }
     }
 
@@ -100,17 +105,24 @@ public:
             return 1;
         }
         int32_t s = 1;
-        if (inputDesc[0].dims.nbDims >= 1) {
-            s = inputDesc[0].dims.d[0];
+        if (inputDesc[0].dims.nbDims > 1) {
+            s = 1;
+            for (int32_t i = 0; i < inputDesc[0].dims.nbDims - 1; ++i) {
+                s *= inputDesc[0].dims.d[i];
+            }
+        } else if (inputDesc[0].dims.nbDims == 1) {
+            s = 1;
         }
         int32_t d = m_d;
         int32_t h = m_h;
         if (inputDesc[0].dims.nbDims >= 2) {
-            d = inputDesc[0].dims.d[1];
+            d = inputDesc[0].dims.d[inputDesc[0].dims.nbDims - 1];
         }
-        int32_t st = mopt_siglip_ffn_enqueue(m_rt, s, d, h, m_alpha_up, m_alpha_down, inputs[0], inputs[1],
-            inputs[2], inputs[3], inputs[4], inputs[5], inputs[6], outputs[0], workspace, m_workspace_bytes, stream);
-        return st;
+        if (inputDesc[2].dims.nbDims >= 2) {
+            h = inputDesc[2].dims.d[1];
+        }
+        return frt_siglip_ffn_fp8_enqueue(m_rt, s, d, h, m_alpha_up, m_alpha_down, inputs[0], inputs[1], inputs[2],
+            inputs[3], inputs[4], inputs[5], inputs[6], outputs[0], workspace, m_workspace_bytes, stream);
     }
 
     size_t getSerializationSize() const noexcept override { return sizeof(float) * 2; }
@@ -126,7 +138,7 @@ public:
     }
 
     nvinfer1::IPluginV2DynamicExt* clone() const noexcept override {
-        return new SiglipFfFp8Plugin(m_alpha_up, m_alpha_down);
+        return new SiglipFfFp8FlashrtPlugin(m_alpha_up, m_alpha_down);
     }
 
     void setPluginNamespace(nvinfer1::AsciiChar const* pluginNamespace) noexcept override {
@@ -144,13 +156,15 @@ public:
     }
 
     int32_t initialize() noexcept override {
-        m_rt = mopt_siglip_ffn_rt_create();
+        m_rt = frt_gemm_runner_create();
         return m_rt != nullptr ? 0 : -1;
     }
 
     void terminate() noexcept override {
-        mopt_siglip_ffn_rt_destroy(m_rt);
-        m_rt = nullptr;
+        if (m_rt != nullptr) {
+            frt_gemm_runner_destroy(m_rt);
+            m_rt = nullptr;
+        }
     }
 
 private:
@@ -160,13 +174,13 @@ private:
     int32_t m_h{0};
     int32_t m_s_max{1};
     size_t m_workspace_bytes{0};
-    MoptSiglipFfRt* m_rt{nullptr};
+    void* m_rt{nullptr};
     std::string m_ns{};
 };
 
-class SiglipFfFp8PluginCreator final : public nvinfer1::IPluginCreator {
+class SiglipFfFp8FlashrtPluginCreator final : public nvinfer1::IPluginCreator {
 public:
-    nvinfer1::AsciiChar const* getPluginName() const noexcept override { return "SiglipFfFp8Plugin"; }
+    nvinfer1::AsciiChar const* getPluginName() const noexcept override { return "SiglipFfFp8FlashrtPlugin"; }
 
     nvinfer1::AsciiChar const* getPluginVersion() const noexcept override { return "1"; }
 
@@ -196,7 +210,7 @@ public:
                 }
             }
         }
-        return new SiglipFfFp8Plugin(a_up, a_dn);
+        return new SiglipFfFp8FlashrtPlugin(a_up, a_dn);
     }
 
     nvinfer1::IPluginV2* deserializePlugin(
@@ -209,7 +223,7 @@ public:
         float a_dn{};
         std::memcpy(&a_up, serialData, sizeof(float));
         std::memcpy(&a_dn, static_cast<char const*>(serialData) + sizeof(float), sizeof(float));
-        return new SiglipFfFp8Plugin(a_up, a_dn);
+        return new SiglipFfFp8FlashrtPlugin(a_up, a_dn);
     }
 
     void setPluginNamespace(nvinfer1::AsciiChar const* pluginNamespace) noexcept override {
@@ -224,5 +238,5 @@ private:
 
 } // namespace mopt_trt
 
-using mopt_trt::SiglipFfFp8PluginCreator;
-REGISTER_TENSORRT_PLUGIN(SiglipFfFp8PluginCreator);
+using mopt_trt::SiglipFfFp8FlashrtPluginCreator;
+REGISTER_TENSORRT_PLUGIN(SiglipFfFp8FlashrtPluginCreator);
