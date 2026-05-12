@@ -68,6 +68,22 @@ def test_eager_equals_plugin_act_id_1() -> None:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_eager_casts_fp32_weights_when_x_bf16() -> None:
+    """与 ONNX trace 一致：激活为 bf16、Linear 权重仍为 fp32 时不得报错。"""
+    dev = torch.device("cuda", 0)
+    torch.manual_seed(2)
+    h, inter = 16, 24
+    x = torch.randn(2, 3, h, device=dev, dtype=torch.bfloat16)
+    w_gu = torch.randn(2 * inter, h, device=dev, dtype=torch.float32)
+    w_d = torch.randn(h, inter, device=dev, dtype=torch.float32)
+    y = gemma_fused_gated_mlp_eager(x, w_gu, w_d, 1)
+    assert y.dtype == torch.bfloat16
+    assert torch.isfinite(y).all()
+    y_same = gemma_fused_gated_mlp_eager(x, w_gu.to(torch.bfloat16), w_d.to(torch.bfloat16), 1)
+    assert torch.allclose(y, y_same, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_onnx_export_contains_fused_node() -> None:
     register_gemma_fused_gated_mlp_onnx_symbolic_functions()
     cfg = _TinyCfg()

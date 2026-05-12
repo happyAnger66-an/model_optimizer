@@ -70,6 +70,12 @@ def gemma_fused_gated_mlp_eager(
 ) -> torch.Tensor:
     """参考实现：``gate_up_weight`` 形状 ``[2*inter, hidden]``，``down_weight`` ``[hidden, inter]``。"""
 
+    dt = x.dtype
+    if gate_up_weight.dtype != dt:
+        gate_up_weight = gate_up_weight.to(dtype=dt)
+    if down_weight.dtype != dt:
+        down_weight = down_weight.to(dtype=dt)
+
     fn = _act_fn_from_id(int(act_id))
     z = F.linear(x, gate_up_weight, bias=None)
     inter = z.shape[-1] // 2
