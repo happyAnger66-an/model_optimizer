@@ -14,6 +14,42 @@ from typing import Iterable
 import tensorrt as trt
 import torch
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_DEFAULT_PLUGIN_REL_PATHS = (
+    "build/trt_plugins/gemma_fused_gated_mlp/libtrt_gemma_fused_gated_mlp_plugin.so",
+    "csrc/build/trt_plugins/gemma_fused_gated_mlp/libtrt_gemma_fused_gated_mlp_plugin.so",
+    "build_csrc/trt_plugins/gemma_fused_gated_mlp/libtrt_gemma_fused_gated_mlp_plugin.so",
+)
+
+
+def _plugin_candidate_paths(extra_paths: Iterable[str | Path] | None = None) -> list[Path]:
+    out: list[Path] = []
+    env = os.environ.get("MODEL_OPTIMIZER_TRT_GEMMA_FUSED_GATED_MLP_PLUGIN")
+    if env:
+        out.append(Path(env).expanduser())
+    if extra_paths:
+        out.extend(Path(p) for p in extra_paths)
+    for rel in _DEFAULT_PLUGIN_REL_PATHS:
+        out.append(_REPO_ROOT / rel)
+    return out
+
+
+def explain_gemma_fused_gated_mlp_plugin_discovery(extra_paths: Iterable[str | Path] | None = None) -> str:
+    """未找到插件时用于日志：列出环境变量与已检查路径是否存在。"""
+
+    lines: list[str] = []
+    env = os.environ.get("MODEL_OPTIMIZER_TRT_GEMMA_FUSED_GATED_MLP_PLUGIN")
+    lines.append(f"MODEL_OPTIMIZER_TRT_GEMMA_FUSED_GATED_MLP_PLUGIN={env!r}")
+    lines.append(f"repo_root={_REPO_ROOT}")
+    for p in _plugin_candidate_paths(extra_paths):
+        exists = p.is_file()
+        lines.append(f"  {'OK ' if exists else 'MISS'} {p.resolve() if p.exists() else p}")
+    lines.append(
+        "Fix: build csrc with -DMODEL_OPTIMIZER_BUILD_TRT_PLUGINS=ON and export "
+        "MODEL_OPTIMIZER_TRT_GEMMA_FUSED_GATED_MLP_PLUGIN=/abs/path/to/libtrt_gemma_fused_gated_mlp_plugin.so"
+    )
+    return "\n".join(lines)
+
 
 def discover_gemma_fused_gated_mlp_plugin_so(extra_paths: Iterable[str | Path] | None = None) -> str | None:
     """解析 ``libtrt_gemma_fused_gated_mlp_plugin.so`` 路径。
@@ -25,24 +61,7 @@ def discover_gemma_fused_gated_mlp_plugin_so(extra_paths: Iterable[str | Path] |
     3. 相对仓库根目录的常见 CMake 构建产物路径。
     """
 
-    env = os.environ.get("MODEL_OPTIMIZER_TRT_GEMMA_FUSED_GATED_MLP_PLUGIN")
-    if env and Path(env).is_file():
-        return str(Path(env).resolve())
-
-    candidates: list[Path] = []
-    if extra_paths:
-        candidates.extend(Path(p) for p in extra_paths)
-
-    here = Path(__file__).resolve()
-    root = here.parents[3]
-    candidates.extend(
-        [
-            root / "build" / "trt_plugins" / "gemma_fused_gated_mlp" / "libtrt_gemma_fused_gated_mlp_plugin.so",
-            root / "csrc" / "build" / "trt_plugins" / "gemma_fused_gated_mlp" / "libtrt_gemma_fused_gated_mlp_plugin.so",
-            root / "build_csrc" / "trt_plugins" / "gemma_fused_gated_mlp" / "libtrt_gemma_fused_gated_mlp_plugin.so",
-        ]
-    )
-    for p in candidates:
+    for p in _plugin_candidate_paths(extra_paths):
         if p.is_file():
             return str(p.resolve())
     return None
@@ -65,8 +84,16 @@ def build_gemma_fused_gated_mlp_engine_from_onnx(
     workspace_bytes: int = 1 << 28,
     logger: trt.ILogger | None = None,
     use_bf16: bool = False,
+    diagnostics_out: list[str] | None = None,
 ) -> bytes | None:
-    """解析 ONNX（含 ``trt::GemmaFusedGatedMlp``）并序列化引擎；失败时返回 ``None``。"""
+    """解析 ONNX（含 ``trt::GemmaFusedGatedMlp``）并序列化引擎；失败时返回 ``None``。
+
+    若传入 ``diagnostics_out``，会把 ONNX 解析错误、建引擎失败等说明追加到该列表（便于打印到 stderr）。
+    """
+
+    def diag(msg: str) -> None:
+        if diagnostics_out is not None:
+            diagnostics_out.append(msg)
 
     logger = logger or trt.Logger(trt.Logger.ERROR)
     builder = trt.Builder(logger)
@@ -75,8 +102,11 @@ def build_gemma_fused_gated_mlp_engine_from_onnx(
     parser = trt.OnnxParser(network, logger)
     path = str(onnx_path)
     if not parser.parse_from_file(path):
+        diag("OnnxParser failed:")
         for i in range(parser.num_errors):
-            logger.log(trt.Logger.ERROR, str(parser.get_error(i)))
+            err = str(parser.get_error(i))
+            diag(f"  [{i}] {err}")
+            logger.log(trt.Logger.ERROR, err)
         return None
 
     cfg = builder.create_builder_config()
@@ -87,6 +117,10 @@ def build_gemma_fused_gated_mlp_engine_from_onnx(
     cfg.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, int(workspace_bytes))
     plan = builder.build_serialized_network(network, cfg)
     if plan is None:
+        diag(
+            "IBuilder.build_serialized_network returned None (GPU/driver/plugin incompatibility, "
+            "insufficient workspace, or unsupported layer for this TensorRT version)."
+        )
         return None
     return bytes(plan)
 
@@ -137,7 +171,11 @@ def run_gemma_fused_gated_mlp_engine(
         mode = engine.get_tensor_mode(name)
         if mode == trt.TensorIOMode.INPUT:
             if name not in bindings:
-                raise KeyError(f"Missing input binding {name}; expected one of {sorted(bindings)}")
+                all_names = [engine.get_tensor_name(j) for j in range(engine.num_io_tensors)]
+                raise KeyError(
+                    f"TensorRT input tensor {name!r} not in bindings {sorted(bindings)}; "
+                    f"all_io_tensors={all_names}"
+                )
             t_in = bindings[name]
             shape = tuple(int(d) for d in t_in.shape)
             if hasattr(ctx, "set_input_shape"):
