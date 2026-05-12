@@ -347,13 +347,58 @@ def _load_trt_plugin_shared_libraries(
     *,
     logger_: logging.Logger,
 ) -> None:
-    """在解析 ONNX / 构建网络之前加载自定义插件 .so（注册 IPluginCreator 等）。"""
+    """在解析 ONNX / 构建网络之前加载自定义插件 .so（注册 IPluginCreator 等）。
+
+    TensorRT 10+ 优先使用 ``IPluginRegistry.load_library``（与官方动态插件路径一致）；
+    若不可用或仍无法注册，再回退 ``ctypes.CDLL(..., RTLD_GLOBAL)``。加载后探测
+    ``trt::GemmaFusedGatedMlp`` 是否出现在当前进程的插件注册表中，便于区分
+    「未加载」与「插件链接的 libnvinfer 与 Python tensorrt 不一致」。
+    """
+
+    reg = trt.get_plugin_registry()
+    load_library = getattr(reg, "load_library", None)
+
+    def _probe_gemma_creators() -> tuple[bool, bool]:
+        """``(has_trt_v1, has_trt_v2)`` for namespace ``trt``."""
+        try:
+            v1 = reg.get_creator("GemmaFusedGatedMlp", "1", "trt") is not None
+            v2 = reg.get_creator("GemmaFusedGatedMlp", "2", "trt") is not None
+            return v1, v2
+        except Exception:
+            return False, False
+
     for p in paths:
         ap = os.path.abspath(os.path.expanduser(p))
         if not os.path.isfile(ap):
             raise FileNotFoundError(f"Plugin library not found: {ap}")
-        logger_.info("Loading TensorRT plugin library: %s", ap)
-        ctypes.CDLL(ap, mode=ctypes.RTLD_GLOBAL)
+        before = _probe_gemma_creators()
+        if load_library is not None:
+            try:
+                load_library(ap)
+            except Exception as exc:
+                logger_.warning(
+                    "IPluginRegistry.load_library raised for %s: %s; will try ctypes.CDLL if needed",
+                    ap,
+                    exc,
+                )
+        mid = _probe_gemma_creators()
+        if mid == before and not (mid[0] or mid[1]):
+            logger_.info("Loading TensorRT plugin library via ctypes.CDLL: %s", ap)
+            ctypes.CDLL(ap, mode=ctypes.RTLD_GLOBAL)
+        else:
+            logger_.info("Loaded TensorRT plugin library via IPluginRegistry.load_library: %s", ap)
+
+        after = _probe_gemma_creators()
+        if after == before and not (after[0] or after[1]):
+            logger_.warning(
+                "Loaded %s but registry still has no trt::GemmaFusedGatedMlp creators (v1=%s v2=%s). "
+                "常见原因：插件 .so 链接的 libnvinfer 与当前 Python ``import tensorrt`` 不是同一安装；"
+                "请对齐 TensorRT 版本并检查 ``ldd %s | grep nvinfer``。",
+                ap,
+                after[0],
+                after[1],
+                ap,
+            )
 
 
 def _network_creation_flags(*, strongly_typed: bool) -> int:
@@ -401,12 +446,12 @@ def build_engine(
         max_shapes: Maximum input shapes (dict: name -> shape tuple)
         plugin_lib_paths:
             自定义 TensorRT 插件 .so 的绝对或相对路径列表（如 TensorRT-Edge-LLM 编译出的
-            ``lib*.so``）。TensorRT Python API 没有单独的 “插件搜索路径” 参数；必须在
-            ``OnnxParser.parse_from_file`` **之前** 用 ``ctypes.CDLL(..., RTLD_GLOBAL)``
-            加载，使插件向 TensorRT 注册。可与环境变量 ``LD_LIBRARY_PATH`` 配合（依赖的
-            CUDA/TRT 库仍需能被动态链接器找到）。
+            ``lib*.so``）。实现上会先尝试 ``trt.get_plugin_registry().load_library``（TensorRT 10+），
+            再回退 ``ctypes.CDLL(..., RTLD_GLOBAL)``，并在 ``OnnxParser.parse_from_file`` **之前**
+            完成加载。插件须与当前 Python ``import tensorrt`` 使用 **同一套** TensorRT 安装链接，
+            否则会出现 “Plugin not found”。可与 ``LD_LIBRARY_PATH`` 配合。
         init_builtin_trt_plugins:
-            若为 True，在加载自定义库之前调用 ``trt.init_libnvinfer_plugins``，注册随
+            若为 True，在加载自定义库 **之后** 调用 ``trt.init_libnvinfer_plugins``，注册随
             TensorRT 安装的 ``libnvinfer_plugin`` 等内置插件（常见 ONNX 自定义域会依赖）。
         strongly_typed_network:
             若为 True，创建网络时附加 ``STRONGLY_TYPED``，与 TRT 10+ 在
@@ -449,14 +494,30 @@ def build_engine(
     # 预检查：避免 ONNX dtype 与 build_cfg.precision 不一致导致 TRT kernel 选择错误、深层输出塌缩
     validate_precision_matches_onnx(onnx_path, precision)
 
+    # 先加载自定义插件，再 init 内置插件：与 tests/test_gemma_fused_gated_mlp_trt_e2e 中
+    # ``load_gemma_fused_gated_mlp_plugin`` → ``init_trt_plugins_after_load`` 顺序一致，
+    # 避免部分环境下仅 CDLL 且 init 顺序导致 ONNX Parser 找不到 fallback 插件 creator。
+    if plugin_lib_paths:
+        _load_trt_plugin_shared_libraries(plugin_lib_paths, logger_=logger)
+        print(colored(f"Loaded {len(plugin_lib_paths)} custom plugin library(ies)", print_color))
+
     if init_builtin_trt_plugins:
         trt.init_libnvinfer_plugins(TRT_LOGGER, "")
         logger.info("Initialized built-in TensorRT plugin registry (libnvinfer_plugin)")
         print(colored("Initialized built-in TensorRT plugin registry", print_color))
 
     if plugin_lib_paths:
-        _load_trt_plugin_shared_libraries(plugin_lib_paths, logger_=logger)
-        print(colored(f"Loaded {len(plugin_lib_paths)} custom plugin library(ies)", print_color))
+        reg = trt.get_plugin_registry()
+        try:
+            has_v1 = reg.get_creator("GemmaFusedGatedMlp", "1", "trt") is not None
+            has_v2 = reg.get_creator("GemmaFusedGatedMlp", "2", "trt") is not None
+        except Exception:
+            has_v1 = has_v2 = False
+        if not has_v1 and not has_v2:
+            logger.warning(
+                "After loading plugin_lib_paths, registry still has no GemmaFusedGatedMlp (trt, v1/v2). "
+                "ONNX parse will likely fail with 'Plugin not found'."
+            )
 
     # Create builder and network
     logger.info("\n[Step 1/5] Creating TensorRT builder...")
