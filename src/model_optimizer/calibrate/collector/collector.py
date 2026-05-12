@@ -1,6 +1,6 @@
 import numpy as np
 
-from model_optimizer.torch_hooks.hooks import hook_module_inputs
+from model_optimizer.utils.torch_hooks.hooks import hook_module_inputs
 
 
 class YOLOCalibCollector:

@@ -8,7 +8,7 @@ from ultralytics import YOLO
 from ultralytics.nn.tasks import SegmentationModel
 from model_optimizer.calibrate.yolo_datas import YoLoCalibrationData
 from model_optimizer.utils.utils import load_quant_json, normalize_quant_cfg
-from model_optimizer.torch_hooks.hooks import hook_module_inputs
+from model_optimizer.utils.torch_hooks.hooks import hook_module_inputs
 
 import modelopt.torch.opt as mto
 import modelopt.torch.quantization as mtq
