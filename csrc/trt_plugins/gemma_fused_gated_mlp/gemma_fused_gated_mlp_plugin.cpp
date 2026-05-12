@@ -13,6 +13,7 @@
 #include <NvInfer.h>
 #include <NvInferPlugin.h>
 
+#include <cuda_bf16.h>
 #include <cuda_runtime_api.h>
 
 #include <algorithm>
@@ -511,6 +512,26 @@ private:
 //! ``model_optimizer.ops.gemma_fused_gated_mlp_plugin.ONNX_OPSET_VERSION`` 对齐，作兜底注册。
 static constexpr char const* kGemmaFusedGatedMlpOnnxOpsetVersion = "19";
 
+//! ONNX 常把 baked 权重标成 ``FLOAT``（``PluginFieldType::kFLOAT32``），而 CUDA 路径按 bf16/fp16 存权重。
+//! 这里在 **CPU** 上把 fp32 权重量化为 bf16（与常见 bf16 推理图一致）；若需 fp16 权重请导出为 fp16 TensorProto。
+static bool copy_weight_fp32_to_bf16(nvinfer1::PluginField const& f, std::vector<uint8_t>& out_host) noexcept {
+    if (f.data == nullptr || f.length <= 0) {
+        return false;
+    }
+    if (f.type != nvinfer1::PluginFieldType::kFLOAT32) {
+        return false;
+    }
+    size_t const n = static_cast<size_t>(f.length);
+    out_host.resize(n * 2u);
+    float const* src = static_cast<float const*>(f.data);
+    uint8_t* dst = out_host.data();
+    for (size_t i = 0; i < n; ++i) {
+        __nv_bfloat16 const v = __float2bfloat16_rn(src[i]);
+        std::memcpy(dst + (i * 2u), &v, sizeof(__nv_bfloat16));
+    }
+    return true;
+}
+
 static bool onnx_plugin_field_collection_has_baked_weights(nvinfer1::PluginFieldCollection const* fc) noexcept {
     if (fc == nullptr || fc->nbFields <= 0 || fc->fields == nullptr) {
         return false;
@@ -571,6 +592,8 @@ public:
         std::vector<uint8_t> dn;
         bool have_gu = false;
         bool have_dn = false;
+        bool fp32_gate_up = false;
+        bool fp32_down = false;
         if (fc != nullptr && fc->nbFields > 0 && fc->fields != nullptr) {
             for (int32_t i = 0; i < fc->nbFields; ++i) {
                 nvinfer1::PluginField const& f = fc->fields[i];
@@ -585,12 +608,20 @@ public:
                 } else if (std::strcmp(f.name, "inter_dim") == 0 && f.type == nvinfer1::PluginFieldType::kINT32
                     && f.length >= 1) {
                     inter = *static_cast<int32_t const*>(f.data);
-                } else if (std::strcmp(f.name, "gate_up_weight") == 0
-                    && (f.type == nvinfer1::PluginFieldType::kBF16 || f.type == nvinfer1::PluginFieldType::kFLOAT16)) {
-                    have_gu = copy_weight_field(f, gu);
-                } else if (std::strcmp(f.name, "down_weight") == 0
-                    && (f.type == nvinfer1::PluginFieldType::kBF16 || f.type == nvinfer1::PluginFieldType::kFLOAT16)) {
-                    have_dn = copy_weight_field(f, dn);
+                } else if (std::strcmp(f.name, "gate_up_weight") == 0) {
+                    if (f.type == nvinfer1::PluginFieldType::kBF16 || f.type == nvinfer1::PluginFieldType::kFLOAT16) {
+                        have_gu = copy_weight_field(f, gu);
+                    } else if (f.type == nvinfer1::PluginFieldType::kFLOAT32) {
+                        have_gu = copy_weight_fp32_to_bf16(f, gu);
+                        fp32_gate_up = have_gu;
+                    }
+                } else if (std::strcmp(f.name, "down_weight") == 0) {
+                    if (f.type == nvinfer1::PluginFieldType::kBF16 || f.type == nvinfer1::PluginFieldType::kFLOAT16) {
+                        have_dn = copy_weight_field(f, dn);
+                    } else if (f.type == nvinfer1::PluginFieldType::kFLOAT32) {
+                        have_dn = copy_weight_fp32_to_bf16(f, dn);
+                        fp32_down = have_dn;
+                    }
                 }
             }
         }
@@ -604,7 +635,9 @@ public:
             return nullptr;
         }
         int32_t io_type = 0;
-        if (fc != nullptr && fc->nbFields > 0 && fc->fields != nullptr) {
+        if (fp32_gate_up || fp32_down) {
+            io_type = 1;
+        } else if (fc != nullptr && fc->nbFields > 0 && fc->fields != nullptr) {
             for (int32_t i = 0; i < fc->nbFields; ++i) {
                 nvinfer1::PluginField const& f = fc->fields[i];
                 if (f.name != nullptr && std::strcmp(f.name, "gate_up_weight") == 0) {
