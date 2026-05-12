@@ -506,6 +506,28 @@ private:
     std::string m_creator_ns{};
 };
 
+//! ONNX ``opset_import`` 里 ``domain==trt`` 的版本号（与 ``model_optimizer.ops.gemma_fused_gated_mlp_plugin.ONNX_OPSET_VERSION`` 对齐）。
+//! TensorRT ONNX Parser 的 fallback 插件导入通常按 **该版本字符串** 查 ``IPluginRegistry``，
+//! 而不是按节点属性 ``plugin_version``；因此除 ``"1"``/``"2"`` 外还需注册 ``"19"``。
+static constexpr char const* kGemmaFusedGatedMlpOnnxOpsetVersion = "19";
+
+static bool onnx_plugin_field_collection_has_baked_weights(nvinfer1::PluginFieldCollection const* fc) noexcept {
+    if (fc == nullptr || fc->nbFields <= 0 || fc->fields == nullptr) {
+        return false;
+    }
+    for (int32_t i = 0; i < fc->nbFields; ++i) {
+        nvinfer1::PluginField const& f = fc->fields[i];
+        if (f.name == nullptr) {
+            continue;
+        }
+        if (std::strcmp(f.name, "hidden_dim") == 0 || std::strcmp(f.name, "inter_dim") == 0
+            || std::strcmp(f.name, "gate_up_weight") == 0 || std::strcmp(f.name, "down_weight") == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 class GemmaFusedGatedMlpPluginCreatorV2 final : public nvinfer1::IPluginCreator {
 public:
     nvinfer1::AsciiChar const* getPluginName() const noexcept override { return "GemmaFusedGatedMlp"; }
@@ -660,6 +682,59 @@ static GemmaFusedGatedMlpPluginCreatorV1 g_gemma_fused_gated_mlp_plugin_creator_
 static GemmaFusedGatedMlpPluginCreatorV2 g_gemma_fused_gated_mlp_plugin_creator_v2_default{};
 static GemmaFusedGatedMlpPluginCreatorV2 g_gemma_fused_gated_mlp_plugin_creator_v2_trt{};
 
+//! 供 ONNX Parser（``opset_import`` 版本 ``kGemmaFusedGatedMlpOnnxOpsetVersion``）查找；在 ``createPlugin`` 中分派到 v1/v2。
+class GemmaFusedGatedMlpPluginCreatorOnnx19 final : public nvinfer1::IPluginCreator {
+public:
+    nvinfer1::AsciiChar const* getPluginName() const noexcept override { return "GemmaFusedGatedMlp"; }
+
+    nvinfer1::AsciiChar const* getPluginVersion() const noexcept override { return kGemmaFusedGatedMlpOnnxOpsetVersion; }
+
+    nvinfer1::PluginFieldCollection const* getFieldNames() noexcept override {
+        static nvinfer1::PluginField fields[] = {
+            {"act_id", nullptr, nvinfer1::PluginFieldType::kINT32, 1},
+            {"hidden_dim", nullptr, nvinfer1::PluginFieldType::kINT32, 1},
+            {"inter_dim", nullptr, nvinfer1::PluginFieldType::kINT32, 1},
+            {"plugin_version", nullptr, nvinfer1::PluginFieldType::kINT32, 1},
+            {"gate_up_weight", nullptr, nvinfer1::PluginFieldType::kFLOAT16, 0},
+            {"down_weight", nullptr, nvinfer1::PluginFieldType::kFLOAT16, 0},
+        };
+        static nvinfer1::PluginFieldCollection fc{6, fields};
+        return &fc;
+    }
+
+    nvinfer1::IPluginV2* createPlugin(
+        nvinfer1::AsciiChar const* name, nvinfer1::PluginFieldCollection const* fc) noexcept override {
+        if (onnx_plugin_field_collection_has_baked_weights(fc)) {
+            return g_gemma_fused_gated_mlp_plugin_creator_v2_default.createPlugin(name, fc);
+        }
+        return g_gemma_fused_gated_mlp_plugin_creator_v1_default.createPlugin(name, fc);
+    }
+
+    nvinfer1::IPluginV2* deserializePlugin(
+        nvinfer1::AsciiChar const* name, void const* serialData, size_t serialLength) noexcept override {
+        if (serialLength >= sizeof(uint32_t) && serialData != nullptr) {
+            uint32_t magic = 0;
+            std::memcpy(&magic, serialData, sizeof(uint32_t));
+            if (magic == kSerialMagicV2) {
+                return g_gemma_fused_gated_mlp_plugin_creator_v2_default.deserializePlugin(name, serialData, serialLength);
+            }
+        }
+        return g_gemma_fused_gated_mlp_plugin_creator_v1_default.deserializePlugin(name, serialData, serialLength);
+    }
+
+    void setPluginNamespace(nvinfer1::AsciiChar const* pluginNamespace) noexcept override {
+        m_creator_ns = pluginNamespace != nullptr ? pluginNamespace : "";
+    }
+
+    nvinfer1::AsciiChar const* getPluginNamespace() const noexcept override { return m_creator_ns.c_str(); }
+
+private:
+    std::string m_creator_ns{};
+};
+
+static GemmaFusedGatedMlpPluginCreatorOnnx19 g_gemma_fused_gated_mlp_plugin_creator_onnx19_default{};
+static GemmaFusedGatedMlpPluginCreatorOnnx19 g_gemma_fused_gated_mlp_plugin_creator_onnx19_trt{};
+
 struct GemmaFusedGatedMlpPluginRegisterOnce {
     GemmaFusedGatedMlpPluginRegisterOnce() noexcept {
         nvinfer1::IPluginRegistry* reg = ::getPluginRegistry();
@@ -677,6 +752,8 @@ struct GemmaFusedGatedMlpPluginRegisterOnce {
         try_register(g_gemma_fused_gated_mlp_plugin_creator_v1_trt, "trt", "1");
         try_register(g_gemma_fused_gated_mlp_plugin_creator_v2_default, "", "2");
         try_register(g_gemma_fused_gated_mlp_plugin_creator_v2_trt, "trt", "2");
+        try_register(g_gemma_fused_gated_mlp_plugin_creator_onnx19_default, "", kGemmaFusedGatedMlpOnnxOpsetVersion);
+        try_register(g_gemma_fused_gated_mlp_plugin_creator_onnx19_trt, "trt", kGemmaFusedGatedMlpOnnxOpsetVersion);
     }
 };
 
@@ -689,12 +766,14 @@ extern "C" TENSORRTAPI void setLoggerFinder(nvinfer1::ILoggerFinder* finder) noe
 }
 
 extern "C" TENSORRTAPI nvinfer1::IPluginCreatorInterface* const* getCreators(int32_t& nbCreators) noexcept {
-    nbCreators = 4;
+    nbCreators = 6;
     static nvinfer1::IPluginCreatorInterface* const kCreators[] = {
         &mopt_trt::g_gemma_fused_gated_mlp_plugin_creator_v1_default,
         &mopt_trt::g_gemma_fused_gated_mlp_plugin_creator_v1_trt,
         &mopt_trt::g_gemma_fused_gated_mlp_plugin_creator_v2_default,
         &mopt_trt::g_gemma_fused_gated_mlp_plugin_creator_v2_trt,
+        &mopt_trt::g_gemma_fused_gated_mlp_plugin_creator_onnx19_default,
+        &mopt_trt::g_gemma_fused_gated_mlp_plugin_creator_onnx19_trt,
     };
     return kCreators;
 }
