@@ -10,4 +10,5 @@ option(MODEL_OPTIMIZER_BUILD_TRT_PLUGINS "Build TensorRT plugins under csrc/trt_
 
 if(MODEL_OPTIMIZER_BUILD_TRT_PLUGINS)
   add_subdirectory(trt_plugins/siglip_ffn_fp8)
+  add_subdirectory(trt_plugins/gemma_fused_gated_mlp)
 endif()

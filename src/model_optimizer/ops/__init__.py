@@ -34,6 +34,15 @@ from .siglip_ffn_fp8_onnx import (
     register_siglip_ffn_fp8_onnx_schema,
     build_siglip_ffn_fp8_onnx_from_module,
 )
+from .gemma_fused_gated_mlp import (
+    FusedGemmaMLP,
+    patch_decoder_fused_gated_mlp,
+    gemma_fused_gated_mlp_eager,
+)
+from .gemma_fused_gated_mlp_plugin import (
+    gemma_fused_gated_mlp_plugin,
+    register_gemma_fused_gated_mlp_onnx_symbolic_functions,
+)
 
 __all__ = [
     "SiglipMlpCustomOpWrapper",
@@ -55,4 +64,9 @@ __all__ = [
     "build_siglip_mlp_trt_onnx_from_module",
     "register_siglip_ffn_fp8_onnx_schema",
     "build_siglip_ffn_fp8_onnx_from_module",
+    "FusedGemmaMLP",
+    "patch_decoder_fused_gated_mlp",
+    "gemma_fused_gated_mlp_eager",
+    "gemma_fused_gated_mlp_plugin",
+    "register_gemma_fused_gated_mlp_onnx_symbolic_functions",
 ]

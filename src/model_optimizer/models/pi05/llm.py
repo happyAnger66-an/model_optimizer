@@ -326,10 +326,19 @@ class LLM(torch.nn.Module, Model):
         return cls.construct_model(pi05_model)
 
     @classmethod
-    def construct_model(cls, pi05_model, dtype=torch.bfloat16):
+    def construct_model(cls, pi05_model, dtype=torch.bfloat16, *, fused_gated_mlp: bool = True):
         paligemma = pi05_model.paligemma_with_expert.paligemma
         llm_model = cls(pi05_model.paligemma_with_expert.paligemma.config.text_config,
                         paligemma.get_decoder())
+        if fused_gated_mlp:
+            from model_optimizer.ops.gemma_fused_gated_mlp import patch_decoder_fused_gated_mlp
+
+            n = patch_decoder_fused_gated_mlp(llm_model.model, enabled=True)
+            if n == 0:
+                logger.warning(
+                    "fused_gated_mlp enabled but no GemmaMLP(gelu_pytorch_tanh) layers patched "
+                    "(decoder.layers missing or wrong hidden_act)."
+                )
         return llm_model
 
     def export(
@@ -363,6 +372,17 @@ class LLM(torch.nn.Module, Model):
                 "green",
             )
         )
+        if os.environ.get("MODEL_OPTIMIZER_GEMMA_FUSED_MLP_TRT_EXPORT", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            from model_optimizer.ops.gemma_fused_gated_mlp_plugin import (
+                register_gemma_fused_gated_mlp_onnx_symbolic_functions,
+            )
+
+            register_gemma_fused_gated_mlp_onnx_symbolic_functions()
+            logger.info("ONNX export: registered trt::GemmaFusedGatedMlp symbolic (fused MLP export).")
         inputs_embeds = torch.randn((1, 968, 2048),
                                     dtype=torch.bfloat16,
                                     device="cuda",
