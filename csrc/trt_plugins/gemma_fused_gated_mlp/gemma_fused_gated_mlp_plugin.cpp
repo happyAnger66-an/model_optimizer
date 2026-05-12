@@ -184,7 +184,17 @@ public:
                         static_cast<int>(xh), static_cast<int>(m_hidden));
                 }
             }
-            m_io_type = io_type_from_desc(in[0].desc.type);
+            // 烘焙权重的元素布局由序列化 / createPlugin 的 m_io_type 决定，勿用网络 I/O dtype 覆盖，
+            // 否则 clone/serialize 与设备上权重不一致。
+            if (gemma_trt_plugin_verbose()) {
+                int32_t const act_io = io_type_from_desc(in[0].desc.type);
+                if (act_io != m_io_type) {
+                    std::fprintf(stderr,
+                        "[GemmaFusedGatedMlp] v2: activation dtype suggests io=%d but baked weights io=%d "
+                        "(x=%s); GEMM 需要二者一致。\n",
+                        static_cast<int>(act_io), static_cast<int>(m_io_type), data_type_str(in[0].desc.type));
+                }
+            }
             int64_t prod = 1;
             nvinfer1::Dims const& dmax = in[0].max;
             nvinfer1::Dims const& dopt = in[0].opt;
@@ -285,7 +295,7 @@ public:
         if (!m_baked_weights && nbInputs >= 2) {
             inter = inputs[1].dims.d[0] / 2;
         }
-        int32_t const io = inputs[0].type == nvinfer1::DataType::kBF16 ? 1 : 0;
+        int32_t const io = m_baked_weights ? m_io_type : (inputs[0].type == nvinfer1::DataType::kBF16 ? 1 : 0);
         return gemma_fused_gated_mlp_workspace_bytes(mi, hidden, inter, io);
     }
 
@@ -298,17 +308,45 @@ public:
             m64 *= static_cast<int64_t>(xd.d[i]);
         }
         int32_t const m = static_cast<int32_t>(std::min<int64_t>(m64, static_cast<int64_t>(INT_MAX)));
-        int32_t const io = inputDesc[0].type == nvinfer1::DataType::kBF16 ? 1 : 0;
+        int32_t const io = m_baked_weights ? m_io_type : (inputDesc[0].type == nvinfer1::DataType::kBF16 ? 1 : 0);
         int32_t const hidden = xd.d[xd.nbDims - 1];
         int32_t inter = m_inter;
         if (!m_baked_weights) {
             inter = inputDesc[1].dims.d[0] / 2;
         }
+        if (m_baked_weights) {
+            nvinfer1::DataType const xt = inputDesc[0].type;
+            bool const ok = (m_io_type == 1) ? (xt == nvinfer1::DataType::kBF16) : (xt == nvinfer1::DataType::kHALF);
+            if (!ok) {
+                if (gemma_trt_plugin_verbose()) {
+                    std::fprintf(stderr,
+                        "[GemmaFusedGatedMlp] v2 enqueue: input type %s incompatible with baked weights "
+                        "(need %s for io_type=%d)\n",
+                        data_type_str(xt), (m_io_type == 1) ? "bf16" : "fp16", static_cast<int>(m_io_type));
+                }
+                return 6;
+            }
+            if (m_d_gate_up == nullptr || m_d_down == nullptr) {
+                if (gemma_trt_plugin_verbose()) {
+                    std::fprintf(stderr, "[GemmaFusedGatedMlp] v2 enqueue: device weights null (initialize failed?)\n");
+                }
+                return 7;
+            }
+        }
         size_t const need = gemma_fused_gated_mlp_workspace_bytes(m, hidden, inter, io);
         void const* wgu = m_baked_weights ? static_cast<void const*>(m_d_gate_up) : inputs[1];
         void const* wdn = m_baked_weights ? static_cast<void const*>(m_d_down) : inputs[2];
+        (void)cudaGetLastError();
         int const st = gemma_fused_gated_mlp_cuda(
             stream, m_act_id, io, m, hidden, inter, inputs[0], wgu, wdn, outputs[0], workspace, need);
+        if (st != 0 && gemma_trt_plugin_verbose()) {
+            std::fprintf(stderr,
+                "[GemmaFusedGatedMlp] enqueue failed: st=%d m=%d hidden=%d inter=%d io=%d baked=%d workspace=%p "
+                "need=%zu\n",
+                st, static_cast<int>(m), static_cast<int>(hidden), static_cast<int>(inter), static_cast<int>(io),
+                static_cast<int>(m_baked_weights ? 1 : 0), static_cast<void const*>(workspace),
+                static_cast<size_t>(need));
+        }
         return st;
     }
 
