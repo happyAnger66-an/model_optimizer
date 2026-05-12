@@ -31,9 +31,28 @@ if(NOT NVINFER_LIB)
   message(FATAL_ERROR "libnvinfer not found.")
 endif()
 
+# Object library: shared plugin + CUDA micro-benchmark both link the same device code.
+add_library(gemma_fused_gated_mlp_cuda_obj OBJECT gemma_fused_gated_mlp_cuda.cu)
+set_target_properties(gemma_fused_gated_mlp_cuda_obj PROPERTIES
+  CXX_STANDARD 17
+  CUDA_STANDARD 17
+  POSITION_INDEPENDENT_CODE ON
+)
+target_include_directories(gemma_fused_gated_mlp_cuda_obj PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+  "${CUDAToolkit_INCLUDE_DIRS}"
+)
+target_link_libraries(gemma_fused_gated_mlp_cuda_obj PRIVATE CUDA::cudart CUDA::cublasLt)
+target_compile_options(gemma_fused_gated_mlp_cuda_obj PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr -O3>
+)
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set_property(TARGET gemma_fused_gated_mlp_cuda_obj PROPERTY CUDA_ARCHITECTURES native)
+endif()
+
 add_library(trt_gemma_fused_gated_mlp_plugin SHARED
   gemma_fused_gated_mlp_plugin.cpp
-  gemma_fused_gated_mlp_cuda.cu
+  $<TARGET_OBJECTS:gemma_fused_gated_mlp_cuda_obj>
 )
 
 set_target_properties(trt_gemma_fused_gated_mlp_plugin PROPERTIES
@@ -59,6 +78,26 @@ target_compile_options(trt_gemma_fused_gated_mlp_plugin PRIVATE
 
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   set_property(TARGET trt_gemma_fused_gated_mlp_plugin PROPERTY CUDA_ARCHITECTURES native)
+endif()
+
+option(MODEL_OPTIMIZER_BUILD_GEMMA_FUSED_MLP_BENCH "Build bench_gemma_fused_gated_mlp CUDA micro-benchmark" ON)
+if(MODEL_OPTIMIZER_BUILD_GEMMA_FUSED_MLP_BENCH)
+  add_executable(bench_gemma_fused_gated_mlp bench_gemma_fused_gated_mlp.cu $<TARGET_OBJECTS:gemma_fused_gated_mlp_cuda_obj>)
+  set_target_properties(bench_gemma_fused_gated_mlp PROPERTIES
+    CXX_STANDARD 17
+    CUDA_STANDARD 17
+  )
+  target_include_directories(bench_gemma_fused_gated_mlp PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CUDAToolkit_INCLUDE_DIRS}"
+  )
+  target_link_libraries(bench_gemma_fused_gated_mlp PRIVATE
+    CUDA::cudart
+    CUDA::cublasLt
+  )
+  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set_property(TARGET bench_gemma_fused_gated_mlp PROPERTY CUDA_ARCHITECTURES native)
+  endif()
 endif()
 
 message(STATUS "trt_gemma_fused_gated_mlp_plugin: TensorRT_ROOT=${TensorRT_ROOT} NVINFER_LIB=${NVINFER_LIB}")
