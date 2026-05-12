@@ -225,8 +225,11 @@ private:
     std::string m_creator_ns{};
 };
 
-//! 单一 Creator：供 ``getCreators`` 与 ``registerCreator`` 共用，避免多套静态实例。
-static GemmaFusedGatedMlpPluginCreator g_gemma_fused_gated_mlp_plugin_creator{};
+//! ONNX 自定义算子域为 ``trt::GemmaFusedGatedMlp`` 时，引擎反序列化常在命名空间 ``"trt"`` 下
+//! ``getCreator``；仅注册 ``""`` 会导致 ``Cannot find plugin ... namespace``。使用两个 Creator
+//! 实例分别注册 ``""`` 与 ``"trt"``（与 ``loadLibrary`` / ``getCreators`` 一致）。
+static GemmaFusedGatedMlpPluginCreator g_gemma_fused_gated_mlp_plugin_creator_default{};
+static GemmaFusedGatedMlpPluginCreator g_gemma_fused_gated_mlp_plugin_creator_trt{};
 
 struct GemmaFusedGatedMlpPluginRegisterOnce {
     GemmaFusedGatedMlpPluginRegisterOnce() noexcept {
@@ -235,11 +238,15 @@ struct GemmaFusedGatedMlpPluginRegisterOnce {
         if (reg == nullptr) {
             return;
         }
-        if (reg->getCreator("GemmaFusedGatedMlp", "1", "") != nullptr) {
-            return;
-        }
-        (void) reg->registerCreator(
-            static_cast<nvinfer1::IPluginCreatorInterface&>(g_gemma_fused_gated_mlp_plugin_creator), "");
+        auto try_register = [&](GemmaFusedGatedMlpPluginCreator& creator, char const* ns) noexcept {
+            if (reg->getCreator("GemmaFusedGatedMlp", "1", ns) != nullptr) {
+                return;
+            }
+            creator.setPluginNamespace(ns);
+            (void) reg->registerCreator(static_cast<nvinfer1::IPluginCreatorInterface&>(creator), ns);
+        };
+        try_register(g_gemma_fused_gated_mlp_plugin_creator_default, "");
+        try_register(g_gemma_fused_gated_mlp_plugin_creator_trt, "trt");
     }
 };
 
@@ -250,14 +257,17 @@ static GemmaFusedGatedMlpPluginRegisterOnce g_gemma_fused_gated_mlp_plugin_regis
 //!
 //! TensorRT 10+ ``IPluginRegistry::loadLibrary`` 会 ``dlsym(getCreators)``；若 .so 未导出该符号则报
 //! API Usage Error。此处与官方动态插件约定一致，导出 ``getCreators`` / ``setLoggerFinder``；并在库
-//! 加载时用 ``registerCreator`` 注册一次（``ctypes.CDLL`` 路径不一定会调用 ``loadLibrary``）。
+//! 加载时用 ``registerCreator`` 注册（``ctypes.CDLL`` 路径不一定会调用 ``loadLibrary``）。
 //!
 extern "C" TENSORRTAPI void setLoggerFinder(nvinfer1::ILoggerFinder* finder) noexcept {
     (void) finder;
 }
 
 extern "C" TENSORRTAPI nvinfer1::IPluginCreatorInterface* const* getCreators(int32_t& nbCreators) noexcept {
-    nbCreators = 1;
-    static nvinfer1::IPluginCreatorInterface* const kCreators[] = {&mopt_trt::g_gemma_fused_gated_mlp_plugin_creator};
+    nbCreators = 2;
+    static nvinfer1::IPluginCreatorInterface* const kCreators[] = {
+        &mopt_trt::g_gemma_fused_gated_mlp_plugin_creator_default,
+        &mopt_trt::g_gemma_fused_gated_mlp_plugin_creator_trt,
+    };
     return kCreators;
 }
