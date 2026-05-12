@@ -88,6 +88,7 @@ def embed_gemma_fused_gated_mlp_trt_static_weights(
         new_attr = [copy.deepcopy(a) for a in node.attribute]
         new_attr.append(onnx.helper.make_attribute("hidden_dim", h_gu))
         new_attr.append(onnx.helper.make_attribute("inter_dim", inter))
+        new_attr.append(onnx.helper.make_attribute("plugin_version", 2))
         new_attr.append(onnx.helper.make_attribute("gate_up_weight", gu_t))
         new_attr.append(onnx.helper.make_attribute("down_weight", d_t))
 
