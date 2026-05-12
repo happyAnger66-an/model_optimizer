@@ -107,6 +107,9 @@ def embed_gemma_fused_gated_mlp_trt_static_weights(
                 to_remove.add(nm)
 
     if to_remove:
-        graph.initializer[:] = [t for t in graph.initializer if t.name not in to_remove]
+        # Protobuf repeated fields reject `initializer[:] = [...]` on some versions.
+        for i in reversed(range(len(graph.initializer))):
+            if graph.initializer[i].name in to_remove:
+                del graph.initializer[i]
 
     return model
