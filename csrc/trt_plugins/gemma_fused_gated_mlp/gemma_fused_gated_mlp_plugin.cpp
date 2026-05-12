@@ -230,14 +230,16 @@ static GemmaFusedGatedMlpPluginCreator g_gemma_fused_gated_mlp_plugin_creator{};
 
 struct GemmaFusedGatedMlpPluginRegisterOnce {
     GemmaFusedGatedMlpPluginRegisterOnce() noexcept {
-        nvinfer1::IPluginRegistry* reg = nvinfer1::getPluginRegistry();
+        // ``getPluginRegistry`` 在 ``NvInferRuntime.h`` 中为全局 ``extern "C"``，不在 ``nvinfer1`` 内。
+        nvinfer1::IPluginRegistry* reg = ::getPluginRegistry();
         if (reg == nullptr) {
             return;
         }
         if (reg->getCreator("GemmaFusedGatedMlp", "1", "") != nullptr) {
             return;
         }
-        (void) reg->registerCreator(g_gemma_fused_gated_mlp_plugin_creator, "");
+        (void) reg->registerCreator(
+            static_cast<nvinfer1::IPluginCreatorInterface&>(g_gemma_fused_gated_mlp_plugin_creator), "");
     }
 };
 
