@@ -68,6 +68,13 @@ def discover_gemma_fused_gated_mlp_plugin_so(extra_paths: Iterable[str | Path] |
 
 
 def load_gemma_fused_gated_mlp_plugin(plugin_so: str) -> None:
+    """加载插件 ``.so``（``RTLD_GLOBAL``）。
+
+    TensorRT 10+ 在 ``IPluginRegistry::loadLibrary`` / trtexec ``--dynamicPlugins`` 等路径下会
+    ``dlsym(getCreators)``；插件库须导出 ``getCreators`` / ``setLoggerFinder``（见
+    ``csrc/trt_plugins/gemma_fused_gated_mlp/gemma_fused_gated_mlp_plugin.cpp``）。
+    """
+
     ctypes.CDLL(str(plugin_so), ctypes.RTLD_GLOBAL)
 
 

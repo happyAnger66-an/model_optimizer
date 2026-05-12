@@ -225,7 +225,37 @@ private:
     std::string m_creator_ns{};
 };
 
+//! 单一 Creator：供 ``getCreators`` 与 ``registerCreator`` 共用，避免多套静态实例。
+static GemmaFusedGatedMlpPluginCreator g_gemma_fused_gated_mlp_plugin_creator{};
+
+struct GemmaFusedGatedMlpPluginRegisterOnce {
+    GemmaFusedGatedMlpPluginRegisterOnce() noexcept {
+        nvinfer1::IPluginRegistry* reg = nvinfer1::getPluginRegistry();
+        if (reg == nullptr) {
+            return;
+        }
+        if (reg->getCreator("GemmaFusedGatedMlp", "1", "") != nullptr) {
+            return;
+        }
+        (void) reg->registerCreator(g_gemma_fused_gated_mlp_plugin_creator, "");
+    }
+};
+
+static GemmaFusedGatedMlpPluginRegisterOnce g_gemma_fused_gated_mlp_plugin_register_once{};
+
 } // namespace mopt_trt
 
-using mopt_trt::GemmaFusedGatedMlpPluginCreator;
-REGISTER_TENSORRT_PLUGIN(GemmaFusedGatedMlpPluginCreator);
+//!
+//! TensorRT 10+ ``IPluginRegistry::loadLibrary`` 会 ``dlsym(getCreators)``；若 .so 未导出该符号则报
+//! API Usage Error。此处与官方动态插件约定一致，导出 ``getCreators`` / ``setLoggerFinder``；并在库
+//! 加载时用 ``registerCreator`` 注册一次（``ctypes.CDLL`` 路径不一定会调用 ``loadLibrary``）。
+//!
+extern "C" TENSORRTAPI void setLoggerFinder(nvinfer1::ILoggerFinder* finder) noexcept {
+    (void) finder;
+}
+
+extern "C" TENSORRTAPI nvinfer1::IPluginCreatorInterface* const* getCreators(int32_t& nbCreators) noexcept {
+    nbCreators = 1;
+    static nvinfer1::IPluginCreatorInterface* const kCreators[] = {&mopt_trt::g_gemma_fused_gated_mlp_plugin_creator};
+    return kCreators;
+}
