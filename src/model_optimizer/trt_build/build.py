@@ -11,6 +11,7 @@ import tensorrt as trt
 
 from termcolor import colored
 import onnx
+from google.protobuf.message import DecodeError
 from onnx import TensorProto
 # Set up logging
 logging.basicConfig(level=logging.INFO,
@@ -26,7 +27,22 @@ print_color = "green"
 
 def infer_onnx_float_precision(onnx_path: str) -> str:
     """粗略推断 ONNX 图中主要浮点精度（用于 build_cfg.precision 一致性检查）。"""
-    model = onnx.load(onnx_path, load_external_data=False)
+    try:
+        st = os.stat(onnx_path)
+    except OSError as exc:
+        raise FileNotFoundError(f"ONNX path not accessible: {onnx_path}") from exc
+    if st.st_size == 0:
+        raise ValueError(f"ONNX file is empty (0 bytes): {onnx_path}")
+    try:
+        model = onnx.load(onnx_path, load_external_data=False)
+    except DecodeError as exc:
+        raise ValueError(
+            "ONNX 无法按 ModelProto 解析（常见原因：文件截断/损坏、实际不是 .onnx、"
+            "生成与读取环境的 onnx/protobuf 版本不一致）。路径 "
+            f"{onnx_path!r}，大小 {st.st_size} 字节。可在同环境用 "
+            "`onnx.load(path, load_external_data=False)` 复现。若刚做过 Gemma MLP 权重嵌入，"
+            "请确认写出完整、且打开的是嵌入脚本的输出文件而非其它产物。"
+        ) from exc
     float_types: set[int] = set()
 
     def _collect_from_value_info(v) -> None:

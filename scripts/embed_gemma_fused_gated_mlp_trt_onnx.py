@@ -10,6 +10,9 @@
     python3 scripts/embed_gemma_fused_gated_mlp_trt_onnx.py /path/to/model.onnx
     python3 scripts/embed_gemma_fused_gated_mlp_trt_onnx.py /path/to/model.onnx -o /path/to/model_static.onnx
     python3 scripts/embed_gemma_fused_gated_mlp_trt_onnx.py model.onnx --keep-initializers
+    python3 scripts/embed_gemma_fused_gated_mlp_trt_onnx.py model.onnx --inline-weights  # 单文件（大模型易超 protobuf 解析上限，慎用）
+
+默认把 **节点属性里的大张量** 与图中其它大权重一并 **外置** 到 ``<onnx 文件名>.data``，主 ``.onnx`` 保持较小，便于 ``onnx.load`` / ``model-opt build`` 预检解析。
 
 依赖：``onnx``；需将仓库 ``src`` 加入 ``PYTHONPATH``（本脚本已自动插入与 ``scripts`` 同级的 ``src``）。
 """
@@ -57,6 +60,11 @@ def main() -> int:
         action="store_true",
         help="折叠后仍保留原 ``gate_up_weight`` / ``down_weight`` initializer（默认会删除已嵌入且无其它引用的 initializer）",
     )
+    p.add_argument(
+        "--inline-weights",
+        action="store_true",
+        help="不把权重外置：写出单个巨大 .onnx（数 GB 时 onnx.load / protobuf 常 DecodeError；默认会外置）",
+    )
     args = p.parse_args()
 
     onnx_in: Path = args.onnx_in.expanduser().resolve()
@@ -76,8 +84,24 @@ def main() -> int:
         remove_embedded_initializers=not bool(args.keep_initializers),
     )
     out.parent.mkdir(parents=True, exist_ok=True)
-    onnx.save(model, str(out))
-    print(f"wrote {out}")
+    if args.inline_weights:
+        onnx.save(model, str(out))
+        print(f"wrote {out}")
+    else:
+        # 权重进节点属性后若仍全部挤在一个 ModelProto 里，多 GB 单文件常触发 protobuf DecodeError。
+        # save_as_external_data + convert_attribute 把属性/initializer 中的 raw 权重拆到 .data 文件。
+        ext_name = f"{out.name}.data"
+        onnx.save(
+            model,
+            str(out),
+            save_as_external_data=True,
+            all_tensors_to_one_file=True,
+            location=ext_name,
+            size_threshold=0,
+            convert_attribute=True,
+        )
+        data_path = out.parent / ext_name
+        print(f"wrote {out} (+ external data {data_path})")
     return 0
 
 
