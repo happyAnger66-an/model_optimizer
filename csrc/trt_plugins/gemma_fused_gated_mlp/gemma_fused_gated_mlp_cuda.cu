@@ -6,11 +6,9 @@
 // ---------------------------------------------------------------------------
 // 优化方案（借鉴 FlashRT / CUTLASS 思路，而非照搬其 FP8 管线）
 // ---------------------------------------------------------------------------
-// 1) GEMM 主体：继续用 cuBLASLt（成熟、与 TRT 插件 ABI 简单），通过「更大 workspace 上限 + 多启发式候选」
-//    让库在 Thor/大 N（gate_up 的 N=2I）上更容易选到 Tensor Core 友好算法。
-// 2) 内存带宽：GeGLU 位于两次 GEMM 之间，对 z[M,2I] 读一遍、写 h[M,I]；用向量化（一次处理 4 列）降低指令与访存开销。
-// 3) CUTLASS 3.x / CuTe（下一阶段）：对固定形状（如 M=968,H=2048,I=16384）可引入 CUTLASS device_gemm + 可选 epilogue
-//    融合激活；需单独 CMake 目标与数值对齐测试。参见 ``gemma_fused_gated_mlp_cuda.h`` 注释。
+// 1) GEMM 主体：cuBLASLt + 大 workspace（gate_up / down 分档）+ 多路启发式；不显存敏感时可拉满以换吞吐。
+// 2) GeGLU：``inter%8==0`` 走每线程 8 列 + ``__ldg``；否则 ``%4`` 走 x4；再回退标量。
+// 3) CUTLASS 3.x / CuTe（下一阶段）：对固定形状引入 device_gemm + 可选 epilogue 融合；见 ``gemma_fused_gated_mlp_cuda.h``。
 // 4) FP8 权重路径（可选）：吞吐潜力最大，但需改权重/标定与 ONNX，超出本文件范围。
 // ---------------------------------------------------------------------------
 
@@ -41,12 +39,13 @@ namespace {
         }                                                                                                             \
     } while (0)
 
-constexpr size_t kLtPrefWorkspaceGateUp = 64ULL * 1024ULL * 1024ULL; // gate_up：大 N=2*I，允许更大 scratch
-constexpr size_t kLtPrefWorkspaceDown = 32ULL * 1024ULL * 1024ULL; // down：相对较小
+// 不显存敏感场景：尽量放大 workspace，便于 cuBLASLt 选到更激进的分块 / split-K 等实现。
+constexpr size_t kLtPrefWorkspaceGateUp = 512ULL * 1024ULL * 1024ULL; // N=2*I 的 gate_up GEMM
+constexpr size_t kLtPrefWorkspaceDown = 256ULL * 1024ULL * 1024ULL; // down GEMM
 constexpr size_t kLtPrefWorkspaceBytes = (kLtPrefWorkspaceGateUp > kLtPrefWorkspaceDown)
     ? kLtPrefWorkspaceGateUp
     : kLtPrefWorkspaceDown;
-constexpr int kLtHeuristicMaxResults = 16;
+constexpr int kLtHeuristicMaxResults = 32;
 constexpr int kCacheCap = 384;
 
 inline size_t align256(size_t x) { return (x + 255ULL) & ~255ULL; }
@@ -137,8 +136,8 @@ __global__ void gelu_mul_split_fp16_x4(__half const* __restrict__ z, __half* __r
     __half* out = h + row * inter + col;
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
-        float const g = __half2float(zg[i]);
-        float const u = __half2float(zu[i]);
+        float const g = __half2float(__ldg(zg + i));
+        float const u = __half2float(__ldg(zu + i));
         out[i] = __float2half(gelu_tanh_f(g) * u);
     }
 }
@@ -160,8 +159,54 @@ __global__ void gelu_mul_split_bf16_x4(
     __nv_bfloat16* out = h + row * inter + col;
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
-        float const g = __bfloat162float(zg[i]);
-        float const u = __bfloat162float(zu[i]);
+        float const g = __bfloat162float(__ldg(zg + i));
+        float const u = __bfloat162float(__ldg(zu + i));
+        out[i] = __float2bfloat16(gelu_tanh_f(g) * u);
+    }
+}
+
+//! 每线程 8 列 + ``__ldg``：在 ``inter % 8 == 0``（如 16384）时进一步压指令与只读缓存。
+__global__ void gelu_mul_split_fp16_x8(__half const* __restrict__ z, __half* __restrict__ h, int M, int inter) {
+    int const vec_cols = inter / 8;
+    int const tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int const nvec = M * vec_cols;
+    if (tid >= nvec) {
+        return;
+    }
+    int const row = tid / vec_cols;
+    int const v = tid % vec_cols;
+    int const col = v * 8;
+    int const base = row * 2 * inter;
+    __half const* zg = z + base + col;
+    __half const* zu = z + base + inter + col;
+    __half* out = h + row * inter + col;
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        float const g = __half2float(__ldg(zg + i));
+        float const u = __half2float(__ldg(zu + i));
+        out[i] = __float2half(gelu_tanh_f(g) * u);
+    }
+}
+
+__global__ void gelu_mul_split_bf16_x8(
+    __nv_bfloat16 const* __restrict__ z, __nv_bfloat16* __restrict__ h, int M, int inter) {
+    int const vec_cols = inter / 8;
+    int const tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int const nvec = M * vec_cols;
+    if (tid >= nvec) {
+        return;
+    }
+    int const row = tid / vec_cols;
+    int const v = tid % vec_cols;
+    int const col = v * 8;
+    int const base = row * 2 * inter;
+    __nv_bfloat16 const* zg = z + base + col;
+    __nv_bfloat16 const* zu = z + base + inter + col;
+    __nv_bfloat16* out = h + row * inter + col;
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        float const g = __bfloat162float(__ldg(zg + i));
+        float const u = __bfloat162float(__ldg(zu + i));
         out[i] = __float2bfloat16(gelu_tanh_f(g) * u);
     }
 }
@@ -436,7 +481,17 @@ int launch_lt_row_nt(cublasLtHandle_t lt, LtRowNtGemm const& g, void const* A, v
 void launch_gelu_dispatch(cudaStream_t stream, int io_type, void const* zptr, void* hptr, int m, int inter) {
     int const threads = 256;
     int const total = m * inter;
-    if ((inter % 4) == 0) {
+    if ((inter % 8) == 0) {
+        int const nvec = m * (inter / 8);
+        dim3 const grid((nvec + threads - 1) / threads);
+        if (io_type == 0) {
+            gelu_mul_split_fp16_x8<<<grid, threads, 0, stream>>>(
+                reinterpret_cast<__half const*>(zptr), reinterpret_cast<__half*>(hptr), m, inter);
+        } else {
+            gelu_mul_split_bf16_x8<<<grid, threads, 0, stream>>>(reinterpret_cast<__nv_bfloat16 const*>(zptr),
+                reinterpret_cast<__nv_bfloat16*>(hptr), m, inter);
+        }
+    } else if ((inter % 4) == 0) {
         int const nvec = m * (inter / 4);
         dim3 const grid((nvec + threads - 1) / threads);
         if (io_type == 0) {

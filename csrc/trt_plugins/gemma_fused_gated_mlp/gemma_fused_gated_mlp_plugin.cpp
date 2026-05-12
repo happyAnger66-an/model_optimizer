@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // TensorRT IPluginV2DynamicExt: fused PaliGemma text FFN (GeGLU / gelu_pytorch_tanh), fp16/bf16.
+// Verbose I/O: set MODEL_OPTIMIZER_GEMMA_TRT_PLUGIN_VERBOSE=1 for stderr logs in configurePlugin.
 
 #include <NvInfer.h>
 #include <NvInferPlugin.h>
@@ -11,12 +12,44 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
 #include "gemma_fused_gated_mlp_cuda.h"
 
 namespace mopt_trt {
+
+namespace {
+
+bool gemma_trt_plugin_verbose() noexcept {
+    char const* const e = ::getenv("MODEL_OPTIMIZER_GEMMA_TRT_PLUGIN_VERBOSE");
+    return e != nullptr && e[0] != '\0' && e[0] != '0';
+}
+
+char const* data_type_str(nvinfer1::DataType t) noexcept {
+    switch (t) {
+    case nvinfer1::DataType::kFLOAT:
+        return "fp32";
+    case nvinfer1::DataType::kHALF:
+        return "fp16";
+    case nvinfer1::DataType::kBF16:
+        return "bf16";
+    default:
+        return "other";
+    }
+}
+
+void print_dims(char const* label, nvinfer1::Dims const& d) noexcept {
+    std::fprintf(stderr, "%s nbDims=%d [", label, static_cast<int>(d.nbDims));
+    for (int32_t i = 0; i < d.nbDims; ++i) {
+        std::fprintf(stderr, "%s%d", i > 0 ? ", " : "", static_cast<int>(d.d[i]));
+    }
+    std::fprintf(stderr, "]\n");
+}
+
+} // namespace
 
 class GemmaFusedGatedMlpPlugin final : public nvinfer1::IPluginV2DynamicExt {
 public:
@@ -79,11 +112,40 @@ public:
         }
         nvinfer1::Dims const xd = in[0].desc.dims;
         nvinfer1::Dims const wd = in[1].desc.dims;
-        if (xd.nbDims < 1 || wd.nbDims != 2) {
+        nvinfer1::Dims const dd = in[2].desc.dims;
+        if (xd.nbDims < 1 || wd.nbDims != 2 || dd.nbDims != 2) {
+            if (gemma_trt_plugin_verbose()) {
+                std::fprintf(stderr, "[GemmaFusedGatedMlp] configurePlugin: bad rank (xd.nbDims=%d wd.nbDims=%d "
+                               "dd.nbDims=%d)\n",
+                    static_cast<int>(xd.nbDims), static_cast<int>(wd.nbDims), static_cast<int>(dd.nbDims));
+            }
             return;
         }
-        m_hidden = xd.d[xd.nbDims - 1];
-        m_inter = wd.d[0] / 2;
+        int32_t const hidden = xd.d[xd.nbDims - 1];
+        int32_t const inter = wd.d[0] / 2;
+        if (gemma_trt_plugin_verbose()) {
+            std::fprintf(stderr, "[GemmaFusedGatedMlp] configurePlugin I/O contract: kLINEAR row-major; "
+                           "x[...,H], gate_up[2I,H], down[H,I]; CUDA uses leading M = prod(batch dims).\n");
+            for (int32_t i = 0; i < nbInputs; ++i) {
+                nvinfer1::PluginTensorDesc const& d = in[i].desc;
+                std::fprintf(stderr, "  in[%d] type=%s format=%d (kLINEAR=%d)\n", static_cast<int>(i),
+                    data_type_str(d.type), static_cast<int>(d.format), static_cast<int>(nvinfer1::TensorFormat::kLINEAR));
+                print_dims("    desc.dims", d.dims);
+                print_dims("    min", in[i].min);
+                print_dims("    opt", in[i].opt);
+                print_dims("    max", in[i].max);
+            }
+        }
+        if (wd.d[1] != hidden || dd.d[0] != hidden || dd.d[1] != inter || wd.d[0] != 2 * inter) {
+            if (gemma_trt_plugin_verbose()) {
+                std::fprintf(stderr, "[GemmaFusedGatedMlp] configurePlugin: dimension mismatch vs contract "
+                               "(hidden=%d inter=%d): gate_up[%d,%d] down[%d,%d] (expect gate_up[2I,H] down[H,I])\n",
+                    static_cast<int>(hidden), static_cast<int>(inter), static_cast<int>(wd.d[0]),
+                    static_cast<int>(wd.d[1]), static_cast<int>(dd.d[0]), static_cast<int>(dd.d[1]));
+            }
+        }
+        m_hidden = hidden;
+        m_inter = inter;
         m_io_type = in[0].desc.type == nvinfer1::DataType::kBF16 ? 1 : 0;
         int64_t prod = 1;
         nvinfer1::Dims const& dmax = in[0].max;
