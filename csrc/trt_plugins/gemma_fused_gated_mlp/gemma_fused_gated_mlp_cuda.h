@@ -1,7 +1,14 @@
 // Copyright 2026 the model_optimizer team.
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
-
+//
+// 性能扩展（未在此头实现，供后续迭代）：
+//
+// 1) CUTLASS 3.x / CuTe：在 Blackwell/Thor（SM100）上对两次 GEMM 使用 device 侧已调好的 tile（类似
+//    “wide / t1 / plain” 分桶），并可探索 epilogue 融合 GeGLU（需单独数值验证与 TRT 插件 ABI 对齐）。
+// 2) FP8 权重 + FP16/BF16 累加：吞吐显著高于纯 BF16 GEMM，但需改 ONNX/引擎权重布局与标定流程。
+// 3) 双流：仅当存在可重叠的独立算子时有效；本 FFN 链为严格顺序，收益有限。
+//
 #include <cuda_runtime_api.h>
 #include <cstddef>
 #include <cstdint>

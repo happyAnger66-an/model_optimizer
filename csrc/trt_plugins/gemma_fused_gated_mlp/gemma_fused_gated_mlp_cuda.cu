@@ -1,8 +1,18 @@
 // Copyright 2026 the model_optimizer team.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Fused Gemma FFN (fp16/bf16): cuBLASLt row-major GEMMs (D = A @ B^T) + GeGLU (tanh) elementwise,
-// matching FlashRT third_party/FlashRT/csrc/gemm/gemm_runner.cu FP8 row-NT pattern; naive GEMM fallback.
+// Gemma GeGLU FFN（fp16/bf16）：两路 cuBLASLt row-major GEMM（D = A @ B^T）+ 中间 GeGLU（tanh）逐点。
+//
+// ---------------------------------------------------------------------------
+// 优化方案（借鉴 FlashRT / CUTLASS 思路，而非照搬其 FP8 管线）
+// ---------------------------------------------------------------------------
+// 1) GEMM 主体：继续用 cuBLASLt（成熟、与 TRT 插件 ABI 简单），通过「更大 workspace 上限 + 多启发式候选」
+//    让库在 Thor/大 N（gate_up 的 N=2I）上更容易选到 Tensor Core 友好算法。
+// 2) 内存带宽：GeGLU 位于两次 GEMM 之间，对 z[M,2I] 读一遍、写 h[M,I]；用向量化（一次处理 4 列）降低指令与访存开销。
+// 3) CUTLASS 3.x / CuTe（下一阶段）：对固定形状（如 M=968,H=2048,I=16384）可引入 CUTLASS device_gemm + 可选 epilogue
+//    融合激活；需单独 CMake 目标与数值对齐测试。参见 ``gemma_fused_gated_mlp_cuda.h`` 注释。
+// 4) FP8 权重路径（可选）：吞吐潜力最大，但需改权重/标定与 ONNX，超出本文件范围。
+// ---------------------------------------------------------------------------
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -31,7 +41,12 @@ namespace {
         }                                                                                                             \
     } while (0)
 
-constexpr size_t kLtPrefWorkspaceBytes = 32ULL * 1024ULL * 1024ULL;
+constexpr size_t kLtPrefWorkspaceGateUp = 64ULL * 1024ULL * 1024ULL; // gate_up：大 N=2*I，允许更大 scratch
+constexpr size_t kLtPrefWorkspaceDown = 32ULL * 1024ULL * 1024ULL; // down：相对较小
+constexpr size_t kLtPrefWorkspaceBytes = (kLtPrefWorkspaceGateUp > kLtPrefWorkspaceDown)
+    ? kLtPrefWorkspaceGateUp
+    : kLtPrefWorkspaceDown;
+constexpr int kLtHeuristicMaxResults = 16;
 constexpr int kCacheCap = 384;
 
 inline size_t align256(size_t x) { return (x + 255ULL) & ~255ULL; }
@@ -103,6 +118,52 @@ __global__ void gelu_mul_split_bf16(
     float const g = __bfloat162float(z[base + col]);
     float const u = __bfloat162float(z[base + inter + col]);
     h[mi] = __float2bfloat16(gelu_tanh_f(g) * u);
+}
+
+//! 每个线程处理 4 列：降低 GeGLU 带宽与指令开销（要求 ``inter % 4 == 0``，Pi05 I=16384 满足）。
+__global__ void gelu_mul_split_fp16_x4(__half const* __restrict__ z, __half* __restrict__ h, int M, int inter) {
+    int const vec_cols = inter / 4;
+    int const tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int const nvec = M * vec_cols;
+    if (tid >= nvec) {
+        return;
+    }
+    int const row = tid / vec_cols;
+    int const v = tid % vec_cols;
+    int const col = v * 4;
+    int const base = row * 2 * inter;
+    __half const* zg = z + base + col;
+    __half const* zu = z + base + inter + col;
+    __half* out = h + row * inter + col;
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        float const g = __half2float(zg[i]);
+        float const u = __half2float(zu[i]);
+        out[i] = __float2half(gelu_tanh_f(g) * u);
+    }
+}
+
+__global__ void gelu_mul_split_bf16_x4(
+    __nv_bfloat16 const* __restrict__ z, __nv_bfloat16* __restrict__ h, int M, int inter) {
+    int const vec_cols = inter / 4;
+    int const tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int const nvec = M * vec_cols;
+    if (tid >= nvec) {
+        return;
+    }
+    int const row = tid / vec_cols;
+    int const v = tid % vec_cols;
+    int const col = v * 4;
+    int const base = row * 2 * inter;
+    __nv_bfloat16 const* zg = z + base + col;
+    __nv_bfloat16 const* zu = z + base + inter + col;
+    __nv_bfloat16* out = h + row * inter + col;
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        float const g = __bfloat162float(zg[i]);
+        float const u = __bfloat162float(zu[i]);
+        out[i] = __float2bfloat16(gelu_tanh_f(g) * u);
+    }
 }
 
 __global__ void gemm_h_wgt_fp16(
@@ -219,7 +280,8 @@ cudaDataType_t io_cuda_type(int io_type) {
 }
 
 /// Build D(M,N) = A(M,K) @ B(N,K)^T with row-major A,B,D (PyTorch Linear weights [N,K]).
-bool build_lt_row_nt(cublasLtHandle_t lt, int io_type, int M, int N, int K, LtRowNtGemm* out) {
+/// ``which``：0 = gate_up（更大 workspace 上限），1 = down。
+bool build_lt_row_nt(cublasLtHandle_t lt, int io_type, int32_t which, int M, int N, int K, LtRowNtGemm* out) {
     cudaDataType_t dt = io_cuda_type(io_type);
     cublasLtOrder_t row_order = CUBLASLT_ORDER_ROW;
     cublasOperation_t op_N = CUBLAS_OP_N;
@@ -289,24 +351,55 @@ bool build_lt_row_nt(cublasLtHandle_t lt, int io_type, int M, int N, int K, LtRo
         cublasLtMatmulDescDestroy(out->matmul_desc);
         return false;
     }
-    size_t pref_ws = kLtPrefWorkspaceBytes;
+    size_t const pref_ws = (which == 0) ? kLtPrefWorkspaceGateUp : kLtPrefWorkspaceDown;
     cublasLtMatmulPreferenceSetAttribute(
         pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &pref_ws, sizeof(pref_ws));
 
-    cublasLtMatmulHeuristicResult_t heur{};
+    cublasLtMatmulHeuristicResult_t heurs[kLtHeuristicMaxResults]{};
     int nret = 0;
     cublasStatus_t gh = cublasLtMatmulAlgoGetHeuristic(
-        lt, out->matmul_desc, out->A_desc, out->B_desc, out->D_desc, out->D_desc, pref, 1, &heur, &nret);
+        lt, out->matmul_desc, out->A_desc, out->B_desc, out->D_desc, out->D_desc, pref, kLtHeuristicMaxResults, heurs, &nret);
     cublasLtMatmulPreferenceDestroy(pref);
-    if (gh != CUBLAS_STATUS_SUCCESS || nret < 1 || heur.state != CUBLAS_STATUS_SUCCESS) {
+    if (gh != CUBLAS_STATUS_SUCCESS || nret < 1) {
         cublasLtMatrixLayoutDestroy(out->D_desc);
         cublasLtMatrixLayoutDestroy(out->B_desc);
         cublasLtMatrixLayoutDestroy(out->A_desc);
         cublasLtMatmulDescDestroy(out->matmul_desc);
         return false;
     }
-    out->algo = heur.algo;
-    out->workspace_size = heur.workspaceSize;
+
+    int pick = -1;
+    size_t best_ws = 0;
+    for (int i = 0; i < nret; ++i) {
+        if (heurs[i].state != CUBLAS_STATUS_SUCCESS) {
+            continue;
+        }
+        if (heurs[i].workspaceSize > pref_ws) {
+            continue;
+        }
+        if (pick < 0 || heurs[i].workspaceSize > best_ws) {
+            pick = i;
+            best_ws = heurs[i].workspaceSize;
+        }
+    }
+    if (pick < 0) {
+        for (int i = 0; i < nret; ++i) {
+            if (heurs[i].state == CUBLAS_STATUS_SUCCESS) {
+                pick = i;
+                break;
+            }
+        }
+    }
+    if (pick < 0) {
+        cublasLtMatrixLayoutDestroy(out->D_desc);
+        cublasLtMatrixLayoutDestroy(out->B_desc);
+        cublasLtMatrixLayoutDestroy(out->A_desc);
+        cublasLtMatmulDescDestroy(out->matmul_desc);
+        return false;
+    }
+
+    out->algo = heurs[pick].algo;
+    out->workspace_size = heurs[pick].workspaceSize;
     out->valid = true;
     return true;
 }
@@ -322,7 +415,7 @@ LtRowNtGemm* get_or_create_nt_entry(int dev, int io_type, int which, int M, int 
         clear_nt_cache_unlocked();
     }
     auto up = std::make_unique<LtRowNtGemm>();
-    if (!build_lt_row_nt(lt, io_type, M, N, K, up.get())) {
+    if (!build_lt_row_nt(lt, io_type, key.which, M, N, K, up.get())) {
         return nullptr;
     }
     LtRowNtGemm* raw = up.get();
@@ -340,18 +433,41 @@ int launch_lt_row_nt(cublasLtHandle_t lt, LtRowNtGemm const& g, void const* A, v
     return 0;
 }
 
+void launch_gelu_dispatch(cudaStream_t stream, int io_type, void const* zptr, void* hptr, int m, int inter) {
+    int const threads = 256;
+    int const total = m * inter;
+    if ((inter % 4) == 0) {
+        int const nvec = m * (inter / 4);
+        dim3 const grid((nvec + threads - 1) / threads);
+        if (io_type == 0) {
+            gelu_mul_split_fp16_x4<<<grid, threads, 0, stream>>>(
+                reinterpret_cast<__half const*>(zptr), reinterpret_cast<__half*>(hptr), m, inter);
+        } else {
+            gelu_mul_split_bf16_x4<<<grid, threads, 0, stream>>>(reinterpret_cast<__nv_bfloat16 const*>(zptr),
+                reinterpret_cast<__nv_bfloat16*>(hptr), m, inter);
+        }
+    } else {
+        dim3 const grid((total + threads - 1) / threads);
+        if (io_type == 0) {
+            gelu_mul_split_fp16<<<grid, threads, 0, stream>>>(
+                reinterpret_cast<__half const*>(zptr), reinterpret_cast<__half*>(hptr), m, inter);
+        } else {
+            gelu_mul_split_bf16<<<grid, threads, 0, stream>>>(reinterpret_cast<__nv_bfloat16 const*>(zptr),
+                reinterpret_cast<__nv_bfloat16*>(hptr), m, inter);
+        }
+    }
+}
+
 void launch_naive_fp16(cudaStream_t stream, int m, int hidden, int inter, void const* x, void const* wgu, void* z,
     void* h, void const* wd, void* y) {
     int const i2 = inter * 2;
     int const threads = 256;
     dim3 const g1((m * i2 + threads - 1) / threads);
-    dim3 const g2((m * inter + threads - 1) / threads);
     dim3 const g3((m * hidden + threads - 1) / threads);
     gemm_x_wgt_fp16<<<g1, threads, 0, stream>>>(
         reinterpret_cast<__half const*>(x), reinterpret_cast<__half const*>(wgu), reinterpret_cast<__half*>(z), m,
         hidden, i2);
-    gelu_mul_split_fp16<<<g2, threads, 0, stream>>>(
-        reinterpret_cast<__half const*>(z), reinterpret_cast<__half*>(h), m, inter);
+    launch_gelu_dispatch(stream, 0, z, h, m, inter);
     gemm_h_wgt_fp16<<<g3, threads, 0, stream>>>(reinterpret_cast<__half const*>(h),
         reinterpret_cast<__half const*>(wd), reinterpret_cast<__half*>(y), m, inter, hidden);
 }
@@ -361,12 +477,10 @@ void launch_naive_bf16(cudaStream_t stream, int m, int hidden, int inter, void c
     int const i2 = inter * 2;
     int const threads = 256;
     dim3 const g1((m * i2 + threads - 1) / threads);
-    dim3 const g2((m * inter + threads - 1) / threads);
     dim3 const g3((m * hidden + threads - 1) / threads);
     gemm_x_wgt_bf16<<<g1, threads, 0, stream>>>(reinterpret_cast<__nv_bfloat16 const*>(x),
         reinterpret_cast<__nv_bfloat16 const*>(wgu), reinterpret_cast<__nv_bfloat16*>(z), m, hidden, i2);
-    gelu_mul_split_bf16<<<g2, threads, 0, stream>>>(
-        reinterpret_cast<__nv_bfloat16 const*>(z), reinterpret_cast<__nv_bfloat16*>(h), m, inter);
+    launch_gelu_dispatch(stream, 1, z, h, m, inter);
     gemm_h_wgt_bf16<<<g3, threads, 0, stream>>>(reinterpret_cast<__nv_bfloat16 const*>(h),
         reinterpret_cast<__nv_bfloat16 const*>(wd), reinterpret_cast<__nv_bfloat16*>(y), m, inter, hidden);
 }
@@ -447,15 +561,7 @@ int gemma_fused_gated_mlp_cuda(cudaStream_t stream, int32_t act_id, int32_t io_t
         return st;
     }
 
-    int const threads = 256;
-    dim3 const g2b((m * inter + threads - 1) / threads);
-    if (io_type == 0) {
-        gelu_mul_split_fp16<<<g2b, threads, 0, stream>>>(
-            reinterpret_cast<__half const*>(zptr), reinterpret_cast<__half*>(hptr), m, inter);
-    } else {
-        gelu_mul_split_bf16<<<g2b, threads, 0, stream>>>(
-            reinterpret_cast<__nv_bfloat16 const*>(zptr), reinterpret_cast<__nv_bfloat16*>(hptr), m, inter);
-    }
+    launch_gelu_dispatch(stream, io_type, zptr, hptr, m, inter);
 
     st = launch_lt_row_nt(lt, *g2, hptr, wDown, y, alpha, beta, lt_ptr, lt_cap, stream);
     if (st != 0) {
