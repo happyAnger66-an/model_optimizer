@@ -506,9 +506,9 @@ private:
     std::string m_creator_ns{};
 };
 
-//! ONNX ``opset_import`` 里 ``domain==trt`` 的版本号（与 ``model_optimizer.ops.gemma_fused_gated_mlp_plugin.ONNX_OPSET_VERSION`` 对齐）。
-//! TensorRT ONNX Parser 的 fallback 插件导入通常按 **该版本字符串** 查 ``IPluginRegistry``，
-//! 而不是按节点属性 ``plugin_version``；因此除 ``"1"``/``"2"`` 外还需注册 ``"19"``。
+//! ONNX-TensorRT ``FallbackPluginImporter`` 优先读取节点 **字符串** 属性 ``plugin_version`` / ``plugin_namespace``
+//!（缺省 ``"1"`` / ``""``）再 ``getCreator``（见 ``onnx-tensorrt/onnxOpCheckers.cpp``）。``"19"`` 与
+//! ``model_optimizer.ops.gemma_fused_gated_mlp_plugin.ONNX_OPSET_VERSION`` 对齐，作兜底注册。
 static constexpr char const* kGemmaFusedGatedMlpOnnxOpsetVersion = "19";
 
 static bool onnx_plugin_field_collection_has_baked_weights(nvinfer1::PluginFieldCollection const* fc) noexcept {
