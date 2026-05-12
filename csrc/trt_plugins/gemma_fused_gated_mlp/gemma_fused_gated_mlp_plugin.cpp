@@ -6,7 +6,7 @@
 //
 // - Version "1": inputs ``x``, ``gate_up_weight``, ``down_weight`` (图权重边，易触发 Myelin ``__myl_Move_*``)。
 // - Version "2": input ``x`` only; weights from ONNX tensor attributes → PluginField → 序列化进引擎；
-//   ``initialize()`` 一次 H2D，``enqueue`` 不再经图输入搬运权重。
+//   权重 H2D：优先 ``initialize()``；部分 TRT 路径可能跳过，故 ``enqueue`` 首次执行前惰性补齐。
 //
 // Verbose I/O: ``MODEL_OPTIMIZER_GEMMA_TRT_PLUGIN_VERBOSE=1`` → ``configurePlugin`` 打 stderr。
 
@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -326,9 +327,12 @@ public:
                 }
                 return 6;
             }
-            if (m_d_gate_up == nullptr || m_d_down == nullptr) {
+            int32_t const up = upload_baked_weights_to_device();
+            if (up != 0) {
                 if (gemma_trt_plugin_verbose()) {
-                    std::fprintf(stderr, "[GemmaFusedGatedMlp] v2 enqueue: device weights null (initialize failed?)\n");
+                    std::fprintf(stderr,
+                        "[GemmaFusedGatedMlp] v2 enqueue: upload_baked_weights_to_device rc=%d\n",
+                        static_cast<int>(up));
                 }
                 return 7;
             }
@@ -414,27 +418,10 @@ public:
         return inputTypes[0];
     }
 
-    int32_t initialize() noexcept override {
-        if (!m_baked_weights || m_d_gate_up != nullptr) {
-            return 0;
-        }
-        if (m_host_gate_up.empty() || m_host_down.empty()) {
-            return -1;
-        }
-        cudaError_t e1 = cudaMalloc(&m_d_gate_up, m_host_gate_up.size());
-        cudaError_t e2 = cudaMalloc(&m_d_down, m_host_down.size());
-        if (e1 != cudaSuccess || e2 != cudaSuccess) {
-            return -2;
-        }
-        e1 = cudaMemcpy(m_d_gate_up, m_host_gate_up.data(), m_host_gate_up.size(), cudaMemcpyHostToDevice);
-        e2 = cudaMemcpy(m_d_down, m_host_down.data(), m_host_down.size(), cudaMemcpyHostToDevice);
-        if (e1 != cudaSuccess || e2 != cudaSuccess) {
-            return -3;
-        }
-        return 0;
-    }
+    int32_t initialize() noexcept override { return upload_baked_weights_to_device(); }
 
     void terminate() noexcept override {
+        std::lock_guard<std::mutex> lk(m_dev_weight_mu);
         if (m_d_gate_up != nullptr) {
             (void)cudaFree(m_d_gate_up);
             m_d_gate_up = nullptr;
@@ -446,6 +433,54 @@ public:
     }
 
 private:
+    //! 将烘焙主机权重拷到设备；``initialize`` 与 ``enqueue`` 共用（部分运行时不在 ``enqueue`` 前调 ``initialize``）。
+    int32_t upload_baked_weights_to_device() noexcept {
+        if (!m_baked_weights) {
+            return 0;
+        }
+        std::lock_guard<std::mutex> lk(m_dev_weight_mu);
+        if (m_d_gate_up != nullptr && m_d_down != nullptr) {
+            return 0;
+        }
+        if (m_host_gate_up.empty() || m_host_down.empty()) {
+            if (gemma_trt_plugin_verbose()) {
+                std::fprintf(stderr, "[GemmaFusedGatedMlp] v2: host weight buffers empty\n");
+            }
+            return -1;
+        }
+        void* gu = nullptr;
+        void* dn = nullptr;
+        cudaError_t e1 = cudaMalloc(&gu, m_host_gate_up.size());
+        cudaError_t e2 = cudaMalloc(&dn, m_host_down.size());
+        if (e1 != cudaSuccess || e2 != cudaSuccess) {
+            if (gu != nullptr) {
+                (void)cudaFree(gu);
+            }
+            if (dn != nullptr) {
+                (void)cudaFree(dn);
+            }
+            if (gemma_trt_plugin_verbose()) {
+                std::fprintf(stderr, "[GemmaFusedGatedMlp] v2: cudaMalloc failed gate_up=%s down=%s\n",
+                    cudaGetErrorString(e1), cudaGetErrorString(e2));
+            }
+            return -2;
+        }
+        e1 = cudaMemcpy(gu, m_host_gate_up.data(), m_host_gate_up.size(), cudaMemcpyHostToDevice);
+        e2 = cudaMemcpy(dn, m_host_down.data(), m_host_down.size(), cudaMemcpyHostToDevice);
+        if (e1 != cudaSuccess || e2 != cudaSuccess) {
+            (void)cudaFree(gu);
+            (void)cudaFree(dn);
+            if (gemma_trt_plugin_verbose()) {
+                std::fprintf(stderr, "[GemmaFusedGatedMlp] v2: cudaMemcpy H2D failed gate_up=%s down=%s\n",
+                    cudaGetErrorString(e1), cudaGetErrorString(e2));
+            }
+            return -3;
+        }
+        m_d_gate_up = gu;
+        m_d_down = dn;
+        return 0;
+    }
+
     void parse_serial_v2(void const* serialData, size_t serialLength) {
         uint8_t const* p = static_cast<uint8_t const*>(serialData);
         size_t off = sizeof(uint32_t);
@@ -493,6 +528,7 @@ private:
     std::vector<uint8_t> m_host_down{};
     void* m_d_gate_up{nullptr};
     void* m_d_down{nullptr};
+    std::mutex m_dev_weight_mu{};
     std::string m_ns{};
 };
 
