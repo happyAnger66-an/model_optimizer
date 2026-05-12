@@ -149,14 +149,18 @@ def run_gemma_fused_gated_mlp_engine(
     engine_bytes: bytes,
     *,
     x: torch.Tensor,
-    gate_up_weight: torch.Tensor,
-    down_weight: torch.Tensor,
+    gate_up_weight: torch.Tensor | None = None,
+    down_weight: torch.Tensor | None = None,
     logger: trt.ILogger | None = None,
 ) -> torch.Tensor:
-    """对仅含 ``x`` / ``gate_up_weight`` / ``down_weight`` 输入与 ``y`` 输出的引擎执行一次推理。"""
+    """执行一次推理。
 
-    if not x.is_cuda or not gate_up_weight.is_cuda or not down_weight.is_cuda:
-        raise ValueError("All tensors must be CUDA tensors")
+    - **插件 v1**（三输入 ONNX）：需提供 ``x``、``gate_up_weight``、``down_weight``（CUDA）。
+    - **插件 v2**（权重烘焙进引擎）：仅需 ``x``；权重参数必须为 ``None``。
+    """
+
+    if not x.is_cuda:
+        raise ValueError("x must be a CUDA tensor")
 
     logger = logger or trt.Logger(trt.Logger.ERROR)
     runtime = trt.Runtime(logger)
@@ -166,11 +170,14 @@ def run_gemma_fused_gated_mlp_engine(
     ctx = engine.create_execution_context()
     stream = torch.cuda.current_stream()
 
-    bindings: dict[str, torch.Tensor] = {
-        "x": x.contiguous(),
-        "gate_up_weight": gate_up_weight.contiguous(),
-        "down_weight": down_weight.contiguous(),
-    }
+    bindings: dict[str, torch.Tensor] = {"x": x.contiguous()}
+    if gate_up_weight is not None and down_weight is not None:
+        if not gate_up_weight.is_cuda or not down_weight.is_cuda:
+            raise ValueError("gate_up_weight and down_weight must be CUDA tensors when provided")
+        bindings["gate_up_weight"] = gate_up_weight.contiguous()
+        bindings["down_weight"] = down_weight.contiguous()
+    elif gate_up_weight is not None or down_weight is not None:
+        raise ValueError("Provide both gate_up_weight and down_weight, or neither (baked-weights engine).")
     out_tensor: torch.Tensor | None = None
 
     for i in range(engine.num_io_tensors):

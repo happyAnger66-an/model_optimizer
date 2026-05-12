@@ -105,7 +105,8 @@
 ### 6.3 排查与缓解
 
 - **排查**：建引擎或首次 `configurePlugin` 时设置环境变量 **`MODEL_OPTIMIZER_GEMMA_TRT_PLUGIN_VERBOSE=1`**，插件会向 **stderr** 打印各输入的 **dims / type / format** 及 **min/opt/max**（动态形状），并校验 **`gate_up` 与 `down` 是否与 `[2I,H]`、`[H,I]` 及 `H` 一致**（不一致时打印告警）。
-- **缓解（减少权重边经图调度）**：ONNX 中权重保持 **Initializer、连续、无多余 `Transpose`/多 consumer**；或走 **权重序列化进插件**（图中去掉两条权重边），由插件在 `initialize`/`enqueue` 侧使用自有缓冲（需改导出与序列化格式）。
+- **缓解 A（推荐，消除两条权重 Move）**：导出三输入 ONNX 后，调用 **`model_optimizer.ops.gemma_fused_gated_mlp_onnx_embed.embed_gemma_fused_gated_mlp_trt_static_weights`**，将权重折叠为 **张量属性**、节点仅保留 **`x` 输入**；使用 TensorRT 插件 **`GemmaFusedGatedMlp` 版本 `"2"`**（`initialize` 一次 H2D，推理期不再经图输入搬运权重）。Python 推理见 **`run_gemma_fused_gated_mlp_engine(..., gate_up_weight=None, down_weight=None)`**。
+- **缓解 B（保守）**：关闭融合导出，回到原生 MatMul/Linear 链（无自定义插件，通常也无插件边界 Move，但失去融合算子收益）。
 
 ---
 
@@ -116,7 +117,7 @@
 | CUDA 主实现 | `csrc/trt_plugins/gemma_fused_gated_mlp/gemma_fused_gated_mlp_cuda.cu` |
 | 对外 C API 头文件 | `csrc/trt_plugins/gemma_fused_gated_mlp/gemma_fused_gated_mlp_cuda.h` |
 | TRT 插件（IPlugin） | `csrc/trt_plugins/gemma_fused_gated_mlp/gemma_fused_gated_mlp_plugin.cpp`（verbose：`MODEL_OPTIMIZER_GEMMA_TRT_PLUGIN_VERBOSE=1`） |
-| ONNX / PyTorch custom op | `src/model_optimizer/ops/gemma_fused_gated_mlp_plugin.py` |
+| ONNX 权重折叠（消 Move） | `src/model_optimizer/ops/gemma_fused_gated_mlp_onnx_embed.py` |
 | CMake（插件 + bench） | `csrc/trt_plugins/gemma_fused_gated_mlp/CMakeLists.txt` |
 
 ---

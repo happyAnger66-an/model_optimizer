@@ -37,6 +37,9 @@ from model_optimizer.ops.gemma_fused_gated_mlp_plugin import (  # noqa: E402
     gemma_fused_gated_mlp_plugin,
     register_gemma_fused_gated_mlp_onnx_symbolic_functions,
 )
+from model_optimizer.ops.gemma_fused_gated_mlp_onnx_embed import (  # noqa: E402
+    embed_gemma_fused_gated_mlp_trt_static_weights,
+)
 from model_optimizer.ops.gemma_fused_gated_mlp_trt import (  # noqa: E402
     build_gemma_fused_gated_mlp_engine_from_onnx,
     discover_gemma_fused_gated_mlp_plugin_so,
@@ -228,6 +231,46 @@ def test_trt_engine_matches_pytorch_gemma_fused_gated_mlp_fp16() -> None:
                 pytest.fail(msg)
             pytest.skip(msg)
         y_trt = run_gemma_fused_gated_mlp_engine(plan, x=x, gate_up_weight=w_gu, down_weight=w_d)
+
+    assert y_trt.shape == (b, t, h)
+    assert y_trt.dtype == torch.float16
+    _assert_trt_matches_reference(y_trt, y_ref_fp32)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_trt_engine_matches_pytorch_gemma_fused_gated_mlp_fp16_static_weights_v2() -> None:
+    """ONNX 折叠权重 → 插件 v2：引擎仅绑定 ``x``/``y``，数值与 fp32 eager 参考一致。"""
+
+    import onnx
+
+    plugin_so = _require_plugin_so()
+    dev = _require_cuda()
+    b, t, h, inter = 2, 5, 32, 48
+    x, w_gu, w_d = _stable_fp16_weights(dev, b, t, h, inter, seed=10004)
+    y_ref_fp32 = _reference_fp32(x, w_gu, w_d)
+
+    with tempfile.TemporaryDirectory() as td:
+        onnx_v1 = Path(td) / "m_v1.onnx"
+        onnx_v2 = Path(td) / "m_v2.onnx"
+        _export_onnx_fp16(onnx_v1, dev, x, w_gu, w_d)
+        model = onnx.load(str(onnx_v1))
+        embed_gemma_fused_gated_mlp_trt_static_weights(model)
+        onnx.save(model, str(onnx_v2))
+        nodes = [n for n in model.graph.node if n.op_type == "GemmaFusedGatedMlp" and n.domain == "trt"]
+        assert nodes and len(nodes[0].input) == 1, nodes[0].input if nodes else "no node"
+
+        load_gemma_fused_gated_mlp_plugin(plugin_so)
+        init_trt_plugins_after_load()
+        diag: list[str] = []
+        plan = build_gemma_fused_gated_mlp_engine_from_onnx(onnx_v2, use_bf16=False, diagnostics_out=diag)
+        if plan is None:
+            body = "\n".join(diag) if diag else "(no extra diagnostics)"
+            _emit_failure("TensorRT v2 static-weights build failed (OnnxParser may not map tensor attrs)", body)
+            msg = "build_serialized_network returned None for v2 ONNX (see stderr)"
+            if _require_trt_plugin_strict():
+                pytest.fail(msg)
+            pytest.skip(msg)
+        y_trt = run_gemma_fused_gated_mlp_engine(plan, x=x)
 
     assert y_trt.shape == (b, t, h)
     assert y_trt.dtype == torch.float16
