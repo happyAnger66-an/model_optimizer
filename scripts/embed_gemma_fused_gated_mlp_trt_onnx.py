@@ -11,6 +11,7 @@
     python3 scripts/embed_gemma_fused_gated_mlp_trt_onnx.py /path/to/model.onnx -o /path/to/model_static.onnx
     python3 scripts/embed_gemma_fused_gated_mlp_trt_onnx.py model.onnx --keep-initializers
     python3 scripts/embed_gemma_fused_gated_mlp_trt_onnx.py model.onnx --inline-weights  # 单文件（大模型易超 protobuf 解析上限，慎用）
+    python3 scripts/embed_gemma_fused_gated_mlp_trt_onnx.py model.onnx --bake-fp16  # FP16 建引擎：权重属性写为 FLOAT16（避免 fp32→bf16 与 fp16 激活不一致）
 
 默认把 **节点属性里的大张量** 与图中其它大权重一并 **外置** 到 ``<onnx 文件名>.data``，主 ``.onnx`` 保持较小，便于 ``onnx.load`` / ``model-opt build`` 预检解析。
 
@@ -65,6 +66,12 @@ def main() -> int:
         action="store_true",
         help="不把权重外置：写出单个巨大 .onnx（数 GB 时 onnx.load / protobuf 常 DecodeError；默认会外置）",
     )
+    p.add_argument(
+        "--bake-fp16",
+        action="store_true",
+        help="嵌入前将 gate_up/down 转为 FLOAT16 属性（FP16 引擎 + fp16 激活与插件 io_type=0 一致；"
+        "initializer 为 fp32 时勿依赖 TRT 插件默认 fp32→bf16 路径）",
+    )
     args = p.parse_args()
 
     onnx_in: Path = args.onnx_in.expanduser().resolve()
@@ -82,6 +89,7 @@ def main() -> int:
     embed_gemma_fused_gated_mlp_trt_static_weights(
         model,
         remove_embedded_initializers=not bool(args.keep_initializers),
+        bake_weights_as_float16=bool(args.bake_fp16),
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     if args.inline_weights:

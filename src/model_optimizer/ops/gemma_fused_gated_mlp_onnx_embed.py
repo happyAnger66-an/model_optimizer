@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 from typing import Iterable
 
+import numpy as np
 import onnx
 from onnx import numpy_helper
 
@@ -18,6 +19,7 @@ def embed_gemma_fused_gated_mlp_trt_static_weights(
     *,
     remove_embedded_initializers: bool = True,
     initializer_allowlist: Iterable[str] | None = None,
+    bake_weights_as_float16: bool = False,
 ) -> onnx.ModelProto:
     """把 ``domain==trt``、``op_type==GemmaFusedGatedMlp`` 且 **3 输入** 的节点改为 **1 输入 + 权重张量属性**。
 
@@ -27,12 +29,19 @@ def embed_gemma_fused_gated_mlp_trt_static_weights(
     要求 ``gate_up_weight`` / ``down_weight`` 对应的输入名在 ``graph.initializer`` 中有 **独立** 常量，
     且每个 initializer **仅被该插件节点引用一次**（不与其它算子共享同一张量名）。
 
+    **FP16 引擎与 dtype**：插件 v2 若从 ONNX 读到 **fp32** 权重，会在 TRT 侧 **量化为 bf16 字节**
+    （``io_type=1``）；此时激活多为 **fp16**，会在 ``enqueue`` 报错。若 initializer 已是 **bf16** 而
+    主链为 **fp16**，同样不一致。对 FP16 建引擎 / fp16 激活，请令嵌入属性为 **FLOAT16**：
+    导出时即用 fp16 权重，或在本函数设 ``bake_weights_as_float16=True``（先转 ``float32`` 再 ``float16``）。
+
     Args:
         model: 已加载的 ONNX（会被 **原地** 修改；若需保留原图请先 ``copy.deepcopy``）。
         remove_embedded_initializers: 为真时，在折叠后从 ``graph.initializer`` 中删除已嵌入的权重，
             减小 ONNX 体积并避免无用常量。
         initializer_allowlist: 若给定，仅允许移除这些名字内的 initializer（安全闸）；
             默认 ``None`` 表示移除所有已嵌入且确认无引用的 initializer。
+        bake_weights_as_float16: 为真时，在写入节点属性前将两份权重转为 **ONNX FLOAT16**
+            ``TensorProto``（与 ``BuilderFlag.FP16`` 下插件输入 ``x`` 一致）。
 
     Returns:
         传入的 ``model``（原地修改后的引用）。
@@ -85,6 +94,14 @@ def embed_gemma_fused_gated_mlp_trt_static_weights(
                 "(expect [2I,H] and [H,I] with same H,I)"
             )
 
+        gu_attr = gu_t
+        d_attr = d_t
+        if bake_weights_as_float16:
+            gu_f32 = np.asarray(gu, dtype=np.float32)
+            dd_f32 = np.asarray(dd, dtype=np.float32)
+            gu_attr = numpy_helper.from_array(gu_f32.astype(np.float16, copy=False))
+            d_attr = numpy_helper.from_array(dd_f32.astype(np.float16, copy=False))
+
         new_attr = [copy.deepcopy(a) for a in node.attribute]
         new_attr.append(onnx.helper.make_attribute("hidden_dim", h_gu))
         new_attr.append(onnx.helper.make_attribute("inter_dim", inter))
@@ -92,8 +109,8 @@ def embed_gemma_fused_gated_mlp_trt_static_weights(
         # 调 ``IPluginRegistry::getCreator``（见 onnx-tensorrt onnxOpCheckers.cpp）；写 INT 会导致版本回退/查不到。
         new_attr.append(onnx.helper.make_attribute("plugin_version", "2"))
         new_attr.append(onnx.helper.make_attribute("plugin_namespace", "trt"))
-        new_attr.append(onnx.helper.make_attribute("gate_up_weight", gu_t))
-        new_attr.append(onnx.helper.make_attribute("down_weight", d_t))
+        new_attr.append(onnx.helper.make_attribute("gate_up_weight", gu_attr))
+        new_attr.append(onnx.helper.make_attribute("down_weight", d_attr))
 
         del node.input[:]
         node.input.append(x_in)
