@@ -95,7 +95,7 @@ class FusedGemmaMLP(nn.Module):
         self.gate_up = nn.Linear(self.hidden_size, 2 * self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         try:
-            from openpi.models_pytorch.transformers_replace.models.gemma.modeling_gemma import (
+            from transformers.models.gemma.modeling_gemma import (
                 ACT2FN,
             )
 
@@ -107,14 +107,20 @@ class FusedGemmaMLP(nn.Module):
 
     @classmethod
     def from_gemma_mlp(cls, mlp: nn.Module) -> "FusedGemmaMLP":
-        """从现有 ``GemmaMLP``（或结构兼容模块）拷贝权重。"""
+        """从现有 ``GemmaMLP``（或结构兼容模块）拷贝权重。
+
+        ``nn.Linear`` 默认 FP32 参数；若源 MLP 为 bf16/fp16，直接 ``copy_`` 会把权重 **升到 FP32**，
+        而解码器激活仍为 bf16/fp16，导致 ``F.linear`` 报 dtype 不一致。故先 ``.to(device, dtype)`` 再拷贝。
+        """
         cfg = mlp.config
         out = cls(cfg)
+        w_ref = mlp.gate_proj.weight
+        out = out.to(device=w_ref.device, dtype=w_ref.dtype)
         with torch.no_grad():
             w_g = mlp.gate_proj.weight.data
             w_u = mlp.up_proj.weight.data
-            out.gate_up.weight.data.copy_(torch.cat([w_g, w_u], dim=0))
-            out.down_proj.weight.data.copy_(mlp.down_proj.weight.data)
+            out.gate_up.weight.copy_(torch.cat([w_g, w_u], dim=0))
+            out.down_proj.weight.copy_(mlp.down_proj.weight.data)
         return out
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
