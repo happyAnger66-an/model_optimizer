@@ -309,19 +309,7 @@ public:
             m64 *= static_cast<int64_t>(xd.d[i]);
         }
         int32_t const m = static_cast<int32_t>(std::min<int64_t>(m64, static_cast<int64_t>(INT_MAX)));
-<<<<<<< HEAD
         int32_t const io = m_baked_weights ? m_io_type : (inputDesc[0].type == nvinfer1::DataType::kBF16 ? 1 : 0);
-=======
-        int32_t const act_io = inputDesc[0].type == nvinfer1::DataType::kBF16 ? 1 : 0;
-        int32_t const io = m_baked_weights ? m_io_type : act_io;
-        if (m_baked_weights && act_io != m_io_type) {
-            std::fprintf(stderr,
-                "[GemmaFusedGatedMlp] v2 enqueue: input is %s but baked weights are %s; returning error. "
-                "Use an engine built from fp16-baked ONNX when running FP16, or bf16-baked when running BF16.\n",
-                act_io == 1 ? "bf16" : "fp16", m_io_type == 1 ? "bf16" : "fp16");
-            return -1;
-        }
->>>>>>> 1a7a41c (feat: plugin support fp16.)
         int32_t const hidden = xd.d[xd.nbDims - 1];
         int32_t inter = m_inter;
         if (!m_baked_weights) {
