@@ -175,14 +175,14 @@ def _matches(meta: str, trt_name: str, include: re.Pattern[str], exclude: re.Pat
     return True
 
 
-def _aggregate(
+def _analyze(
     *,
     layer_path: Path | None,
     profile_path: Path,
     include: re.Pattern[str],
     exclude: re.Pattern[str] | None,
-    topk: int,
-) -> tuple[float, list[tuple[str, float, str]]]:
+) -> tuple[float, float, int, list[tuple[str, float, str]]]:
+    """返回 (attention 桶总 ms, 其中 _gemm_mha_v2 子桶 ms, _gemm_mha_v2 层数, 匹配层列表按耗时降序)。"""
     prof = _read_json(profile_path)
     meta_map: dict[str, str] = {}
     if layer_path is not None:
@@ -190,18 +190,21 @@ def _aggregate(
     times = _build_name_to_time(prof)
 
     matched: list[tuple[str, float, str]] = []
-    total = 0.0
-    for nm, ms in sorted(times.items(), key=lambda kv: kv[1], reverse=True):
+    for nm, ms in times.items():
         meta = meta_map.get(nm, "")
         if not _matches(meta, nm, include, exclude):
             continue
-        total += ms
         matched.append((nm, ms, meta))
 
     matched.sort(key=lambda x: x[1], reverse=True)
-    if topk > 0:
-        matched = matched[:topk]
-    return total, matched
+    total = sum(ms for _, ms, _ in matched)
+    mha_ms = 0.0
+    mha_n = 0
+    for nm, ms, _ in matched:
+        if "_gemm_mha_v2" in nm.lower():
+            mha_ms += ms
+            mha_n += 1
+    return total, mha_ms, mha_n, matched
 
 
 def main() -> int:
@@ -243,23 +246,26 @@ def main() -> int:
         print(f"error: --layer-b not found: {args.layer_b}", file=sys.stderr)
         return 2
 
-    total_a, rows_a = _aggregate(
+    total_a, mha_a, mha_na, all_a = _analyze(
         layer_path=args.layer_a,
         profile_path=args.profile_a,
         include=include,
         exclude=exclude,
-        topk=int(args.topk),
     )
-    total_b, rows_b = _aggregate(
+    total_b, mha_b, mha_nb, all_b = _analyze(
         layer_path=args.layer_b,
         profile_path=args.profile_b,
         include=include,
         exclude=exclude,
-        topk=int(args.topk),
     )
+    topk = int(args.topk)
+    rows_a = all_a[:topk] if topk > 0 else []
+    rows_b = all_b[:topk] if topk > 0 else []
 
     delta = total_b - total_a
     pct = (delta / total_a * 100.0) if total_a > 0 else float("nan")
+    other_a = total_a - mha_a
+    other_b = total_b - mha_b
 
     print("=== Attention bucket (regex on Metadata ∪ TRT Name) ===")
     print(f"include: {args.include_regex!r}")
@@ -269,12 +275,21 @@ def main() -> int:
     print(f"{args.label_b:16} sum_ms = {total_b:.6f}")
     print(f"{'delta (B-A)':16} ms     = {delta:+.6f}  ({pct:+.2f}% vs A)" if total_a > 0 else f"{'delta (B-A)':16} ms     = {delta:+.6f}")
     print()
+    print("=== _gemm_mha_v2 sub-bucket (TRT Name contains _gemm_mha_v2; same include/exclude) ===")
+    print(
+        f"{args.label_a:16} _gemm_mha_v2: {mha_a:.6f} ms  ({mha_na} layers) | rest-of-bucket: {other_a:.6f} ms"
+    )
+    print(
+        f"{args.label_b:16} _gemm_mha_v2: {mha_b:.6f} ms  ({mha_nb} layers) | rest-of-bucket: {other_b:.6f} ms"
+    )
+    if mha_na > 0 and mha_nb == 0:
+        print("解读: B 侧桶内未出现 _gemm_mha_v2，attention 多走分解 GEMM/kgen；与总桶 delta 常一致。")
+    print()
 
     if args.topk > 0:
         print(f"--- Top {args.topk} contributors: {args.label_a} ---")
         for nm, ms, meta in rows_a:
             onnx = "; ".join(_parse_onnx_names_from_metadata(meta)[:6])
-            tail = " ..." if len(meta) > 200 else ""
             print(f"  {ms:10.4f} ms  {nm}")
             if onnx:
                 print(f"            onnx: {onnx}")
