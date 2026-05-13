@@ -31,9 +31,10 @@ def embed_gemma_fused_gated_mlp_trt_static_weights(
 
     **FP16 引擎与 dtype**：部分 ONNX-TensorRT 会把 **FLOAT16 张量属性** 仍作为 ``kFLOAT32``
     ``PluginField`` 传入插件，旧逻辑会把 ``fp32`` 一律量化成 bf16（``io_type=1``），与 fp16 激活冲突。
-    嵌入时会写入整数属性 ``baked_io_type``（0=逻辑 fp16 GEMM，1=bf16）；插件据此在 fp32 字段上走
-    ``fp32→fp16`` 或 ``fp32→bf16``，并固定 ``io_type``。若 ONNX 中两份权重 ``TensorProto`` 均为
-    ``FLOAT16``（含 ``bake_weights_as_float16=True`` 转换结果），则 ``baked_io_type=0``。
+    嵌入时会写入 ``baked_io_type``（整型）以及 **字符串** ``mopt_baked_storage``（``"fp16"`` / ``"bf16"``）；
+    部分 ONNX-TensorRT 版本不把整型节点属性传入 ``PluginFieldCollection``，但字符串通常仍可解析，
+    插件优先读 ``mopt_baked_storage``。若仍失败，建引擎时可设环境变量
+    ``MODEL_OPTIMIZER_GEMMA_TRT_FORCE_FP16_BAKED=1`` 强制 fp16 烘焙（``fp32`` 权重字段走 ``fp32→fp16``）。
 
     Args:
         model: 已加载的 ONNX（会被 **原地** 修改；若需保留原图请先 ``copy.deepcopy``）。
@@ -111,6 +112,9 @@ def embed_gemma_fused_gated_mlp_trt_static_weights(
         new_attr.append(onnx.helper.make_attribute("hidden_dim", h_gu))
         new_attr.append(onnx.helper.make_attribute("inter_dim", inter))
         new_attr.append(onnx.helper.make_attribute("baked_io_type", int(baked_io_type_val)))
+        new_attr.append(
+            onnx.helper.make_attribute("mopt_baked_storage", "fp16" if baked_io_type_val == 0 else "bf16")
+        )
         # ONNX-TensorRT FallbackPluginImporter 用 **字符串** 属性 ``plugin_version`` / ``plugin_namespace``
         # 调 ``IPluginRegistry::getCreator``（见 onnx-tensorrt onnxOpCheckers.cpp）；写 INT 会导致版本回退/查不到。
         new_attr.append(onnx.helper.make_attribute("plugin_version", "2"))

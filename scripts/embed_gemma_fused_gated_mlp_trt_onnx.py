@@ -11,7 +11,7 @@
     python3 scripts/embed_gemma_fused_gated_mlp_trt_onnx.py /path/to/model.onnx -o /path/to/model_static.onnx
     python3 scripts/embed_gemma_fused_gated_mlp_trt_onnx.py model.onnx --keep-initializers
     python3 scripts/embed_gemma_fused_gated_mlp_trt_onnx.py model.onnx --inline-weights  # 单文件（大模型易超 protobuf 解析上限，慎用）
-    python3 scripts/embed_gemma_fused_gated_mlp_trt_onnx.py model.onnx --bake-fp16  # FP16 建引擎：权重属性写为 FLOAT16（避免 fp32→bf16 与 fp16 激活不一致）
+    python3 scripts/embed_gemma_fused_gated_mlp_trt_onnx.py model.onnx --bake-fp16  # FP16 引擎：写 FLOAT16 权重 + mopt_baked_storage / baked_io_type
 
 默认把 **节点属性里的大张量** 与图中其它大权重一并 **外置** 到 ``<onnx 文件名>.data``，主 ``.onnx`` 保持较小，便于 ``onnx.load`` / ``model-opt build`` 预检解析。
 

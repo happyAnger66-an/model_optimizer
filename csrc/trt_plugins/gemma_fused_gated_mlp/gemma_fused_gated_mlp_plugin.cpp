@@ -648,9 +648,53 @@ static bool onnx_plugin_field_collection_has_baked_weights(nvinfer1::PluginField
     return false;
 }
 
-static int32_t read_baked_io_type_hint(nvinfer1::PluginFieldCollection const* fc) noexcept {
+//! 读取 ONNX 嵌入的权重存储语义（fp16 vs bf16）。部分 ONNX-TensorRT 版本 **不把整型节点属性**
+//! 放进 ``PluginFieldCollection``，导致 ``baked_io_type`` 丢失；**字符串属性**（与 ``plugin_version`` 同类）
+//! 通常仍可解析，故优先 ``mopt_baked_storage``（``"fp16"`` / ``"bf16"`` 前缀），再尝试 ``baked_io_type``
+//! 整型或单元素 float。均失败时返回 ``-1``。
+static int32_t read_baked_storage_hint(nvinfer1::PluginFieldCollection const* fc) noexcept {
     if (fc == nullptr || fc->nbFields <= 0 || fc->fields == nullptr) {
         return -1;
+    }
+    for (int32_t i = 0; i < fc->nbFields; ++i) {
+        nvinfer1::PluginField const& f = fc->fields[i];
+        if (f.name == nullptr || f.data == nullptr || f.length < 1) {
+            continue;
+        }
+        if (std::strcmp(f.name, "mopt_baked_storage") != 0) {
+            continue;
+        }
+        bool const char_like = (f.type == nvinfer1::PluginFieldType::kCHAR)
+            || (f.type == nvinfer1::PluginFieldType::kINT8);
+        if (!char_like) {
+            continue;
+        }
+        char const* s = static_cast<char const*>(f.data);
+        size_t n = static_cast<size_t>(f.length);
+        while (n > 0U && s[n - 1U] == '\0') {
+            --n;
+        }
+        if (n < 4U) {
+            continue;
+        }
+        auto prefix_ci = [](char const* a, char const* b, size_t k) noexcept {
+            for (size_t j = 0; j < k; ++j) {
+                char const x = a[j];
+                char const y = b[j];
+                char const lx = (x >= 'A' && x <= 'Z') ? static_cast<char>(x - 'A' + 'a') : x;
+                char const ly = (y >= 'A' && y <= 'Z') ? static_cast<char>(y - 'A' + 'a') : y;
+                if (lx != ly) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        if (prefix_ci(s, "bf16", 4)) {
+            return 1;
+        }
+        if (prefix_ci(s, "fp16", 4)) {
+            return 0;
+        }
     }
     for (int32_t i = 0; i < fc->nbFields; ++i) {
         nvinfer1::PluginField const& f = fc->fields[i];
@@ -670,6 +714,11 @@ static int32_t read_baked_io_type_hint(nvinfer1::PluginFieldCollection const* fc
             if (v == 0 || v == 1) {
                 return static_cast<int32_t>(v);
             }
+        } else if (f.type == nvinfer1::PluginFieldType::kFLOAT32 && f.length == 1) {
+            float const v = *static_cast<float const*>(f.data);
+            if (v == 0.f || v == 1.f) {
+                return static_cast<int32_t>(v);
+            }
         }
     }
     return -1;
@@ -687,10 +736,11 @@ public:
             {"hidden_dim", nullptr, nvinfer1::PluginFieldType::kINT32, 1},
             {"inter_dim", nullptr, nvinfer1::PluginFieldType::kINT32, 1},
             {"baked_io_type", nullptr, nvinfer1::PluginFieldType::kINT32, 1},
+            {"mopt_baked_storage", nullptr, nvinfer1::PluginFieldType::kCHAR, 0},
             {"gate_up_weight", nullptr, nvinfer1::PluginFieldType::kFLOAT16, 0},
             {"down_weight", nullptr, nvinfer1::PluginFieldType::kFLOAT16, 0},
         };
-        static nvinfer1::PluginFieldCollection fc{6, fields};
+        static nvinfer1::PluginFieldCollection fc{7, fields};
         return &fc;
     }
 
@@ -712,7 +762,13 @@ public:
     nvinfer1::IPluginV2* createPlugin(
         nvinfer1::AsciiChar const* name, nvinfer1::PluginFieldCollection const* fc) noexcept override {
         (void)name;
-        int32_t const baked_io_hint = read_baked_io_type_hint(fc);
+        int32_t baked_io_hint = read_baked_storage_hint(fc);
+        if (baked_io_hint < 0) {
+            char const* const fo = std::getenv("MODEL_OPTIMIZER_GEMMA_TRT_FORCE_FP16_BAKED");
+            if (fo != nullptr && fo[0] != '\0' && fo[0] != '0') {
+                baked_io_hint = 0;
+            }
+        }
         int32_t act_id = 1;
         int32_t hidden = 0;
         int32_t inter = 0;
@@ -783,6 +839,25 @@ public:
                     break;
                 }
             }
+        }
+        int32_t gate_up_field_ty = -1;
+        if (fc != nullptr && fc->nbFields > 0 && fc->fields != nullptr) {
+            for (int32_t i = 0; i < fc->nbFields; ++i) {
+                nvinfer1::PluginField const& f = fc->fields[i];
+                if (f.name != nullptr && std::strcmp(f.name, "gate_up_weight") == 0) {
+                    gate_up_field_ty = static_cast<int32_t>(f.type);
+                    break;
+                }
+            }
+        }
+        char const* const lg = std::getenv("MODEL_OPTIMIZER_GEMMA_TRT_LOG_CREATEPLUGIN");
+        if (lg != nullptr && lg[0] != '\0' && lg[0] != '0') {
+            std::fprintf(stderr,
+                "[GemmaFusedGatedMlp] v2 createPlugin: baked_hint=%d gate_up.PluginFieldType=%d io_type=%d nbFields=%d "
+                "(embed ONNX string mopt_baked_storage=fp16, or build with "
+                "MODEL_OPTIMIZER_GEMMA_TRT_FORCE_FP16_BAKED=1 if hint=-1)\n",
+                static_cast<int>(baked_io_hint), static_cast<int>(gate_up_field_ty), static_cast<int>(io_type),
+                fc != nullptr ? static_cast<int>(fc->nbFields) : -1);
         }
         return new GemmaFusedGatedMlpPlugin(act_id, hidden, inter, io_type, std::move(gu), std::move(dn));
     }
@@ -867,10 +942,11 @@ public:
             {"inter_dim", nullptr, nvinfer1::PluginFieldType::kINT32, 1},
             {"plugin_version", nullptr, nvinfer1::PluginFieldType::kINT32, 1},
             {"baked_io_type", nullptr, nvinfer1::PluginFieldType::kINT32, 1},
+            {"mopt_baked_storage", nullptr, nvinfer1::PluginFieldType::kCHAR, 0},
             {"gate_up_weight", nullptr, nvinfer1::PluginFieldType::kFLOAT16, 0},
             {"down_weight", nullptr, nvinfer1::PluginFieldType::kFLOAT16, 0},
         };
-        static nvinfer1::PluginFieldCollection fc{7, fields};
+        static nvinfer1::PluginFieldCollection fc{8, fields};
         return &fc;
     }
 
