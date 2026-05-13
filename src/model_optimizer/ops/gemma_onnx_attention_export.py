@@ -23,6 +23,10 @@
   以免与 HF 行为/可视化权重需求不一致。
 - 该补丁通过替换 **已加载** 的 ``modeling_gemma`` 模块中的 ``eager_attention_forward`` 全局函数实现；
   导出结束务必调用 :func:`unpatch_gemma_eager_attention_for_onnx_attention`。
+- **TensorRT 10.14.1** 等对 ONNX ``Attention`` → ``addAttention`` 存在已知缺陷：模型里出现 **第二个及以后** 的
+  ``Attention`` 节点时，可能报错 ``mScopedOps.size() == mGraph.scopedOps.size()``。公开讨论见：
+  https://github.com/NVIDIA/TensorRT/issues/4705 ；issue 作者反馈 **10.15.1+** 已修复该类问题。
+  若你卡在 10.14.x：请 **关闭本导出开关**（回到 MatMul+Softmax 分解图）或 **升级 TensorRT**。
 """
 
 from __future__ import annotations
