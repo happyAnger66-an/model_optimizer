@@ -18,7 +18,8 @@
 说明：
 
 - ``Metadata`` 常为 ``[ONNX Layer: /foo]\\x1f[ONNX Layer: /bar]``（``\\x1f`` 为单元分隔符），脚本会拆出 ONNX 名。
-- 不同 TRT 版本 profile JSON 字段名可能不同；脚本会尝试多种常见键；若对不上请把样例顶层键名发维护者扩展。
+- 不同 TRT 版本 profile JSON 字段名可能不同；脚本会尝试多种常见键（优先 ``averageMs`` / ``medianMs``，
+  ``timeMs`` 多为 **累计** 耗时，见 ``_pick_time_ms``）；若对不上请把样例顶层键名发维护者扩展。
 - 若 profile 条目不含 ``Metadata``，必须用 ``--layer-*`` 提供 layer json 做 **按层名 join**。
 
 用法::
@@ -91,26 +92,37 @@ def _parse_onnx_names_from_metadata(meta: Any) -> list[str]:
 
 
 def _pick_time_ms(row: dict[str, Any]) -> float | None:
-    """从单条 profile / layer 行里抠毫秒级耗时（尽力而为）。"""
-    # 显式常见键（不同 trtexec / 版本）
+    """从单条 profile / layer 行里抠 **单次迭代（或单次 enqueue）均值毫秒**。
+
+    trtexec JSON 里 ``timeMs`` 常为 profiler 窗口内该层 **累计** 耗时（约等于 ``averageMs * count``），
+    与 ``averageMs`` / ``medianMs`` 不同；因此 **优先** 使用后者。若仅有 ``timeMs`` 且带 ``count``，
+    则退回 ``timeMs / count``。
+    """
+    # 显式常见键（不同 trtexec / 版本）；勿把累计 timeMs 放在 average 之前
     for k in (
         "Average time (ms)",
         "average time (ms)",
         "avg_time_ms",
         "averageMs",
         "AverageMs",
-        "timeMs",
+        "medianMs",
+        "Median(ms)",
+        "median_ms",
         "Time (ms)",
         "time_ms",
         "latency_ms",
         "Latency (ms)",
-        "Median(ms)",
-        "median_ms",
         "gpu_ms",
         "GpuMs",
     ):
         if k in row and isinstance(row[k], (int, float)):
             return float(row[k])
+    # 仅有累计 timeMs：尽量按迭代数归一
+    if "timeMs" in row and isinstance(row["timeMs"], (int, float)):
+        cnt = row.get("count")
+        if isinstance(cnt, (int, float)) and float(cnt) > 0.0:
+            return float(row["timeMs"]) / float(cnt)
+        return float(row["timeMs"])
     # 任意包含 time 且单位为 ms 的键
     for k, v in row.items():
         if not isinstance(v, (int, float)):

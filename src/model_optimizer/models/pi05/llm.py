@@ -356,6 +356,10 @@ class LLM(torch.nn.Module, Model):
                 - ``self_forward``（默认）：``torch.onnx.export(self, ...)``，与 :meth:`forward` 一致，走
                   HF 解码器 + 已插入的 attention 量化子模块，输出 ``past_keys`` / ``past_values`` /
                   ``last_hidden_state``；与 PTQ 路径一致，便于 KV FP8 等配置出现在 ONNX 中。
+                  若设置环境变量 ``MODEL_OPTIMIZER_GEMMA_ONNX_ATTENTION_EXPORT=1``，导出时会把
+                  ``modeling_gemma.eager_attention_forward`` 临时替换为 SDPA + ONNX ``Attention`` 符号映射
+                  （见 :mod:`model_optimizer.ops.gemma_onnx_attention_export`），并把 ONNX opset 提升到
+                  ``MODEL_OPTIMIZER_GEMMA_ONNX_OPSET``（默认 23）；仅建议在 **prefix 单次前向** 导出场景使用。
                 - ``native_per_layer``：:class:`GemmaModelNativeOnnxExport`，手写 matmul 注意力、**不**经过
                   HF attention 上的 ``*_bmm_quantizer``；输出 ``last_hidden_state`` + 每层
                   ``present_key_values.{i}``（仅在不依赖 attention 侧 PTQ 时使用）。
@@ -441,18 +445,37 @@ class LLM(torch.nn.Module, Model):
                     "past_values": {0: "past_values_dim0", 2: "seq_len"},
                     "last_hidden_state": {0: "batch_size", 1: "seq_len"},
                 }
-                torch.onnx.export(
-                    self,
-                    (inputs_embeds, attention_mask, position_ids),
-                    onnx_path,
-                    export_params=True,
-                    input_names=input_names,
-                    output_names=output_names,
-                    opset_version=19,
-                    dynamo=dynamo,
-                    do_constant_folding=True,
-                    dynamic_axes=dynamic_axes,
+                from model_optimizer.ops.gemma_onnx_attention_export import (
+                    onnx_attention_export_enabled,
+                    onnx_attention_export_opset,
+                    patch_gemma_eager_attention_for_onnx_attention,
+                    unpatch_gemma_eager_attention_for_onnx_attention,
                 )
+
+                onnx_opset = onnx_attention_export_opset() if onnx_attention_export_enabled() else 19
+                if onnx_attention_export_enabled():
+                    patch_gemma_eager_attention_for_onnx_attention(self.model)
+                    logger.info(
+                        "ONNX export: MODEL_OPTIMIZER_GEMMA_ONNX_ATTENTION_EXPORT enabled "
+                        "(opset=%s, Attention op + SDPA forward for eager path)",
+                        onnx_opset,
+                    )
+                try:
+                    torch.onnx.export(
+                        self,
+                        (inputs_embeds, attention_mask, position_ids),
+                        onnx_path,
+                        export_params=True,
+                        input_names=input_names,
+                        output_names=output_names,
+                        opset_version=int(onnx_opset),
+                        dynamo=dynamo,
+                        do_constant_folding=True,
+                        dynamic_axes=dynamic_axes,
+                    )
+                finally:
+                    if onnx_attention_export_enabled():
+                        unpatch_gemma_eager_attention_for_onnx_attention(self.model)
             else:
                 raise ValueError(
                     f"mode must be 'native_per_layer' or 'self_forward', got {mode!r}"
