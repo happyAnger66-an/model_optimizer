@@ -384,7 +384,7 @@ class LLM(torch.nn.Module, Model):
             register_gemma_fused_gated_mlp_onnx_symbolic_functions()
             logger.info("ONNX export: registered trt::GemmaFusedGatedMlp symbolic (fused MLP export).")
         inputs_embeds = torch.randn((1, 968, 2048),
-                                    dtype=torch.bfloat16,
+                                    dtype=torch.float16,
                                     device="cuda",
                                     )
         attention_mask = torch.randn((1, 1, 968, 968),
