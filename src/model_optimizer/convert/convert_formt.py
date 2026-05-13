@@ -103,7 +103,7 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
             '``.py`` 路径；Pi05 加载 checkpoint 时优先于此项，否则用 ``--model_name`` 的注册前缀。'
         ),
     )
-    parser.add_argument('--mode', type=str, default="native_per_layer")
+    parser.add_argument('--mode', type=str, default="self_forward")
     print(f'[cli] convert_model args {args[1:]}')
     args = parser.parse_args(args[1:])
 
