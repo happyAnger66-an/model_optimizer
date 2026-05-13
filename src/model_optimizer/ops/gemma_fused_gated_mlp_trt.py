@@ -88,7 +88,7 @@ def init_trt_plugins_after_load(logger: trt.ILogger | None = None) -> None:
 def build_gemma_fused_gated_mlp_engine_from_onnx(
     onnx_path: str | Path,
     *,
-    workspace_bytes: int = 1 << 28,
+    workspace_bytes: int = 1 << 30,
     logger: trt.ILogger | None = None,
     use_bf16: bool = False,
     diagnostics_out: list[str] | None = None,
@@ -96,6 +96,11 @@ def build_gemma_fused_gated_mlp_engine_from_onnx(
     """解析 ONNX（含 ``trt::GemmaFusedGatedMlp``）并序列化引擎；失败时返回 ``None``。
 
     若传入 ``diagnostics_out``，会把 ONNX 解析错误、建引擎失败等说明追加到该列表（便于打印到 stderr）。
+
+    ``workspace_bytes`` 默认 **1GiB**：插件 ``getWorkspaceSize`` 含大块中间缓冲与约 **512MiB** 的
+    cuBLASLt 偏好区（见 ``gemma_fused_gated_mlp_cuda.cu`` 的 ``kLtPrefWorkspaceBytes``）。若全局
+    workspace 池过小，推理期 ``enqueue`` 会得到不足的 ``workspace`` 并返回 ``rc=3``，TensorRT
+    表现为 ``pluginV2DynamicExtRunner`` Internal Error。
     """
 
     def diag(msg: str) -> None:

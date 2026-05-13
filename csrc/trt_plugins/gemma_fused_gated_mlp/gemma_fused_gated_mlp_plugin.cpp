@@ -319,21 +319,20 @@ public:
             nvinfer1::DataType const xt = inputDesc[0].type;
             bool const ok = (m_io_type == 1) ? (xt == nvinfer1::DataType::kBF16) : (xt == nvinfer1::DataType::kHALF);
             if (!ok) {
-                if (gemma_trt_plugin_verbose()) {
-                    std::fprintf(stderr,
-                        "[GemmaFusedGatedMlp] v2 enqueue: input type %s incompatible with baked weights "
-                        "(need %s for io_type=%d)\n",
-                        data_type_str(xt), (m_io_type == 1) ? "bf16" : "fp16", static_cast<int>(m_io_type));
-                }
+                std::fprintf(stderr,
+                    "[GemmaFusedGatedMlp] v2 enqueue: baked weights io_type=%d (%s) but input x is %s. "
+                    "GEMM requires the same dtype: re-embed ONNX with fp16 initializers for FP16 engines, "
+                    "or use bf16 activations + bf16/baked-from-fp32 weights. "
+                    "Set MODEL_OPTIMIZER_GEMMA_TRT_PLUGIN_VERBOSE=1 for configurePlugin details.\n",
+                    static_cast<int>(m_io_type), (m_io_type == 1) ? "bf16" : "fp16", data_type_str(xt));
                 return 6;
             }
             int32_t const up = upload_baked_weights_to_device();
             if (up != 0) {
-                if (gemma_trt_plugin_verbose()) {
-                    std::fprintf(stderr,
-                        "[GemmaFusedGatedMlp] v2 enqueue: upload_baked_weights_to_device rc=%d\n",
-                        static_cast<int>(up));
-                }
+                std::fprintf(stderr,
+                    "[GemmaFusedGatedMlp] v2 enqueue: upload_baked_weights_to_device rc=%d "
+                    "(-1=empty host, -2=cudaMalloc, -3=cudaMemcpy H2D).\n",
+                    static_cast<int>(up));
                 return 7;
             }
         }
@@ -343,13 +342,18 @@ public:
         (void)cudaGetLastError();
         int const st = gemma_fused_gated_mlp_cuda(
             stream, m_act_id, io, m, hidden, inter, inputs[0], wgu, wdn, outputs[0], workspace, need);
-        if (st != 0 && gemma_trt_plugin_verbose()) {
+        if (st != 0) {
             std::fprintf(stderr,
-                "[GemmaFusedGatedMlp] enqueue failed: st=%d m=%d hidden=%d inter=%d io=%d baked=%d workspace=%p "
-                "need=%zu\n",
+                "[GemmaFusedGatedMlp] enqueue: gemma_fused_gated_mlp_cuda rc=%d "
+                "(1=cuda err,2=bad dims,3=workspace too small/null,4=bad io_type,20=Lt ws cap; 10+=cublas status). "
+                "m=%d hidden=%d inter=%d io=%d baked=%d need_ws=%zu workspace=%p\n",
                 st, static_cast<int>(m), static_cast<int>(hidden), static_cast<int>(inter), static_cast<int>(io),
-                static_cast<int>(m_baked_weights ? 1 : 0), static_cast<void const*>(workspace),
-                static_cast<size_t>(need));
+                static_cast<int>(m_baked_weights ? 1 : 0), static_cast<size_t>(need),
+                static_cast<void const*>(workspace));
+            if (gemma_trt_plugin_verbose()) {
+                cudaError_t const ce = cudaGetLastError();
+                std::fprintf(stderr, "  cudaGetLastError=%s\n", cudaGetErrorString(ce));
+            }
         }
         return st;
     }
