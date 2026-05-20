@@ -24,6 +24,10 @@ The code was tested in the following environments
 
 ### 2.1 Installation
 
+```bash
+python setup.py sdist
+```
+
 #### 2.1.1 `download code`
 
 ```bash

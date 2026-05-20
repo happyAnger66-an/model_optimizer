@@ -6,12 +6,16 @@
 # ``serve_policy`` 一致（``load_train_config``：注册名或 ``TrainConfig`` 的 ``.py``）。
 
 import json
+import logging
 import os
 import pathlib
 import shutil
-from typing import Literal
+from typing import Any, Literal
 
+from flax import traverse_util
 from flax.nnx import traversals
+import jax
+import jax.numpy as jnp
 import numpy as np
 import orbax.checkpoint as ocp
 import safetensors
@@ -24,6 +28,105 @@ import openpi.models_pytorch.pi0_pytorch
 from openpi.training import utils
 
 from model_optimizer.openpi_train_config import load_train_config
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_restore_dtype(dtype: str | jnp.dtype | np.dtype | None):
+    if dtype is None:
+        return None
+    if isinstance(dtype, str):
+        return np.dtype(dtype)
+    return dtype
+
+
+def _orbax_restore_item_from_metadata(metadata: Any) -> dict[str, Any]:
+    """Build ``{"params": <pytree>}`` for ``PyTreeRestore`` from orbax metadata.
+
+    Older orbax returns a dict (``metadata["params"]``). Newer orbax returns
+    ``StepMetadata`` with ``item_metadata`` (see orbax-checkpoint >= 0.12).
+    """
+    try:
+        return {"params": metadata["params"]}
+    except TypeError:
+        pass
+
+    item_metadata = getattr(metadata, "item_metadata", None)
+    if item_metadata is None:
+        raise TypeError(
+            f"Unsupported orbax metadata type {type(metadata)!r}. "
+            "Install openpi-pinned orbax: uv pip install 'orbax-checkpoint==0.11.13'"
+        ) from None
+
+    if isinstance(item_metadata, dict):
+        params_meta = item_metadata.get("params", item_metadata)
+    else:
+        try:
+            params_meta = item_metadata["params"]
+        except (TypeError, KeyError):
+            params_meta = getattr(item_metadata, "params", item_metadata)
+
+    if hasattr(params_meta, "as_nested_tree"):
+        params_tree = params_meta.as_nested_tree()
+    elif isinstance(params_meta, dict):
+        params_tree = params_meta
+    else:
+        params_tree = params_meta
+
+    return {"params": params_tree}
+
+
+def restore_orbax_params(
+    params_path: pathlib.Path | str,
+    *,
+    restore_type: type[np.ndarray] | type[jax.Array] = jax.Array,
+    dtype: str | jnp.dtype | np.dtype | None = None,
+    sharding: jax.sharding.Sharding | None = None,
+) -> dict[str, Any]:
+    """Restore OpenPI ``params/`` subtree; compatible with old and new orbax metadata."""
+    params_path = (
+        pathlib.Path(params_path).resolve()
+        if not str(params_path).startswith("gs://")
+        else params_path
+    )
+    dtype = _parse_restore_dtype(dtype)
+
+    if restore_type is jax.Array and sharding is None:
+        mesh = jax.sharding.Mesh(jax.devices(), ("x",))
+        sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
+
+    try:
+        return openpi.models.model.restore_params(
+            params_path, restore_type=restore_type, dtype=dtype, sharding=sharding
+        )
+    except TypeError as exc:
+        if "subscriptable" not in str(exc) and "StepMetadata" not in str(exc):
+            raise
+        logger.warning(
+            "openpi restore_params failed (%s); using orbax StepMetadata-compatible restore",
+            exc,
+        )
+
+    with ocp.PyTreeCheckpointer() as ckptr:
+        metadata = ckptr.metadata(params_path)
+        item = _orbax_restore_item_from_metadata(metadata)
+        params = ckptr.restore(
+            params_path,
+            ocp.args.PyTreeRestore(
+                item=item,
+                restore_args=jax.tree.map(
+                    lambda _: ocp.ArrayRestoreArgs(
+                        sharding=sharding, restore_type=restore_type, dtype=dtype
+                    ),
+                    item,
+                ),
+            ),
+        )["params"]
+
+    flat_params = traverse_util.flatten_dict(params)
+    if flat_params and all(kp[-1] == "value" for kp in flat_params):
+        flat_params = {kp[:-1]: v for kp, v in flat_params.items()}
+    return traverse_util.unflatten_dict(flat_params)
 
 
 def slice_paligemma_state_dict(state_dict, config):
@@ -468,9 +571,10 @@ def slice_initial_orbax_checkpoint(
     """Load and process params by restoring via JAX model loader first.
     This respects dtype conversions that occur during model restore.
     """
-    # Use repository restore utility to load a pure dict of params (value suffix removed)
-    params = openpi.models.model.restore_params(
-        f"{checkpoint_dir}/params/", restore_type=np.ndarray, dtype=restore_precision
+    params = restore_orbax_params(
+        f"{checkpoint_dir}/params/",
+        restore_type=np.ndarray,
+        dtype=restore_precision,
     )
 
     return {
@@ -491,10 +595,8 @@ def load_jax_model_and_print_keys(checkpoint_dir: str):
         if not checkpoint_dir.startswith("gs://")
         else checkpoint_dir
     )
-    # Initialize checkpointer
-    checkpointer = ocp.PyTreeCheckpointer()
-    metadata = checkpointer.metadata(f"{checkpoint_dir}/params")
-    print(utils.array_tree_to_info(metadata))
+    params = restore_orbax_params(f"{checkpoint_dir}/params/", restore_type=np.ndarray)
+    print(utils.array_tree_to_info(params))
 
 
 def convert_pi0_checkpoint(
