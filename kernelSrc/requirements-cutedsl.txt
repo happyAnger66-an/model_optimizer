@@ -1,0 +1,5 @@
+nvidia-cutlass-dsl==4.4.1
+cuda-python>=12.0
+# Pick one cupy variant matching your CUDA version:
+# cupy-cuda12x==12.3.0
+# cupy-cuda13x==13.6.0

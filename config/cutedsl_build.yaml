@@ -1,0 +1,7 @@
+groups:
+  - fmha
+gpu_arch: sm_110
+arch: null
+output_dir: cpp/kernels/cuteDSLArtifact
+jobs: 2
+clean: false
