@@ -4,9 +4,6 @@
 			"path": "."
 		},
 		{
-			"path": "../../e2e/TensorRT-LLM"
-		},
-		{
 			"path": "../../e2e/TensorRT"
 		},
 		{
@@ -23,6 +20,12 @@
 		},
 		{
 			"path": "../TensorRT-Edge-LLM"
+		},
+		{
+			"path": "../TensorRT-LLM"
+		},
+		{
+			"path": "../ffpa-attn"
 		}
 	],
 	"settings": {}
