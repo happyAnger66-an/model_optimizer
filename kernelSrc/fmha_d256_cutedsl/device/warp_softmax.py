@@ -46,19 +46,75 @@ def softmax_warp_body(self,
     mma_s_consumer, p_mma_producer, s_corr_producer, sum_producer,
     tile_sched_params,
 ):
+    """Softmax warp role in the warp-specialized FMHA pipeline.
+
+    This function runs only on the softmax warp group inside the top-level
+    FMHA kernel.  The full FMHA pipeline is split across warp roles:
+
+      load / transform warps:
+        move Q/K/V tiles into SMEM and, for mixed-input variants, dequantize KV
+      mma warp:
+        computes score tiles S = Q @ K^T into TMEM
+      softmax warps:
+        consume S tiles, apply mask + numerically stable softmax, and produce
+        probability tiles P for the MMA warp to compute P @ V
+      correction warps:
+        rescale older partial outputs when the running row max changes, then
+        normalize by the final row sum and write O
+
+    The softmax work is streaming over the K/V dimension.  For each Q tile
+    assigned by the static tile scheduler, the function iterates over all score
+    tiles along K/V, maintaining the per-row softmax statistics:
+
+      row_max = running max(S)
+      row_sum = running sum(exp2((S - row_max) * scale))
+
+    ``softmax_step`` performs one S-tile -> P-tile conversion and also sends
+    enough row-max metadata to the correction warps so that previously computed
+    partial O tiles can be rescaled if a later K/V tile increases ``row_max``.
+    After all K/V tiles for the current Q tile have been processed, ``store_sum``
+    publishes the final denominator to correction warps for the final
+    ``scale_output / row_sum`` normalization.
+    """
+    # The softmax role is register-heavy: it keeps row statistics, fragments of
+    # S/P, and temporary reductions live at the same time.  Request the role's
+    # tuned register budget before doing any per-tile work.
     cute.arch.setmaxregister_increase(self.num_regs_softmax)
+
+    # Recreate the same static tile scheduler used by the other warp roles in
+    # this CTA.  All roles walk the same work-tile sequence, but each role only
+    # performs its own pipeline stage for the current tile.
     tile_sched = fmha_utils.create_fmha_static_tile_scheduler(
         tile_sched_params, cute.arch.block_idx(), cute.arch.grid_dim()
     )
     work_tile = tile_sched.initial_work_tile_info()
+
+    # TMEM is allocated by the MMA/correction side.  Softmax consumes score
+    # fragments from TMEM and writes probability fragments back to TMEM, so it
+    # must not touch TMEM until the allocation permit has been granted.
     tmem.wait_for_alloc()
+
+    # One loop iteration handles one scheduler-assigned output tile:
+    #   curr_block_coord[0] -> Q tile coordinate
+    #   curr_block_coord[1] -> head / KV tile scheduler dimension
+    #   curr_block_coord[2] -> batch dimension
+    # The exact semantic mapping is defined by FmhaStaticTileScheduler.
     while work_tile.is_valid_tile:
         curr_block_coord = work_tile.tile_idx
+
+        # ``curr_block_coord[0]`` includes the 2-CTA MMA partitioning dimension.
+        # Fold it back to the logical MMA tile coordinate used by mask/trip-count
+        # helpers.  The other coordinates are already logical head/batch coords.
         mma_block_coord = (
             curr_block_coord[0] // cute.size(qk_tiled_mma.thr_id.shape),
             curr_block_coord[1],
             curr_block_coord[2],
         )
+
+        # Number of K/V score tiles that this Q tile must visit.  The masking
+        # helper accounts for sequence lengths, causal/window masks, and
+        # bottom-right alignment, so the softmax loop skips tiles that can never
+        # contribute.
         seqlen_kv_loop_steps = fmha_utils.FusedMask.get_trip_count(
             self.mask_type,
             mma_block_coord,
@@ -68,6 +124,11 @@ def softmax_warp_body(self,
             window_size_left,
             window_size_right,
         )
+
+        # Prefix of the K/V loop that is known to be fully unmasked.  For those
+        # steps ``softmax_step`` can avoid elementwise predicate checks and use
+        # a faster path.  Steps >= ``unmask_steps`` may need causal/sliding-window
+        # predicates.
         unmask_steps = fmha_utils.FusedMask.get_unmasked_trip_count(
             self.mask_type,
             mma_block_coord,
@@ -77,6 +138,12 @@ def softmax_warp_body(self,
             window_size_left,
             window_size_right,
         )
+
+        # Build coordinate tensors for the score tile S.  ``cS_base`` is local
+        # to a logical QK MMA tile, and ``domain_offset`` shifts it to the
+        # absolute Q-row coordinate for this work tile.  These coordinates are
+        # later used by ``softmax_step`` for masking and by partition_C to map
+        # the warp's fragment view onto the TMEM score layout.
         cS_base = cute.make_identity_tensor(
             (self.qk_mma_tiler[0], self.qk_mma_tiler[1])
         )
@@ -84,13 +151,33 @@ def softmax_warp_body(self,
             (mma_block_coord[0] * self.qk_mma_tiler[0], 0), cS_base
         )
         tScS = qk_thr_mma.partition_C(cS)
+
+        # Running softmax statistics for the current Q tile.  The algorithm is
+        # online/stable over K/V tiles:
+        #   new_max = max(old_max, max(S_i))
+        #   new_sum = old_sum * exp2((old_max - new_max) * scale)
+        #             + sum(exp2((S_i - new_max) * scale))
+        # ``row_max_prev`` is passed into softmax_step so the correction stage
+        # knows how to rescale already accumulated O partials.
         row_max = -Float32.inf
         row_max_prev = -Float32.inf
         row_sum = 0.0
+
+        # Stream over all contributing K/V tiles.  The MMA warp produces one
+        # score tile S_i per step via ``mma_s_consumer``.  The softmax warp
+        # consumes S_i, writes a probability tile P_i for the MMA warp via
+        # ``p_mma_producer``, and publishes row-max transition metadata to the
+        # correction warp via ``s_corr_producer``.
         for step in cutlass.range(seqlen_kv_loop_steps, unroll=1):
+            # Shift the score coordinates to the current K/V tile.  The row
+            # coordinate remains fixed for this Q tile, while the column
+            # coordinate advances by the QK MMA N tile size.
             cS_iter = cute.domain_offset((0, step * self.qk_mma_tiler[1]), cS)
             tScS_iter = qk_thr_mma.partition_C(cS_iter)
-            # Si -> Pi
+
+            # Convert score tile S_i to probability tile P_i, updating the
+            # online softmax statistics and all producer/consumer pipeline
+            # tokens touched by this step.
             (
                 row_max,
                 row_sum,
@@ -109,10 +196,26 @@ def softmax_warp_body(self,
                 (tStS, tScS_iter),
                 (mma_s_consumer, p_mma_producer, s_corr_producer),
             )
+
+            # Save the current running max for the next step.  If a later tile
+            # increases the max, ``softmax_step`` tells correction warps how
+            # much already-computed O partials must be rescaled.
             row_max_prev = row_max
+
+        # All K/V steps for this Q tile are done.  Publish the final denominator
+        # to the correction epilogue; it will use this value to normalize and
+        # write the final O tile.
         sum_producer = self.store_sum(row_sum, sSum, sum_producer)
+
+        # Advance this role to the next tile assigned by the static scheduler.
+        # Other warp roles perform the same scheduler advance after finishing
+        # their own responsibilities for the same work tile.
         tile_sched.advance_to_next_work()
         work_tile = tile_sched.get_current_work()
+
+    # No more P tiles or correction-stat tiles will be produced by this softmax
+    # role.  Tail the producer pipelines so downstream MMA/correction consumers
+    # can drain cleanly instead of waiting for more stages.
     p_mma_producer.tail()
     s_corr_producer.tail()
 
@@ -256,11 +359,52 @@ def softmax_step(
 
 @cute.jit
 def store_sum(self, row_sum, sSum, sum_producer):
+        """Publish the final softmax row sum to correction warps.
+
+        ``softmax_step`` computes the numerically stable denominator for one
+        logical attention row handled by the current softmax thread.  The
+        correction epilogue needs exactly the same denominator to normalize the
+        accumulated ``P @ V`` partial output:
+
+            O = accumulated_output * (scale_output / row_sum)
+
+        ``sSum`` is a small shared-memory handoff buffer indexed by the
+        softmax-lane id.  ``sum_producer`` is the producer side of a one-stage
+        PipelineAsync created between the softmax warp group and the correction
+        warp group.  This function writes the denominator into shared memory and
+        commits the pipeline stage so the correction warp can safely consume it.
+        """
+        # ``tidx`` is the CTA-wide thread id.  Only the softmax warp group
+        # participates in this producer pipeline, so remap the CTA-wide id into
+        # a dense [0, num_softmax_threads) index.  The correction side uses the
+        # same mapping before reading ``sSum[thread_idx]``; this keeps a
+        # one-to-one correspondence between a softmax producer thread and the
+        # correction consumer thread responsible for that row fragment.
         tidx, _, _ = cute.arch.thread_idx()
         thread_idx = tidx % (self.threads_per_warp * len(self.softmax_warp_ids))
+
+        # Reserve the single shared-memory pipeline slot.  ``acquire`` provides
+        # producer/consumer ordering against the correction warp's
+        # ``wait_and_advance``; ``advance`` moves this producer state to the
+        # stage that will be committed below.
         sum_handle = sum_producer.acquire_and_advance()
+
+        # Store the final denominator for this row/lane.  At this point
+        # ``row_sum`` already includes all KV-loop contributions and the
+        # rescaling needed when the running row max changed between tiles.
         sSum[thread_idx] = row_sum
+
+        # Make the shared-memory write visible before committing the pipeline
+        # transaction.  Without this fence, the correction warp could observe
+        # the committed barrier and read stale ``sSum`` data.
         cute.arch.fence_view_async_shared()
+
+        # Signal that ``sSum[thread_idx]`` is ready.  The correction epilogue
+        # waits on the matching consumer handle, reads the row sum, then
+        # releases the stage.
         sum_handle.commit()
+
+        # Return the advanced producer token so the caller keeps the pipeline
+        # state in sync across work tiles.
         return sum_producer
 
