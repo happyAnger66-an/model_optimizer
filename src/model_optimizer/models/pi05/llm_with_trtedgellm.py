@@ -779,7 +779,8 @@ class LLMWithTrtEdgeLLM(nn.Module, Model):
         llm_model.model.config._attn_implementation = "eager"
         return llm_model
 
-    def export(self, export_dir, dynamo=True):
+    def export(self, export_dir, dynamo=True, mode=None):
+        del mode  # Edge attention plugin 仅一种导出路径；与 convert_formt CLI 兼容
         self.eval().cuda()
         output_dir = export_dir
         os.makedirs(output_dir, exist_ok=True)

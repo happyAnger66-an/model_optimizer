@@ -229,7 +229,8 @@ class LLMWithCuteDsl(nn.Module, Model):
         bundle = Pi05CuteDslLanguageModel(hf, wrap_attention=True)
         return cls(paligemma.config.text_config, bundle)
 
-    def export(self, export_dir, dynamo=True):
+    def export(self, export_dir, dynamo=True, mode=None):
+        del mode  # CuTe DSL 仅一种 plugin 导出路径；与 convert_formt CLI 兼容
         self.eval().cuda()
         os.makedirs(export_dir, exist_ok=True)
         start = time.time()
