@@ -1,6 +1,7 @@
 # 1. AOT 编译（需 SM100/SM110 GPU + cutlass-dsl 4.4.1）
 pip install -r kernelSrc/requirements-cutedsl.txt
-model-optimizer-cli kernels build --config config/cutedsl_build.yaml
+model-optimizer-cli kernels --config config/cutedsl_build.yaml
+# 或（等价）: model-optimizer-cli kernels build --config config/cutedsl_build.yaml
 
 # 2. 构建 Plugin
 mkdir -p cpp/build && cd cpp/build

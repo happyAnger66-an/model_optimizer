@@ -14,7 +14,15 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def _normalize_kernels_argv(argv: list[str] | None) -> list[str]:
+    """``kernels build --config ...`` 与 ``kernels --config ...`` 等价（文档曾写 build 子命令）。"""
+    if argv and argv[0] == "build":
+        return argv[1:]
+    return list(argv) if argv is not None else []
+
+
 def kernels_build_cli(argv: list[str] | None = None) -> None:
+    argv = _normalize_kernels_argv(argv)
     parser = argparse.ArgumentParser(description="Build CuTe DSL AOT kernel artifacts")
     parser.add_argument(
         "--config",

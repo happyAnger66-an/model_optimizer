@@ -572,6 +572,7 @@ def _call_llm(
     stream: cuda.CUstream,
 ):
     """LLM entry: BSHD Q/O + packed KV cache ``(B, 2, H_k, cap, D)``."""
+    self._setup_attributes()
     scale_softmax = scale_q * scale_k * Float32(self.inv_sqrt_head_dim)
     scale_softmax_log2 = scale_softmax * Float32(self.log2_e)
     scale_output = scale_v * inv_scale_o
