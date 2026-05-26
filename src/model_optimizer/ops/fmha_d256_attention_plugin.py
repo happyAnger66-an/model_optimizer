@@ -163,7 +163,7 @@ class FmhaD256Attention(torch.nn.Module):
         kv_cache = past_key_value
         use_fp16 = 1 if self.use_fp16 else 0
 
-        return torch.ops.model_opt.fmha_d256_attention(
+        attn_bshd, kv_cache_out = torch.ops.model_opt.fmha_d256_attention(
             q_bshd,
             kv_cache,
             cu_kv_seqlens,
@@ -172,6 +172,10 @@ class FmhaD256Attention(torch.nn.Module):
             head_dim,
             use_fp16,
         )
+        # Plugin 输出 [B, S, H, D]；与 HF Gemma 一致，经 o_proj 回到 hidden_size。
+        attn_out = attn_bshd.reshape(bsz, seq_len, -1)
+        attn_out = attn.o_proj(attn_out)
+        return attn_out, kv_cache_out
 
     def __getattr__(self, name: str):
         try:
