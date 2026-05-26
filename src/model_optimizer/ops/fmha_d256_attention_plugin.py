@@ -159,8 +159,14 @@ class FmhaD256Attention(torch.nn.Module):
 
         # BSHD for plugin: [B, S, H, D]
         q_bshd = q.transpose(1, 2).contiguous()
-        # Append new K/V into packed cache slice — export graph passes full cache tensor.
-        kv_cache = past_key_value
+        # Packed KV cache for the CuTe DSL LLM ABI: [B, 2, H_kv, S, D].
+        #
+        # The plugin consumes K/V from this packed cache directly. Passing the
+        # placeholder ``past_key_value`` here would make the kernel read random
+        # trtexec input/output memory instead of the freshly projected K/V,
+        # which can lead to invalid attention data or kernel-side deadlock.
+        del past_key_value
+        kv_cache = torch.stack((k, v), dim=1).contiguous()
         use_fp16 = 1 if self.use_fp16 else 0
 
         attn_bshd, kv_cache_out = torch.ops.model_opt.fmha_d256_attention(

@@ -130,7 +130,6 @@ class GemmaModelCuteDslOnnxExport(nn.Module):
             )
 
         bsz, seq_len, _ = hidden_states.shape
-        past_len = seq_len
         past_list: list[torch.Tensor] = []
         for _ in gemma.layers:
             past_list.append(
@@ -138,14 +137,19 @@ class GemmaModelCuteDslOnnxExport(nn.Module):
                     bsz,
                     2,
                     num_kv_heads,
-                    past_len,
+                    seq_len,
                     head_dim,
                     dtype=torch.float16,
                     device=device,
                 )
             )
 
-        cu_kv_seqlens = torch.arange(bsz + 1, dtype=torch.int32, device=device) * (past_len + seq_len)
+        # The packed KV cache built inside FmhaD256Attention contains exactly
+        # the current prefill sequence.  ``cu_kv_seqlens`` must therefore end at
+        # ``seq_len`` for B=1.  Using ``2 * seq_len`` makes the kernel believe
+        # the cache has more valid tokens than its capacity, which can cause
+        # out-of-bounds reads or pipeline deadlock.
+        cu_kv_seqlens = torch.arange(bsz + 1, dtype=torch.int32, device=device) * seq_len
 
         for layer_idx, layer in enumerate(gemma.layers):
             residual = hidden_states
