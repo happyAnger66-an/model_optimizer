@@ -564,7 +564,7 @@ def _call_llm(
     kv_cache: cute.Tensor,
     o_tensor: cute.Tensor,
     cum_seqlen_k: cute.Tensor,
-    window_size_left: Optional[Int32],
+    window_size_left: Int32,
     scale_q: Float32,
     scale_k: Float32,
     scale_v: Float32,
