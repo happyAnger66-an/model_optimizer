@@ -12,7 +12,7 @@ if(NOT DEFINED TRT_PACKAGE_DIR)
   message(FATAL_ERROR "Set -DTRT_PACKAGE_DIR=/path/to/TensorRT")
 endif()
 
-find_package(CUDA REQUIRED)
+find_package(CUDAToolkit REQUIRED)
 
 include(cmake/CuteDsl.cmake)
 
@@ -22,6 +22,11 @@ add_library(model_opt_kernels STATIC
 
 target_include_directories(model_opt_kernels PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/kernels
+)
+
+target_link_libraries(model_opt_kernels PUBLIC
+  CUDA::cudart
+  CUDA::cuda_driver
 )
 
 cute_dsl_setup(
@@ -43,8 +48,6 @@ target_include_directories(model_opt_plugin PRIVATE
 target_link_libraries(model_opt_plugin PRIVATE
   model_opt_kernels
   ${TRT_PACKAGE_DIR}/lib/libnvinfer.so
-  ${CUDA_LIBRARIES}
-  ${CUDA_CUDA_LIBRARY}
 )
 
 set_target_properties(model_opt_plugin PROPERTIES
