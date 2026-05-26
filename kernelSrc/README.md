@@ -13,7 +13,11 @@ cmake --build cpp/build/ -j 10
 ```
 
 # 3. 导出 ONNX（π0.5 LLM，含 FmhaD256AttentionPlugin）
+```bash
 model-optimizer-cli export --model_name pi05_libero/llm_with_cutedsl ...
+```
 
 # 4. TRT 建引擎
+```bash
 model-optimizer-cli build --build_cfg config/build_configs/llm_cutedsl_build_cfg.py ...
+```
