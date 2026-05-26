@@ -229,7 +229,7 @@ class LLMWithCuteDsl(nn.Module, Model):
         bundle = Pi05CuteDslLanguageModel(hf, wrap_attention=True)
         return cls(paligemma.config.text_config, bundle)
 
-    def export(self, export_dir, dynamo=True, mode=None):
+    def export(self, export_dir, dynamo=False, mode=None):
         del mode  # CuTe DSL 仅一种 plugin 导出路径；与 convert_formt CLI 兼容
         self.eval().cuda()
         os.makedirs(export_dir, exist_ok=True)
@@ -252,16 +252,18 @@ class LLMWithCuteDsl(nn.Module, Model):
                 "opset_version": 19,
                 "dynamo": dynamo,
                 "do_constant_folding": True,
-                "dynamic_axes": {
+            }
+            # 自定义 TRT 插件：与 LLMWithTrtEdgeLLM 一致，默认 legacy trace（dynamo=False）更稳。
+            if not dynamo:
+                export_kwargs["dynamic_axes"] = {
                     "inputs_embeds": {0: "batch_size", 1: "seq_len"},
                     "attention_mask": {0: "batch_size", 2: "seq_len", 3: "seq_len"},
                     "position_ids": {0: "batch_size", 1: "seq_len"},
                     "past_keys": {2: "seq_len"},
                     "past_values": {2: "seq_len"},
                     "last_hidden_state": {0: "batch_size", 1: "seq_len"},
-                },
-            }
-            if dynamo:
+                }
+            else:
                 tbl = fmha_d256_attention_custom_translation_table()
                 if tbl:
                     export_kwargs["custom_translation_table"] = tbl
@@ -284,7 +286,7 @@ class LLMWithCuteDsl(nn.Module, Model):
     def export_onnx(cls, pi_model, export_dir):
         del pi_model.paligemma_with_expert.gemma_expert
         llm_model = cls.construct_model(pi_model, dtype=torch.float16)
-        llm_model.export(export_dir, dynamo=True)
+        llm_model.export(export_dir, dynamo=False)
         return llm_model
 
     def val(self, val_data, batch_size, output_dir):

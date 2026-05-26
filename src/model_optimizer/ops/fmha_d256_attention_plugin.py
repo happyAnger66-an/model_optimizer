@@ -13,6 +13,30 @@ ONNX_OPSET = 19
 _PLUGIN_REGISTERED = False
 
 
+def gemma_attention_head_dims(native_attn: torch.nn.Module) -> tuple[int, int, int]:
+    """``(num_q_heads, num_kv_heads, head_dim)`` for HF ``GemmaAttention`` / OpenPI 变体。"""
+    cfg = getattr(native_attn, "config", None)
+    if cfg is not None:
+        num_q_heads = int(cfg.num_attention_heads)
+        num_kv_heads = int(cfg.num_key_value_heads)
+        head_dim = getattr(cfg, "head_dim", None)
+        if head_dim is None:
+            head_dim = int(cfg.hidden_size) // num_q_heads
+        else:
+            head_dim = int(head_dim)
+        return num_q_heads, num_kv_heads, head_dim
+
+    num_q_heads = getattr(native_attn, "num_heads", None)
+    num_kv_heads = getattr(native_attn, "num_key_value_heads", None)
+    head_dim = getattr(native_attn, "head_dim", None)
+    if num_q_heads is None or num_kv_heads is None or head_dim is None:
+        raise AttributeError(
+            f"Cannot resolve attention head dims from {type(native_attn)!r}; "
+            "expected .config (Gemma) or .num_heads/.num_key_value_heads/.head_dim"
+        )
+    return int(num_q_heads), int(num_kv_heads), int(head_dim)
+
+
 def _register_torch_op() -> None:
     global _PLUGIN_REGISTERED
     if _PLUGIN_REGISTERED:
@@ -109,6 +133,10 @@ class FmhaD256Attention(torch.nn.Module):
         super().__init__()
         self.native = native_attn
         self.use_fp16 = use_fp16
+        num_q_heads, num_kv_heads, head_dim = gemma_attention_head_dims(native_attn)
+        self._num_q_heads = num_q_heads
+        self._num_kv_heads = num_kv_heads
+        self._head_dim = head_dim
         _register_torch_op()
 
     def forward(
@@ -119,9 +147,9 @@ class FmhaD256Attention(torch.nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         attn = self.native
         bsz, seq_len, _ = hidden_states.shape
-        head_dim = attn.head_dim
-        num_q_heads = attn.num_heads
-        num_kv_heads = attn.num_key_value_heads
+        head_dim = self._head_dim
+        num_q_heads = self._num_q_heads
+        num_kv_heads = self._num_kv_heads
 
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, head_dim)
