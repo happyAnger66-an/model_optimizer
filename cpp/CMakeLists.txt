@@ -8,11 +8,53 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 
-if(NOT DEFINED TRT_PACKAGE_DIR)
-  message(FATAL_ERROR "Set -DTRT_PACKAGE_DIR=/path/to/TensorRT")
-endif()
+set(TRT_PACKAGE_DIR "" CACHE PATH "TensorRT package root, include dir, or lib dir")
 
 find_package(CUDAToolkit REQUIRED)
+
+find_path(NVINFER_INCLUDE_DIR
+  NAMES NvInfer.h
+  HINTS
+    ${TRT_PACKAGE_DIR}/include
+    ${TRT_PACKAGE_DIR}
+    /usr/include
+    /usr/include/aarch64-linux-gnu
+    /usr/local/include
+)
+
+find_library(NVINFER_LIBRARY
+  NAMES nvinfer
+  HINTS
+    ${TRT_PACKAGE_DIR}/lib
+    ${TRT_PACKAGE_DIR}/lib64
+    ${TRT_PACKAGE_DIR}
+    /usr/lib
+    /usr/lib/aarch64-linux-gnu
+    /usr/local/lib
+)
+
+find_library(NVINFER_PLUGIN_LIBRARY
+  NAMES nvinfer_plugin
+  HINTS
+    ${TRT_PACKAGE_DIR}/lib
+    ${TRT_PACKAGE_DIR}/lib64
+    ${TRT_PACKAGE_DIR}
+    /usr/lib
+    /usr/lib/aarch64-linux-gnu
+    /usr/local/lib
+)
+
+if(NOT NVINFER_INCLUDE_DIR OR NOT NVINFER_LIBRARY)
+  message(FATAL_ERROR
+    "TensorRT not found. Set -DTRT_PACKAGE_DIR to the TensorRT root, include dir, "
+    "or lib dir. Found include='${NVINFER_INCLUDE_DIR}', lib='${NVINFER_LIBRARY}'")
+endif()
+
+message(STATUS "TensorRT include: ${NVINFER_INCLUDE_DIR}")
+message(STATUS "TensorRT nvinfer: ${NVINFER_LIBRARY}")
+if(NVINFER_PLUGIN_LIBRARY)
+  message(STATUS "TensorRT nvinfer_plugin: ${NVINFER_PLUGIN_LIBRARY}")
+endif()
 
 include(cmake/CuteDsl.cmake)
 
@@ -40,15 +82,19 @@ add_library(model_opt_plugin SHARED
 )
 
 target_include_directories(model_opt_plugin PRIVATE
-  ${TRT_PACKAGE_DIR}/include
+  ${NVINFER_INCLUDE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/plugins
   ${CMAKE_CURRENT_SOURCE_DIR}/kernels
 )
 
 target_link_libraries(model_opt_plugin PRIVATE
   model_opt_kernels
-  ${TRT_PACKAGE_DIR}/lib/libnvinfer.so
+  ${NVINFER_LIBRARY}
 )
+
+if(NVINFER_PLUGIN_LIBRARY)
+  target_link_libraries(model_opt_plugin PRIVATE ${NVINFER_PLUGIN_LIBRARY})
+endif()
 
 set_target_properties(model_opt_plugin PROPERTIES
   OUTPUT_NAME model_opt_plugin
