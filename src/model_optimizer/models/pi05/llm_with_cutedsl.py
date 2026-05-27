@@ -30,6 +30,7 @@ from model_optimizer.quantization.quantization_utils import quantize_model
 from model_optimizer.utils.utils import is_fp4_quantized, is_nvfp4_quantized, set_dynamic_quant
 
 from ..model import Model
+from .fused_mlp import install_fused_mlp
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +176,13 @@ class GemmaModelCuteDslOnnxExport(nn.Module):
 
 
 class Pi05CuteDslLanguageModel(nn.Module):
-    def __init__(self, hf_gemma: nn.Module, *, wrap_attention: bool = True) -> None:
+    def __init__(
+        self,
+        hf_gemma: nn.Module,
+        *,
+        wrap_attention: bool = True,
+        fuse_mlp: bool = True,
+    ) -> None:
         super().__init__()
         object.__setattr__(self, "_hf_gemma", hf_gemma)
         self.config = hf_gemma.config
@@ -183,6 +190,9 @@ class Pi05CuteDslLanguageModel(nn.Module):
         self.layers = hf_gemma.layers
         if wrap_attention:
             install_gemma_cutedsl_attention_wrappers(hf_gemma)
+        # 方案 A（fused MLP）：合并每层 gate/up 的权重；与 attention plugin 路径正交。
+        if fuse_mlp:
+            install_fused_mlp(hf_gemma)
 
     def forward(self, *args: Any, **kwargs: Any):
         return self._hf_gemma(*args, **kwargs)

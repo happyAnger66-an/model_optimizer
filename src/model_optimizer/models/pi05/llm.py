@@ -16,6 +16,7 @@ from termcolor import colored
 from model_optimizer.utils.utils import is_fp4_quantized, set_dynamic_quant, is_nvfp4_quantized
 from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
 from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
+from model_optimizer.models.pi05.fused_mlp import install_fused_mlp
 
 logger = logging.getLogger(__name__)
 
@@ -147,12 +148,16 @@ class GemmaModelNativeOnnxExport(torch.nn.Module):
 
 
 class LLM(torch.nn.Module, Model):
-    def __init__(self, config, llm, **kwargs):
+    def __init__(self, config, llm, *, fuse_mlp: bool = True, **kwargs):
         super().__init__(**kwargs)
         self.model = llm
         self.device = llm.device
         self.config = config
         self.model.config._attn_implementation = "eager"
+        # 方案 A（fused MLP）：合并每层 gate/up 的权重为单次 FC1 GEMM。
+        # 数学等价、量化兼容；详见 ``kernelSrc/docs/fused_mlp.md`` § 3 方案 A。
+        if fuse_mlp:
+            install_fused_mlp(self.model)
         print(colored(f"model {self.model}", "dark_grey"))
 
     def get_calibrate_dataset(self, calib_data):
