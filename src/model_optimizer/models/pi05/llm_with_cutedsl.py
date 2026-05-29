@@ -307,7 +307,14 @@ class LLMWithCuteDsl(nn.Module, Model):
         # 计算（如 ``self.weight.float()``）后被视作常量内联——Gemma3RMSNorm
         # ``1.0 + weight.float()`` 直接命中。eval()/inference_mode 都不改
         # ``requires_grad``，需在导出前显式关掉。
-        for p in self.parameters():
+        # 注意：``Pi05CuteDslLanguageModel`` 用 ``object.__setattr__`` 隐藏了
+        # ``_hf_gemma``，``self.parameters()`` 不会递归进去（含 ``gemma.norm``
+        # 这个收尾 RMSNorm）。这里显式合并两边的参数迭代。
+        seen: set[int] = set()
+        for p in list(self.parameters()) + list(self.model._hf_gemma.parameters()):
+            if id(p) in seen:
+                continue
+            seen.add(id(p))
             p.requires_grad_(False)
         os.makedirs(export_dir, exist_ok=True)
         start = time.time()
