@@ -303,6 +303,12 @@ class LLMWithCuteDsl(nn.Module, Model):
         # feature_config.export 可覆盖导出级开关（如 {"dynamo": true}）。
         dynamo = bool(self.feature_config.export.get("dynamo", dynamo))
         self.eval().cuda()
+        # torch.jit.trace 不允许 Parameter(requires_grad=True) 经过非 in-place
+        # 计算（如 ``self.weight.float()``）后被视作常量内联——Gemma3RMSNorm
+        # ``1.0 + weight.float()`` 直接命中。eval()/inference_mode 都不改
+        # ``requires_grad``，需在导出前显式关掉。
+        for p in self.parameters():
+            p.requires_grad_(False)
         os.makedirs(export_dir, exist_ok=True)
         start = time.time()
 
