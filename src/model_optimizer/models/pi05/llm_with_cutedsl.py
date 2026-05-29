@@ -291,15 +291,32 @@ class LLMWithCuteDsl(nn.Module, Model):
         bundle = Pi05CuteDslLanguageModel(hf, feature_config=fc)
         return cls(paligemma.config.text_config, bundle, feature_config=fc)
 
+    def _attention_wrapped(self) -> bool:
+        """检测各层 self_attn 是否已被 fmha_d256_attention 特性包装。"""
+        layers = getattr(self.model._hf_gemma, "layers", None)
+        if layers is None or len(layers) == 0:
+            return False
+        return all(isinstance(layer.self_attn, GemmaAttentionCuteDsl) for layer in layers)
+
     def export(self, export_dir, dynamo=False, mode=None):
-        del mode  # CuTe DSL 仅一种 plugin 导出路径；与 convert_formt CLI 兼容
+        del mode  # 路径由 feature_config 决定；保留形参与 convert_formt CLI 兼容
         # feature_config.export 可覆盖导出级开关（如 {"dynamo": true}）。
         dynamo = bool(self.feature_config.export.get("dynamo", dynamo))
         self.eval().cuda()
         os.makedirs(export_dir, exist_ok=True)
         start = time.time()
-        print(colored("Start LLMWithCuteDsl export (trt::FmhaD256AttentionPlugin)...", "green"))
 
+        if self._attention_wrapped():
+            self._export_with_fmha_plugin(export_dir, dynamo=dynamo)
+        else:
+            # fmha_d256_attention 特性关闭 → 退化为 HF native 导出（self_forward 风格）。
+            self._export_self_forward(export_dir, dynamo=dynamo)
+
+        print(colored(f"LLMWithCuteDsl export done cost:{time.time() - start}s", "green"))
+        return self
+
+    def _export_with_fmha_plugin(self, export_dir: str, *, dynamo: bool) -> None:
+        print(colored("Start LLMWithCuteDsl export (trt::FmhaD256AttentionPlugin)...", "green"))
         register_fmha_d256_onnx_symbolic()
         gemma = self.model._hf_gemma
         weight_swaps = _bf16_to_fp16_inplace(gemma)
@@ -342,9 +359,32 @@ class LLMWithCuteDsl(nn.Module, Model):
         finally:
             _restore_bf16(weight_swaps)
 
-        end = time.time()
-        print(colored(f"LLMWithCuteDsl export done cost:{end - start}s", "green"))
-        return self
+    def _export_self_forward(self, export_dir: str, *, dynamo: bool) -> None:
+        """fmha_d256_attention 关闭时的回退：HF native 导出（bf16，KV 拼接由 self.forward 完成）。"""
+        print(colored("Start LLMWithCuteDsl export (HF native, fmha_d256_attention=off)...", "green"))
+        inputs_embeds = torch.randn((1, 968, 2048), dtype=torch.bfloat16, device="cuda")
+        attention_mask = torch.randn((1, 1, 968, 968), dtype=torch.float32, device="cuda")
+        position_ids = torch.randint(1, 1000, (1, 968), dtype=torch.int64, device="cuda")
+        with torch.inference_mode():
+            torch.onnx.export(
+                self,
+                (inputs_embeds, attention_mask, position_ids),
+                f"{export_dir}/llm.onnx",
+                export_params=True,
+                input_names=["inputs_embeds", "attention_mask", "position_ids"],
+                output_names=["past_keys", "past_values", "last_hidden_state"],
+                opset_version=19,
+                dynamo=dynamo,
+                do_constant_folding=True,
+                dynamic_axes={
+                    "inputs_embeds": {0: "batch_size", 1: "seq_len"},
+                    "attention_mask": {0: "batch_size", 2: "seq_len", 3: "seq_len"},
+                    "position_ids": {0: "batch_size", 1: "seq_len"},
+                    "past_keys": {0: "past_keys_dim0", 2: "seq_len"},
+                    "past_values": {0: "past_values_dim0", 2: "seq_len"},
+                    "last_hidden_state": {0: "batch_size", 1: "seq_len"},
+                },
+            )
 
     @classmethod
     def export_onnx(cls, pi_model, export_dir):
