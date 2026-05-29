@@ -39,9 +39,14 @@ class Model:
             f'{self.model_name} val method is not implemented')
 
     @classmethod
-    def construct_from_name_path(cls, model_name, model_path, train_config=None):
-        """``train_config``：OpenPI 注册名或 ``TrainConfig`` 的 ``.py`` 路径；仅 Pi05 等子类使用。"""
-        _ = train_config
+    def construct_from_name_path(cls, model_name, model_path, train_config=None, feature_config=None):
+        """``train_config``：OpenPI 注册名或 ``TrainConfig`` 的 ``.py`` 路径；仅 Pi05 等子类使用。
+
+        ``feature_config``：:class:`model_optimizer.config.feature_config.FeatureConfig`，
+        用于动态启停 ``fmha_d256_attention`` / ``fused_mlp`` 等模型级特性；
+        不支持该特性体系的模型直接忽略即可。
+        """
+        _ = (train_config, feature_config)
         return cls(model_name, model_path)
 
     def export_onnx(self, *args, **kwargs):

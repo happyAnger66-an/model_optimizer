@@ -1,5 +1,6 @@
 import os
 import argparse
+import inspect
 
 import torch
 
@@ -104,6 +105,15 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
         ),
     )
     parser.add_argument('--mode', type=str, default="native_per_layer")
+    parser.add_argument(
+        '--feature_config',
+        type=str,
+        default=None,
+        help=(
+            '特性开关 JSON：动态启停 fmha_d256_attention / fused_mlp 等模型级特性，'
+            '并可携带每特性参数；省略则全走默认（行为与历史一致）。'
+        ),
+    )
     print(f'[cli] convert_model args {args[1:]}')
     args = parser.parse_args(args[1:])
 
@@ -127,11 +137,21 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
     # 立刻推进到 1/N：避免前端长时间停在 0/N（例如首次 import/初始化较慢时）。
     tracker.advance(step_name="准备完成")
 
+    from ..config.feature_config import FeatureConfig
+    feature_config = FeatureConfig.load(args.feature_config)
+    if args.feature_config:
+        write_running_log(export_dir, f"[export] feature_config={args.feature_config}")
+        print(f'[cli] feature_config {feature_config}')
+
     from ..models.registry import get_model_cls
     model_cls = get_model_cls(model_name)
     tracker.advance(step_name="加载模型/构建导出包装")
+    # 仅在模型 construct_from_name_path 支持时透传 feature_config（向后兼容）。
+    construct_kwargs = {}
+    if "feature_config" in inspect.signature(model_cls.construct_from_name_path).parameters:
+        construct_kwargs["feature_config"] = feature_config
     model = model_cls.construct_from_name_path(
-        model_name, model_path, args.train_config
+        model_name, model_path, args.train_config, **construct_kwargs
     )
     tracker.advance(step_name="执行导出（生成 ONNX）")
     export_model_path = model.export(export_dir, mode=args.mode)
@@ -139,7 +159,7 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
 
     if args.verify_data:
         export_model = model_cls.construct_from_name_path(
-            model_name, export_model_path, args.train_config
+            model_name, export_model_path, args.train_config, **construct_kwargs
         )
         export_model.val(args.verify_data, batch_size=1,
                          output_dir=export_dir)

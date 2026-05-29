@@ -82,6 +82,15 @@ def quantize_cli(args):
     parser.add_argument('--input_shapes', type=str, default=None,
                         help='输入数据形状，用于量化校准的输入数据 (可选)')
     parser.add_argument(
+        '--feature_config',
+        type=str,
+        default=None,
+        help=(
+            '特性开关 JSON：动态启停 fmha_d256_attention / fused_mlp 等模型级特性，'
+            '并可携带每特性参数；省略则全走默认。'
+        ),
+    )
+    parser.add_argument(
         '--measure-quant-error',
         action='store_true',
         help=(
@@ -94,10 +103,19 @@ def quantize_cli(args):
     model_name = args.model_name
     model_path = args.model_path
 
+    from ..config.feature_config import FeatureConfig
+    feature_config = FeatureConfig.load(args.feature_config)
+    if args.feature_config:
+        print(colored(f'[cli] feature_config {feature_config}', 'green'))
+
     from ..models.registry import get_model_cls
     model_cls = get_model_cls(model_name)
+    # 仅在模型 construct_from_name_path 支持时透传 feature_config（向后兼容）。
+    construct_kwargs = {}
+    if "feature_config" in inspect.signature(model_cls.construct_from_name_path).parameters:
+        construct_kwargs["feature_config"] = feature_config
     model = model_cls.construct_from_name_path(
-        model_name, model_path, args.train_config
+        model_name, model_path, args.train_config, **construct_kwargs
     )
 
     old_metric, new_metric = None, None

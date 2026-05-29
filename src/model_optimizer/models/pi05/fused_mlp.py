@@ -38,16 +38,23 @@ import torch.nn as nn
 logger = logging.getLogger(__name__)
 
 _ENV_FLAG = "MODEL_OPT_PI05_FUSED_MLP"
+# 与统一特性体系（feature_config）的环境变量命名对齐；两者均可用，旧名优先。
+_ENV_FLAG_ALIAS = "MODEL_OPT_FEATURE_FUSED_MLP"
 
 
 def is_fused_mlp_enabled(default: bool = True) -> bool:
-    """读取 ``MODEL_OPT_PI05_FUSED_MLP`` 环境变量。
+    """读取 ``MODEL_OPT_PI05_FUSED_MLP``（或别名 ``MODEL_OPT_FEATURE_FUSED_MLP``）。
 
     - 未设置：返回 ``default``（默认开启）。
     - ``0`` / ``false`` / ``no`` / ``off``：关闭。
     - 其他非空值：开启。
+
+    注：经 CLI ``--feature_config`` 走 ``apply_features`` 时，启停已由
+    ``FeatureConfig.is_enabled`` 判定，本函数仅用于直接构造的兼容路径。
     """
     raw = os.environ.get(_ENV_FLAG)
+    if raw is None:
+        raw = os.environ.get(_ENV_FLAG_ALIAS)
     if raw is None:
         return default
     return raw.strip().lower() not in {"0", "false", "no", "off", ""}

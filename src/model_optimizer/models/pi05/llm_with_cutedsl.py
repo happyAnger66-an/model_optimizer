@@ -20,6 +20,7 @@ from tqdm import tqdm
 from transformers.cache_utils import DynamicCache
 
 from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
+from model_optimizer.config.feature_config import FeatureConfig
 from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
 from model_optimizer.ops.fmha_d256_attention_plugin import (
     FmhaD256Attention,
@@ -29,10 +30,13 @@ from model_optimizer.ops.fmha_d256_attention_plugin import (
 from model_optimizer.quantization.quantization_utils import quantize_model
 from model_optimizer.utils.utils import is_fp4_quantized, is_nvfp4_quantized, set_dynamic_quant
 
+from ..features import FeatureContext, apply_features, register_feature
 from ..model import Model
 from .fused_mlp import install_fused_mlp
 
 logger = logging.getLogger(__name__)
+
+MODEL_NAME = "pi05_libero/llm_with_cutedsl"
 
 
 def _repo_root() -> Path:
@@ -93,11 +97,40 @@ class GemmaAttentionCuteDsl(nn.Module):
             return getattr(native, name)
 
 
-def install_gemma_cutedsl_attention_wrappers(gemma_model: nn.Module) -> nn.Module:
+def install_gemma_cutedsl_attention_wrappers(
+    gemma_model: nn.Module, *, use_fp16: bool = True
+) -> nn.Module:
     for layer in gemma_model.layers:
         if not isinstance(layer.self_attn, GemmaAttentionCuteDsl):
-            layer.self_attn = GemmaAttentionCuteDsl(layer.self_attn)
+            layer.self_attn = GemmaAttentionCuteDsl(layer.self_attn, use_fp16=use_fp16)
     return gemma_model
+
+
+# ── 特性注册：作用对象为 HF Gemma 解码器（``paligemma.get_decoder()``） ──────────
+def _apply_fmha_d256_attention(target: nn.Module, params: dict, ctx: FeatureContext) -> None:
+    install_gemma_cutedsl_attention_wrappers(
+        target, use_fp16=bool(params.get("use_fp16", True))
+    )
+
+
+def _apply_fused_mlp(target: nn.Module, params: dict, ctx: FeatureContext) -> None:
+    install_fused_mlp(target, enabled=True, strict=bool(params.get("strict", False)))
+
+
+register_feature(
+    "fmha_d256_attention",
+    default_enabled=True,
+    apply_fn=_apply_fmha_d256_attention,
+    description="将各层 self_attn 包成 CuTe DSL FMHA D=256 TRT 插件路径。",
+    supported_models=(MODEL_NAME,),
+)
+register_feature(
+    "fused_mlp",
+    default_enabled=True,
+    apply_fn=_apply_fused_mlp,
+    description="合并各层 GemmaMLP 的 gate/up 为单次 GEMM（纯 ONNX 图重写）。",
+    supported_models=(MODEL_NAME,),
+)
 
 
 class GemmaModelCuteDslOnnxExport(nn.Module):
@@ -182,17 +215,29 @@ class Pi05CuteDslLanguageModel(nn.Module):
         *,
         wrap_attention: bool = True,
         fuse_mlp: bool = True,
+        feature_config: FeatureConfig | None = None,
     ) -> None:
         super().__init__()
         object.__setattr__(self, "_hf_gemma", hf_gemma)
         self.config = hf_gemma.config
         self.embed_tokens = hf_gemma.embed_tokens
         self.layers = hf_gemma.layers
-        if wrap_attention:
-            install_gemma_cutedsl_attention_wrappers(hf_gemma)
-        # 方案 A（fused MLP）：合并每层 gate/up 的权重；与 attention plugin 路径正交。
-        if fuse_mlp:
-            install_fused_mlp(hf_gemma)
+        if feature_config is not None:
+            # 配置驱动：由特性注册表（fmha_d256_attention / fused_mlp / ...）按
+            # JSON > env > 默认 决定启停；忽略下方布尔默认。空配置即等价历史行为。
+            try:
+                dtype = next(hf_gemma.parameters()).dtype
+            except StopIteration:
+                dtype = None
+            ctx = FeatureContext(model_name=MODEL_NAME, dtype=dtype)
+            apply_features(hf_gemma, feature_config, ctx)
+        else:
+            # 直接构造（非 CLI 路径）的向后兼容入口。
+            if wrap_attention:
+                install_gemma_cutedsl_attention_wrappers(hf_gemma)
+            # 方案 A（fused MLP）：合并每层 gate/up 的权重；与 attention plugin 路径正交。
+            if fuse_mlp:
+                install_fused_mlp(hf_gemma)
 
     def forward(self, *args: Any, **kwargs: Any):
         return self._hf_gemma(*args, **kwargs)
@@ -201,13 +246,15 @@ class Pi05CuteDslLanguageModel(nn.Module):
 class LLMWithCuteDsl(nn.Module, Model):
     """π0.5 LLM 子模块：CuTe DSL FMHA D=256 TRT 插件路径。"""
 
-    def __init__(self, config, llm: Pi05CuteDslLanguageModel, **kwargs):
+    def __init__(self, config, llm: Pi05CuteDslLanguageModel, *, feature_config: FeatureConfig | None = None, **kwargs):
         nn.Module.__init__(self)
         Model.__init__(self, "pi05_llm_cutedsl", "")
         self.model = llm
         self.device = next(llm.parameters()).device
         self.config = config
         self.model.config._attn_implementation = "eager"
+        # 保存供 export() 读取 export 级覆盖（如 dynamo）。
+        self.feature_config = feature_config or FeatureConfig.empty()
 
     def get_calibrate_dataset(self, calib_data):
         return open_pi05_calib_for_quantize(calib_data, component="pi05_llm")
@@ -230,21 +277,24 @@ class LLMWithCuteDsl(nn.Module, Model):
         return past_keys_tensor, past_values_tensor, prefix_output.last_hidden_state
 
     @classmethod
-    def construct_from_name_path(cls, model_name, model_path, train_config=None):
+    def construct_from_name_path(cls, model_name, model_path, train_config=None, feature_config=None):
         from .model_pi05 import Pi05Model
 
         pi05_model = Pi05Model.construct_from_name_path(model_name, model_path, train_config)
-        return cls.construct_model(pi05_model)
+        return cls.construct_model(pi05_model, feature_config=feature_config)
 
     @classmethod
-    def construct_model(cls, pi05_model, dtype=torch.bfloat16):
+    def construct_model(cls, pi05_model, dtype=torch.bfloat16, feature_config=None):
+        fc = feature_config or FeatureConfig.empty()
         paligemma = pi05_model.paligemma_with_expert.paligemma
         hf = paligemma.get_decoder()
-        bundle = Pi05CuteDslLanguageModel(hf, wrap_attention=True)
-        return cls(paligemma.config.text_config, bundle)
+        bundle = Pi05CuteDslLanguageModel(hf, feature_config=fc)
+        return cls(paligemma.config.text_config, bundle, feature_config=fc)
 
     def export(self, export_dir, dynamo=False, mode=None):
         del mode  # CuTe DSL 仅一种 plugin 导出路径；与 convert_formt CLI 兼容
+        # feature_config.export 可覆盖导出级开关（如 {"dynamo": true}）。
+        dynamo = bool(self.feature_config.export.get("dynamo", dynamo))
         self.eval().cuda()
         os.makedirs(export_dir, exist_ok=True)
         start = time.time()
