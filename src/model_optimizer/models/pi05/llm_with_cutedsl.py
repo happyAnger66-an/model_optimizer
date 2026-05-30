@@ -430,9 +430,61 @@ class LLMWithCuteDsl(nn.Module, Model):
         val_loop(self, self.val_datas_before)
         return Pi05Metric(self.val_datas_before)
 
+    def _nvfp4_post_processing(self, onnx_path: str, export_dir: str) -> None:
+        """将 ModelOpt 导出的 ``TRT_FP4QDQ`` 自定义算子转为 TensorRT 可识别的两级 DequantizeLinear。
+
+        与 ``llm.py`` / ``llm_with_trtedgellm.py`` 的同名方法等价，但 **不能** 直接复用基类
+        实现：基类首行 ``self.model.save_pretrained(...)`` 假设 ``self.model`` 是 HF
+        ``PreTrainedModel``；而本路径的 ``self.model`` 是 :class:`Pi05CuteDslLanguageModel`
+        （普通 ``nn.Module``，真正的 HF 解码器藏在 ``_hf_gemma``），没有 ``save_pretrained``。
+
+        缺少本步会让 ``llm.onnx`` 残留 ``TRT_FP4QDQ`` 节点，TensorRT 编译时报
+        ``Plugin not found``（``TRT_FP4QDQ`` 非原生 plugin）。
+        """
+        import onnx
+
+        # 保存 HF config.json（供下游溯源；对 TRT 编译非必须，故容错处理）。
+        hf = getattr(self.model, "_hf_gemma", None)
+        try:
+            with torch.inference_mode():
+                if hf is not None and hasattr(hf, "save_pretrained"):
+                    hf.save_pretrained(export_dir)
+                elif hf is not None and hasattr(getattr(hf, "config", None), "save_pretrained"):
+                    hf.config.save_pretrained(export_dir)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("nvfp4 post-processing: skip save_pretrained (%r)", e)
+
+        if not is_fp4_quantized(self):
+            return
+
+        from modelopt.onnx.quantization.qdq_utils import fp4qdq_to_2dq
+
+        t1 = time.time()
+        onnx.shape_inference.infer_shapes_path(onnx_path)
+        onnx_model = onnx.load(onnx_path)
+        print(colored("NVFP4 detected, converting TRT_FP4QDQ -> 2x DequantizeLinear ...", "green"))
+        onnx_model = fp4qdq_to_2dq(onnx_model)
+        # 删除旧的权重外存等文件，仅保留 .json（避免与新外存数据混淆）。
+        for file in os.listdir(export_dir):
+            if file.endswith(".json"):
+                continue
+            os.remove(os.path.join(export_dir, file))
+        onnx.save_model(
+            onnx_model,
+            onnx_path,
+            save_as_external_data=True,
+            all_tensors_to_one_file=True,
+            location="onnx_model.data",
+            convert_attribute=False,
+        )
+        print(colored(f"NVFP4 post processing cost:{time.time() - t1}s", "green"))
+
     def quantize(self, quant_cfg, calib_data, export_dir, *, measure_quant_error=False):
         calib_dataloader = self.get_calibrate_dataset(calib_data)
         quantize_model(self, quant_cfg, calib_dataloader, measure_quant_error=measure_quant_error)
         self.is_quantized = True
         set_dynamic_quant(self, "fp16")
         self.export(export_dir, dynamo=False)
+        if is_nvfp4_quantized(quant_cfg):
+            print(colored("nvfp4 quantization detected, post processing...", "green"))
+            self._nvfp4_post_processing(f"{export_dir}/llm.onnx", export_dir)
