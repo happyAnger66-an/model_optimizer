@@ -55,6 +55,7 @@ class NativeDenoiseLoopRunner:
         self.log_interval = max(int(log_interval), 1)
         self._graph_cache: dict[tuple[Any, ...], NativeGraphEntry] = {}
         self._capture_blacklist: set[tuple[Any, ...]] = set()
+        self._capture_disabled_reason: str | None = None
         self._capture_ms: list[float] = []
         self._run_ms: list[float] = []
         self._num_calls = 0
@@ -70,6 +71,8 @@ class NativeDenoiseLoopRunner:
         timestep: torch.Tensor,
     ) -> NativeGraphEntry | None:
         key = _signature_key_for_denoise(prefix_pad_masks, past_key_values, x_t, timestep)
+        if self._capture_disabled_reason is not None:
+            return None
         if key in self._capture_blacklist:
             return None
         entry = self._graph_cache.get(key)
@@ -94,7 +97,15 @@ class NativeDenoiseLoopRunner:
             )
             return entry
         except Exception as exc:
-            logger.warning("[native] capture failed, fallback eager: %s", exc)
+            msg = str(exc)
+            if "cudaErrorStreamCaptureInvalidated" in msg or "previous error during capture" in msg:
+                self._capture_disabled_reason = msg
+                logger.warning(
+                    "[native] capture invalidated, disable cuda graph for this process; fallback eager. reason=%s",
+                    msg,
+                )
+            else:
+                logger.warning("[native] capture failed, fallback eager: %s", exc)
             self._capture_blacklist.add(key)
             return None
 
@@ -167,5 +178,7 @@ class NativeDenoiseLoopRunner:
                 f"p50={float(np.percentile(c, 50)):.3f}"
             )
         lines.append(f"  graph_cache_size={len(self._graph_cache)}")
+        if self._capture_disabled_reason is not None:
+            lines.append(f"  capture_disabled_reason={self._capture_disabled_reason}")
         return "\n".join(lines)
 

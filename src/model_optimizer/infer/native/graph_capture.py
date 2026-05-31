@@ -129,26 +129,30 @@ def build_graph_entry_for_denoise_step(
     ):
         raise TypeError("prefix_pad_masks/x_t/timestep must be torch.Tensor")
 
-    static_state = state
-    if torch.is_tensor(state):
-        static_state = torch.empty_like(state)
-        static_state.copy_(state, non_blocking=False)
-
-    static_prefix = torch.empty_like(prefix_pad_masks)
-    static_prefix.copy_(prefix_pad_masks, non_blocking=False)
-
-    in_flat = _flatten_past_key_values(past_key_values)
-    static_flat = [torch.empty_like(t) for t in in_flat]
-    for dst, src in zip(static_flat, in_flat, strict=True):
-        dst.copy_(src, non_blocking=False)
-    static_past = _build_static_past_key_values(past_key_values, static_flat)
-
-    static_x_t = torch.empty_like(x_t)
-    static_x_t.copy_(x_t, non_blocking=False)
-    static_timestep = torch.empty_like(timestep)
-    static_timestep.copy_(timestep, non_blocking=False)
-
     stream = torch.cuda.Stream(device=x_t.device)
+    cur_stream = torch.cuda.current_stream(device=x_t.device)
+    stream.wait_stream(cur_stream)
+
+    with torch.cuda.stream(stream):
+        static_state = state
+        if torch.is_tensor(state):
+            static_state = torch.empty_like(state)
+            static_state.copy_(state, non_blocking=False)
+
+        static_prefix = torch.empty_like(prefix_pad_masks)
+        static_prefix.copy_(prefix_pad_masks, non_blocking=False)
+
+        in_flat = _flatten_past_key_values(past_key_values)
+        static_flat = [torch.empty_like(t) for t in in_flat]
+        for dst, src in zip(static_flat, in_flat, strict=True):
+            dst.copy_(src, non_blocking=False)
+        static_past = _build_static_past_key_values(past_key_values, static_flat)
+
+        static_x_t = torch.empty_like(x_t)
+        static_x_t.copy_(x_t, non_blocking=False)
+        static_timestep = torch.empty_like(timestep)
+        static_timestep.copy_(timestep, non_blocking=False)
+
     for _ in range(max(int(warmup), 0)):
         with torch.cuda.stream(stream):
             out = raw_denoise_step(
@@ -158,7 +162,7 @@ def build_graph_entry_for_denoise_step(
                 raise TypeError(
                     f"denoise_step output must be Tensor, got {type(out).__name__}"
                 )
-        stream.synchronize()
+    stream.synchronize()
 
     graph = torch.cuda.CUDAGraph()
     capture_start = time.perf_counter()
@@ -167,6 +171,7 @@ def build_graph_entry_for_denoise_step(
             static_state, static_prefix, static_past, static_x_t, static_timestep
         )
     stream.synchronize()
+    cur_stream.wait_stream(stream)
     capture_ms = (time.perf_counter() - capture_start) * 1000.0
 
     key = (
