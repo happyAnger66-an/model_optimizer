@@ -21,6 +21,19 @@ from transformers.cache_utils import DynamicCache
 _TRT_ATTN_MASK_NEG_CAP_KEY = "trt_attention_mask_neg_cap"
 
 
+def _cfg_get(config, key, default):
+    """安全读取 config 值。
+
+    ``addict.Dict`` 对缺失键用 ``getattr`` 会新建嵌套 Dict 而非返回 default，
+    因此 Mapping 走 ``.get``；普通对象/dataclass 走 ``getattr``。
+    """
+    if config is None:
+        return default
+    if isinstance(config, Mapping):
+        return config.get(key, default)
+    return getattr(config, key, default)
+
+
 def _resolve_trt_attention_mask_neg_cap(config) -> float | None:
     """读取 ``trt_attention_mask_neg_cap``，默认 ``-1e4``；``None`` 表示关闭裁剪。
 
@@ -136,6 +149,10 @@ class Pi05TensorRTExecutor(Executor):
 
     def _setup_trt_engine(self):
         if self.config.engine_path:
+            # 全局 TRT engine 开关：perf 耗时统计（默认开）、CUDA Graph（默认关）。
+            _trt_perf = bool(_cfg_get(self.config, "trt_perf", True))
+            _trt_cuda_graph = bool(_cfg_get(self.config, "trt_cuda_graph", False))
+            _trt_cg_warmup = int(_cfg_get(self.config, "trt_cuda_graph_warmup", 3) or 3)
             if self.config.vit_engine:
                 print(
                     colored(f"replace vision_tower with {self.config.vit_engine}", "green"))
@@ -145,7 +162,8 @@ class Pi05TensorRTExecutor(Executor):
 
                 vit_engine = Engine(os.path.join(
                     self.config.engine_path, self.config.vit_engine), return_wrap=vit_return_wrap,
-                    perf=True)
+                    perf=_trt_perf, use_cuda_graph=_trt_cuda_graph,
+                    cuda_graph_warmup=_trt_cg_warmup)
 
                 def get_image_features(pixel_values):
                     out = vit_engine(pixel_values)
