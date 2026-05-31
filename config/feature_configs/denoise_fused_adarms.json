@@ -2,7 +2,7 @@
   "version": 1,
   "features": {
     "adarms_dense_precompute": { "enabled": true },
-    "fused_mlp": { "enabled": false }
+    "fused_mlp": { "enabled": true }
   },
   "export": { "dynamo": false, "prefix_len": 818 },
   "quantize": { "dynamic_quant": "bf16" }

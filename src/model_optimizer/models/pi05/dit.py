@@ -21,6 +21,7 @@ from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
 from ..features import FeatureContext, apply_features, register_feature
 from .denoise_onnx_post_export import apply_denoise_onnx_post_export_patches
+from .fused_mlp import install_fused_mlp
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +52,11 @@ def _adarms_injected_forward(self, x, cond=None):  # noqa: ARG001
 
 
 # ── 特性注册：AdaRMS Dense 预计算（roadmap #22） ──────────────────────────────
-# 作用对象为 Pi05DenoiseStep 本身（调用其 enable_adarms_precompute）。仅适用 denoise 组件。
+# apply_features 的 ``target`` 统一传 ``gemma_expert``（便于 fused_mlp 直接作用于解码器），
+# 因此 adarms 经 ``ctx.extra["denoise_step"]`` 回到 Pi05DenoiseStep 调 enable_adarms_precompute。
 def _apply_adarms_precompute(target, params: dict, ctx: FeatureContext) -> None:  # noqa: ARG001
-    target.enable_adarms_precompute(True)
+    step = (ctx.extra or {}).get("denoise_step", target)
+    step.enable_adarms_precompute(True)
 
 
 register_feature(
@@ -62,6 +65,23 @@ register_feature(
     apply_fn=_apply_adarms_precompute,
     description="denoise modulation 只依赖固定步调度 → 预算常量注入，把 dense GEMM 移出导出图。",
     supported_models=(MODEL_NAME,),
+)
+
+
+# ── 特性注册：fused MLP（roadmap #9，复用 LLM 同名实现） ───────────────────────
+# 与 ``llm.py`` 的注册保持一致（supported_models=None、default_enabled=True）。``install_fused_mlp``
+# 对任意含 ``.layers`` 的 HF Gemma 解码器幂等；这里作用对象为 expert（apply_features 的 target）。
+# 合并 gate/up → 单次 FC1 GEMM，纯 ONNX 图重写、数学等价，缩减 launch-bound 段的 kernel 数。
+def _apply_fused_mlp(target, params: dict, ctx: FeatureContext) -> None:  # noqa: ARG001
+    install_fused_mlp(target, enabled=True, strict=bool(params.get("strict", False)))
+
+
+register_feature(
+    "fused_mlp",
+    default_enabled=True,
+    apply_fn=_apply_fused_mlp,
+    description="合并 expert 各层 GemmaMLP 的 gate/up 为单次 GEMM（纯 ONNX 图重写）。",
+    supported_models=None,
 )
 
 
@@ -129,6 +149,7 @@ class Pi05DenoiseStep(nn.Module, Model):
         action_horizon: int,
         action_dim: int,
         adarms_precompute: bool = False,
+        fuse_mlp: bool = False,
         feature_config: FeatureConfig | None = None,
         **kwargs,
     ) -> None:
@@ -160,12 +181,22 @@ class Pi05DenoiseStep(nn.Module, Model):
         # 供 export()/quantize() 读取 export/quantize 级覆盖。
         self.feature_config = feature_config or FeatureConfig.empty()
         if feature_config is not None:
-            # 配置驱动：由特性注册表（adarms_dense_precompute / ...）按 JSON > env > 默认 决定启停。
-            ctx = FeatureContext(model_name=MODEL_NAME, dtype=getattr(gemma_expert, "dtype", None))
-            apply_features(self, feature_config, ctx)
-        elif adarms_precompute:
+            # 配置驱动：由特性注册表按 JSON > env > 默认 决定启停。
+            # target 传 gemma_expert，使 fused_mlp 直接作用于 expert 解码器；adarms 经
+            # ctx.extra["denoise_step"] 回到本 step（见 _apply_adarms_precompute）。
+            ctx = FeatureContext(
+                model_name=MODEL_NAME,
+                dtype=getattr(gemma_expert, "dtype", None),
+                extra={"denoise_step": self},
+            )
+            apply_features(self.gemma_expert, feature_config, ctx)
+        else:
             # 直接构造（非配置）路径的向后兼容入口。
-            self.enable_adarms_precompute(True)
+            if fuse_mlp:
+                # 合并 expert 各层 gate/up 为单次 GEMM（须在 quantize 之前完成）。
+                install_fused_mlp(self.gemma_expert)
+            if adarms_precompute:
+                self.enable_adarms_precompute(True)
 
     @property
     def model(self):
@@ -576,6 +607,7 @@ class Pi05DenoiseStep(nn.Module, Model):
         dtype: torch.dtype | None = None,
         *,
         adarms_precompute: bool | None = None,
+        fuse_mlp: bool = False,
         feature_config: FeatureConfig | None = None,
     ):
         """
@@ -585,6 +617,9 @@ class Pi05DenoiseStep(nn.Module, Model):
           1. ``feature_config``（JSON 配置文件，``features.adarms_dense_precompute``）；
           2. 显式 ``adarms_precompute=True``；
           3. 环境变量 ``PI05_ADARMS_PRECOMPUTE``（``1/true/yes/on``）。
+
+        ``fuse_mlp``：合并 expert 各层 GemmaMLP 的 gate/up 为单次 GEMM（roadmap #9）。
+        提供了 ``feature_config`` 时以配置里的 ``features.fused_mlp`` 为准（本布尔被忽略）。
         """
         if not getattr(pi05_model.config, "pi05", False):
             raise ValueError("Pi05DenoiseStep 仅支持 config.pi05 is True 的 PI0Pytorch 模型")
@@ -611,6 +646,7 @@ class Pi05DenoiseStep(nn.Module, Model):
             action_horizon=pi05_model.config.action_horizon,
             action_dim=pi05_model.config.action_dim,
             adarms_precompute=bool(adarms_precompute) if adarms_precompute else False,
+            fuse_mlp=fuse_mlp,
             feature_config=feature_config,
         )
 
