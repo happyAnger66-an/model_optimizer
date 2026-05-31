@@ -385,9 +385,31 @@ AssertionError: E4M3 supports ONNX export only for per-tensor quantization.
 Received non-scalar amax of shape: torch.Size([8192, 1])
 ```
 
-> per-channel FP8 仅在 **TRT 插件 QDQ 导出路径**（如 cutedsl LLM，会产出 `TRT_FP8QDQ`/`TRT_FP4QDQ` 节点）可用；
-> denoise 走标准 `torch.onnx.export`，故 `gate_up_proj` 用 **per-tensor FP8**（`FP8_DEFAULT_CFG` 默认即此）。
-> 若担心 gate/up 量纲混叠影响精度，改用 **NVFP4**：沿输入维 block 量化，按输出维 concat 不混 block，天然无此问题。
+**澄清一个常见误解**：per-channel FP8 **不是**"走 TRT 插件就能导出"。ModelOpt 的 FP8 ONNX 导出无论标准
+`QuantizeLinear` 还是插件 `trt::TRT_FP8QuantizeLinear`，scale 都是**单个标量**——
+`export_fp8` 直接 `scale = 448.0 / float(amax)`、`_fp8_quantize` 用 `torch.tensor(scale_inv)` 标量常量
+（`modelopt/torch/quantization/export_onnx.py`）。所以**两条 FP8 路径都只有 per-tensor**，per-channel FP8
+在导出阶段必然失败。`_check_onnx_readiness` 的断言（对 tuple 类型 `num_bits` 强制 `amax.numel()==1`）正是它的前置守卫。
+
+TRT 插件路径真正提供的"更细粒度"来自 **NVFP4 的 block 量化**（E2M1 + per-block FP8 scale + 一个 per-tensor 全局
+FP32 scale），导出为 `TRT_FP4QDQ` 后由 `fp4qdq_to_2dq` 转成两级 `DequantizeLinear`。它的 `amax` 仍是
+**标量（全局 per-tensor）**、block 粒度由 `block_sizes` 表达，因此能通过 `_check_onnx_readiness`——这才是
+"比 per-tensor 细、又能导出"的正解。
+
+**导出粒度对照（以 weight 为例）**
+
+| 量化格式 | 导出符号 | scale 粒度 | 能否 ONNX 导出 |
+|---|---|---|---|
+| FP8 (E4M3) | `export_fp8` / `trt::TRT_FP8QuantizeLinear` | per-tensor（标量） | ✅ 仅 per-tensor |
+| FP8 per-channel (axis=0) | — | per-channel | ❌ `_check_onnx_readiness` 断言失败 |
+| INT8 per-channel | `export_int8`（带 `axis_i`） | per-channel | ✅（`num_bits` 为 int，不进 tuple 分支） |
+| NVFP4 | `TRT_FP4QDQ` → `fp4qdq_to_2dq` | per-block（+全局标量） | ✅ |
+
+> 结论：denoise 走标准 `torch.onnx.export`，`gate_up_proj` 用 **per-tensor FP8**（`FP8_DEFAULT_CFG` 默认即此）。
+> 若担心 gate/up 量纲混叠影响精度，**改用 NVFP4**（沿输入维 block、按输出维 concat 不混 block，天然兼容 fused MLP）；
+> 想要 per-channel weight 也可用 **INT8 per-channel**，但精度/部署收益通常不如 NVFP4。
+> 注：`llm_quant_nvfp4_fp8_mix_cutedsl_cfg.py` 里把 `gate_up_proj` 设 FP8 `axis=0` 的写法，对真正落到 FP8 的层
+> 同样会触发该断言；其"per-channel 是 TRT 原生标准组合"的注释**只对 INT8 成立、对 FP8 ONNX 导出不成立**。
 
 ### 配套配置（新增）
 

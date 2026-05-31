@@ -16,11 +16,13 @@ _qc = QUANT_CFG["quant_cfg"]
 _FP8_LINEAR = {"num_bits": (4, 3), "axis": None}
 
 # roadmap #9：fused MLP 把 gate/up 在输出维（dim=0）concat 成 gate_up_proj=[2I, H]。
-# 若 weight 用 per-tensor（axis=None），gate 与 up 共用一个 amax，量纲差异会拉伸 FP8 scale、
-# 损失较小幅度分支的精度。改用 **per-output-channel**（axis=0）后，2I 个输出行各自独立 scale，
-# gate 行与 up 行互不影响；per-channel FP8 weight 是 TRT 原生支持的标准组合。
-# 注意：纯 NVFP4 层无此问题（NVFP4 weight 沿输入维做 block 量化，按输出维 concat 不混 block）。
-_FP8_WEIGHT_PC = {"num_bits": (4, 3), "axis": 0}
+# ⚠️ FP8 weight 只能 per-tensor（axis=None）：ModelOpt 的 FP8 ONNX 导出（标准 QuantizeLinear 与
+# 插件 trt::TRT_FP8QuantizeLinear）scale 均为单个标量——export_fp8 直接 `448.0/float(amax)`，
+# tensor_quantizer._check_onnx_readiness 也对 tuple 类型 num_bits 强制 `amax.numel()==1`。
+# 因此 axis=0（per-channel FP8）会在 torch.onnx.export 阶段断言失败，**不可用于 FP8**。
+# 想要细于 per-tensor 的 weight 量化请用 NVFP4（本配置未被覆盖的层即走 NVFP4 的 per-block 量化，
+# 沿输入维 block、按输出维 concat 不混 block，天然兼容 fused MLP）。per-channel 仅对 INT8 导出成立。
+_FP8_WEIGHT = {"num_bits": (4, 3), "axis": None}
 
 # 与 print_quant_summary / 配置里常用的通配一致：*layers.{i}... 可匹配 model.layers.{i}...
 _LLM_LINEAR_SUFFIXES = (
@@ -38,8 +40,8 @@ def _apply_layerwise_fp8(qc: dict) -> None:
         if i in [6, 10, 14, 17]:
             continue
         for sub in _LLM_LINEAR_SUFFIXES:
-            # weight 走 per-channel（axis=0），activation 保持 per-tensor（axis=None）。
-            qc[f"*layers.{i}.{sub}.weight_quantizer"] = dict(_FP8_WEIGHT_PC)
+            # weight 与 activation 均 per-tensor（axis=None）：FP8 ONNX 导出仅支持 per-tensor。
+            qc[f"*layers.{i}.{sub}.weight_quantizer"] = dict(_FP8_WEIGHT)
             qc[f"*layers.{i}.{sub}.input_quantizer"] = dict(_FP8_LINEAR)
 
 
@@ -50,14 +52,14 @@ if isinstance(_qc, dict):
     QUANT_CFG["quant_cfg"] = merged
 else:
     # 旧版 list：在列表末尾追加更具体的 FP8 项（后项覆盖先项）。
-    # weight 走 per-channel（axis=0），activation 保持 per-tensor（见 dict 分支说明）。
+    # weight 与 activation 均 per-tensor（FP8 ONNX 导出仅支持 per-tensor，见 dict 分支说明）。
     extra: list = []
     for i in range(0, 18):
         for sub in _LLM_LINEAR_SUFFIXES:
             extra.append(
                 {
                     "quantizer_name": f"*layers.{i}.{sub}.weight_quantizer",
-                    "cfg": dict(_FP8_WEIGHT_PC),
+                    "cfg": dict(_FP8_WEIGHT),
                 }
             )
             extra.append(

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "features": {
+    "fmha_d256_attention": { "enabled": true },
+    "fused_mlp": { "enabled": true }
+  },
+  "export": { "dynamo": false },
+  "quantize": { "dynamic_quant": "fp16" }
+}
