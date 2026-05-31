@@ -129,7 +129,9 @@ register_feature(
     default_enabled=True,
     apply_fn=_apply_fused_mlp,
     description="合并各层 GemmaMLP 的 gate/up 为单次 GEMM（纯 ONNX 图重写）。",
-    supported_models=(MODEL_NAME,),
+    # 与具体模型无关：``install_fused_mlp`` 对任意 HF Gemma 解码器幂等。与
+    # ``llm.py`` 的同名注册保持一致（同为 ``None``），避免按 import 顺序互相覆盖。
+    supported_models=None,
 )
 
 

@@ -16,9 +16,15 @@ from termcolor import colored
 from model_optimizer.utils.utils import is_fp4_quantized, set_dynamic_quant, is_nvfp4_quantized
 from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
 from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
+from model_optimizer.config.feature_config import FeatureConfig
 from model_optimizer.models.pi05.fused_mlp import install_fused_mlp
 
+from ..features import FeatureContext, apply_features, register_feature
+
 logger = logging.getLogger(__name__)
+
+# 与 registry.py 的注册名一致；用于 FeatureContext.model_name 过滤。
+MODEL_NAME = "pi05_libero/llm"
 
 
 def _quant_cfg_uses_awq_family(quant_cfg) -> bool:
@@ -147,16 +153,53 @@ class GemmaModelNativeOnnxExport(torch.nn.Module):
         return (hidden_states,) + tuple(present_key_values)
 
 
+# ── 特性注册：作用对象为 HF Gemma 解码器（``paligemma.get_decoder()``） ──────────
+# ``fused_mlp`` 与具体模型无关（``install_fused_mlp`` 对任意 HF Gemma 解码器幂等、
+# 自动跳过不匹配层），因此 ``supported_models=None``（适用所有模型）。与
+# ``llm_with_cutedsl.py`` 的同名注册保持一致，避免按 import 顺序互相覆盖。
+def _apply_fused_mlp(target: torch.nn.Module, params: dict, ctx: FeatureContext) -> None:
+    install_fused_mlp(target, enabled=True, strict=bool(params.get("strict", False)))
+
+
+register_feature(
+    "fused_mlp",
+    default_enabled=True,
+    apply_fn=_apply_fused_mlp,
+    description="合并各层 GemmaMLP 的 gate/up 为单次 GEMM（纯 ONNX 图重写）。",
+    supported_models=None,
+)
+
+
 class LLM(torch.nn.Module, Model):
-    def __init__(self, config, llm, *, fuse_mlp: bool = True, **kwargs):
+    def __init__(
+        self,
+        config,
+        llm,
+        *,
+        fuse_mlp: bool = True,
+        feature_config: FeatureConfig | None = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.model = llm
         self.device = llm.device
         self.config = config
         self.model.config._attn_implementation = "eager"
-        # 方案 A（fused MLP）：合并每层 gate/up 的权重为单次 FC1 GEMM。
-        # 数学等价、量化兼容；详见 ``kernelSrc/docs/fused_mlp.md`` § 3 方案 A。
-        if fuse_mlp:
+        # 保存供 export()/quantize() 读取 export 级覆盖（如 dynamic_quant）。
+        self.feature_config = feature_config or FeatureConfig.empty()
+        if feature_config is not None:
+            # 配置驱动：由特性注册表（fused_mlp / ...）按 JSON > env > 默认 决定启停；
+            # 忽略下方 ``fuse_mlp`` 布尔默认。空配置即等价历史行为。
+            try:
+                dtype = next(self.model.parameters()).dtype
+            except StopIteration:
+                dtype = None
+            ctx = FeatureContext(model_name=MODEL_NAME, dtype=dtype)
+            apply_features(self.model, feature_config, ctx)
+        elif fuse_mlp:
+            # 直接构造（非 CLI 路径）的向后兼容入口。
+            # 方案 A（fused MLP）：合并每层 gate/up 的权重为单次 FC1 GEMM。
+            # 数学等价、量化兼容；详见 ``kernelSrc/docs/fused_mlp.md`` § 3 方案 A。
             install_fused_mlp(self.model)
         print(colored(f"model {self.model}", "dark_grey"))
 
@@ -313,28 +356,33 @@ class LLM(torch.nn.Module, Model):
             if awq_fp32_calib and saved_dtype is not None:
                 self.model.to(saved_dtype)
         self.is_quantized = True
-        set_dynamic_quant(self, "bf16")
+        # feature_config.quantize 可覆盖动态量化 dtype（默认 "bf16"，与历史一致）。
+        dynamic_quant = self.feature_config.quantize.get("dynamic_quant", "bf16")
+        set_dynamic_quant(self, dynamic_quant)
 
-        self.export(export_dir, dynamo=False)
+        # feature_config.export 可覆盖导出级开关（如 {"dynamo": true}）。
+        dynamo = bool(self.feature_config.export.get("dynamo", False))
+        self.export(export_dir, dynamo=dynamo)
         onnx_path = f"{export_dir}/llm.onnx"
         if is_nvfp4_quantized(quant_cfg):
             print(colored("nvfp4 quantization detected, post processing...", "green"))
             self._nvfp4_post_processing(onnx_path, export_dir)
 
     @classmethod
-    def construct_from_name_path(cls, model_name, model_path, train_config=None):
+    def construct_from_name_path(cls, model_name, model_path, train_config=None, feature_config=None):
         from .model_pi05 import Pi05Model
 
         pi05_model = Pi05Model.construct_from_name_path(
             model_name, model_path, train_config
         )
-        return cls.construct_model(pi05_model)
+        return cls.construct_model(pi05_model, feature_config=feature_config)
 
     @classmethod
-    def construct_model(cls, pi05_model, dtype=torch.bfloat16):
+    def construct_model(cls, pi05_model, dtype=torch.bfloat16, feature_config=None):
         paligemma = pi05_model.paligemma_with_expert.paligemma
         llm_model = cls(pi05_model.paligemma_with_expert.paligemma.config.text_config,
-                        paligemma.get_decoder())
+                        paligemma.get_decoder(),
+                        feature_config=feature_config)
         return llm_model
 
     def export(
