@@ -12,7 +12,7 @@
 # 若模型 config 不同，请同步修改下列元组。
 
 _NUM_LAYERS = 18
-_PREFIX_LEN = 968
+_PREFIX_LEN = 818
 _ACTION_HORIZON = 10
 _ACTION_DIM = 32
 _HEAD_DIM = 256

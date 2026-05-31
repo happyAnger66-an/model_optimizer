@@ -265,3 +265,5 @@ calibration set ──────►  PTQ (ModelOpt / mtq.quantize)
 | 日期 | 内容 |
 |---|---|
 | 2026-05-27 | 初版，基于 `TensorRT-LLM` / `TensorRT-Edge-LLM` 优化技术交叉清单 |
+| 2026-05-30 | 修复 `LLMWithCuteDsl` NVFP4 导出缺 `_nvfp4_post_processing` 导致 TRT 编译报 `TRT_FP4QDQ Plugin not found`；踩坑详见 `docs/optimizer/ddup/fused_mlp.md` §5.1 |
+| 2026-05-30 | **#9 落地**：`config/quant/llm_quant_nvfp4_fp8_mix_cutedsl_cfg.py` 中 fused `mlp.gate_up_proj` 的 FP8 `weight_quantizer` 由 per-tensor(`axis=None`) 改为 per-channel(`axis=0`)，消除 fused 后 gate/up 共用 amax 的 scale 拉伸；activation 保持 per-tensor。作为 #5 fused MLP 的精度收尾，是 #1 的子步骤。 |

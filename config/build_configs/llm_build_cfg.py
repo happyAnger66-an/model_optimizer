@@ -1,22 +1,23 @@
 # TensorRT-Edge-LLM AttentionPlugin 在 ONNX 中多为 FP16；若 bf16 建引擎报
 # "doesn't report any supported format combinations"，请改为 "fp16"。
+SEQ_LEN = 818
 build_cfg = {
     "precision": "bf16",
     "workspace_mb": 8192,
     "min_shapes": {
-        "inputs_embeds": (1, 968, 2048),
-        "attention_mask": (1, 1, 968, 968),
-        "position_ids": (1, 968),
+        "inputs_embeds": (1, SEQ_LEN, 2048),
+        "attention_mask": (1, 1, SEQ_LEN, SEQ_LEN),
+        "position_ids": (1, SEQ_LEN),
     },
     "opt_shapes": {
-        "inputs_embeds": (1, 968, 2048),
-        "attention_mask": (1, 1, 968, 968),
-        "position_ids": (1, 968),
+        "inputs_embeds": (1, SEQ_LEN, 2048),
+        "attention_mask": (1, 1, SEQ_LEN, SEQ_LEN),
+        "position_ids": (1, SEQ_LEN),
     },
     "max_shapes": {
-        "inputs_embeds": (1, 968, 2048),
-        "attention_mask": (1, 1, 968, 968),
-        "position_ids": (1, 968),
+        "inputs_embeds": (1, SEQ_LEN, 2048),
+        "attention_mask": (1, 1, SEQ_LEN, SEQ_LEN),
+        "position_ids": (1, SEQ_LEN),
     },
     #"plugin_lib_paths": [
     #    "/srcs/codes/llmOnEdge/build-fmha/libNvInfer_edgellm_plugin.so"

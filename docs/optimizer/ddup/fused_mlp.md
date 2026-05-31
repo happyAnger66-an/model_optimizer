@@ -157,12 +157,128 @@ def forward(self, x):
   `gate_up GEMM + Split + Gelu + Mul` 融成一个 epilogue，进一步省掉中间 HBM 往返——
   这部分是"为下游优化铺路"。
 - **风险**：极低。唯一需关注的是 gate 与 up 量纲差异较大时 per-tensor weight scale
-  可能被拉伸（roadmap #9：建议给 `*gate_up_proj*weight_quantizer` 设 `axis=(0,)`
-  走 per-channel 规避）。
+  可能被拉伸——**已由 roadmap #9 解决**（给 `gate_up_proj.weight_quantizer` 设 `axis=0`
+  走 per-channel，原理详见 §四）。
 
 ---
 
-## 四、后续（方案 B / C）
+## 四、per-channel 权重量化（roadmap #9 · fused MLP 的精度收尾）
+
+> 落地位置：`config/quant/llm_quant_nvfp4_fp8_mix_cutedsl_cfg.py`，把 fused
+> `mlp.gate_up_proj` 的 **FP8 `weight_quantizer`** 由 per-tensor(`axis=None`) 改为
+> per-channel(`axis=0`)；`input_quantizer`（激活）保持 per-tensor。
+>
+> **这是精度优化，不是速度优化**——per-tensor / per-channel 在 TRT FP8 GEMM 上是同一条
+> kernel 路径，区别只在 scale 粒度。收益是量化输出更接近 BF16 baseline。
+
+### 4.1 量化的本质：一个 scale 把浮点压进 FP8 的小动态范围
+
+FP8 E4M3 只能表示约 `[-448, 448]` 且尾数很短。量化先求缩放因子 `s`：
+
+```
+s = amax(W) / 448,   W_q = round(W / s),   Ŵ = s · W_q
+```
+
+`amax(W)` 是该 scale 覆盖范围内**绝对值最大的元素**。关键：**范围内所有元素共享同一个
+scale，而 scale 由最大值决定**。量化误差正比于 `s`——`s` 越大，量化台阶越粗，小数值损失越重。
+
+### 4.2 per-tensor vs per-channel：scale 覆盖范围不同
+
+fused 后权重 `W_gate_up ∈ R^{2I × H}`（行=输出通道，列=输入维）：
+
+| 模式 | scale 数量 | 公式 |
+|---|---|---|
+| per-tensor (`axis=None`) | 1（整矩阵共用） | `s = max_{全矩阵}|W| / 448` |
+| per-channel (`axis=0`) | `2I`（每输出行一个） | `s_k = max_j |W_{k,j}| / 448` |
+
+per-tensor 用**全矩阵最大值**定 scale，只要有一个离群大值（outlier），整矩阵 scale 被拉大，
+幅度小的通道被"压扁"、有效量化位数骤降。
+
+> 直观例子：A 行最大值 100，B 行最大值 1。
+> - per-tensor：`s=100/448≈0.223`，B 行在 1 附近只有 ~4 个台阶 → 精度极差。
+> - per-channel：B 行单独 `s=1/448≈0.0022`，1 附近有 ~448 个台阶 → 精度高约 100×。
+
+per-channel 让每行用自己的局部最大值定 scale，**离群行不再污染其他行**。
+
+### 4.3 为什么这对 "fused gate_up_proj" 尤其关键
+
+这正是 #9 的动机。fusion 把两支在输出维拼接：
+
+```
+W_gate_up = [ W_gate ;   ∈ R^{2I × H}
+              W_up   ]
+```
+
+- `gate` 后接激活（GeGLU）、`up` 是线性直通——两支权重量纲通常不同（常一支明显更大）。
+- **per-tensor 会逼 gate 与 up 共用一个 scale**：大幅度分支决定 amax，小幅度分支精度被牺牲。
+  这是 **fusion 引入的新隐患**——融合前它俩是两个独立 Linear、各有 per-tensor scale，互不干扰；
+  一拼接，per-tensor 把它们绑死了。
+- 改 **per-channel(`axis=0`)** 后，`2I` 个输出通道各自独立 scale，gate 行与 up 行互不影响，
+  等价于"融合前各自独立量化"的精度，同时保留 fusion 的速度收益。
+
+一句话：**per-channel 把 fused MLP 从"省速度、丢精度"变成"既省速度、又不丢精度"。**
+
+### 4.4 边界说明
+
+- **不影响速度**：per-channel weight scale 在 FP8 GEMM epilogue 阶段按列乘一个向量 scale，
+  开销可忽略，kernel 不变。
+- **激活仍 per-tensor**：激活 scale 沿收缩维（contraction dim），per-channel 对 GEMM 数学上
+  不成立，故 `input_quantizer` 保持 `axis=None`。per-channel 只用在 weight。
+- **NVFP4 层无需此改动**：NVFP4 weight 本就沿**输入维**按 16 元素 block 做 block-scale（比
+  per-channel 还细），而拼接是沿**输出维**、不混 block，天然安全。只有被显式指定成
+  **FP8 per-tensor** 的那几层（mix cfg 第 3–17 层部分）有隐患，#9 正是对症这些层。
+
+### 4.5 代价
+
+仅多存 `2I` 个 scale 标量，可忽略。
+
+---
+
+## 五、踩坑记录
+
+### 5.1 NVFP4 量化后 TensorRT 编译报 `TRT_FP4QDQ ... Plugin not found`
+
+**现象**：cutedsl 路径（`LLMWithCuteDsl`）NVFP4 量化导出的 `llm.onnx`，在 TensorRT
+编译时报错，节点常落在 `mlp/gate_up_proj` / `mlp/down_proj`：
+
+```
+operator: TRT_FP4QDQ (checkFallbackPluginImporter): INVALID_NODE:
+creator && "Plugin not found, are the plugin name, version, and namespace correct?"
+```
+
+**根因**：ModelOpt 对 NVFP4 权重导出的是**自定义算子 `TRT_FP4QDQ`**，它不是 TensorRT
+原生 plugin，必须经 `modelopt.onnx.quantization.qdq_utils.fp4qdq_to_2dq()` 转换成
+**两级标准 `DequantizeLinear`**（block scale + global scale）后 TensorRT 才能识别。
+
+报错节点指向 `gate_up_proj` / `down_proj` 只是日志先撞上 MLP 层；实际上**所有** NVFP4
+量化的 `nn.Linear`（含 attention q/k/v/o）都带 `TRT_FP4QDQ`，**与 fused MLP 本身无关**。
+
+**关键约束：三条 LLM 导出路径都必须在 `export()` 后调用 `_nvfp4_post_processing`。**
+
+| 路径 | `quantize()` 是否调 `_nvfp4_post_processing` |
+|---|---|
+| `llm.py`（`LLM`） | ✅ L320-322 |
+| `llm_with_trtedgellm.py`（`LLMWithTrtEdgeLLM`） | ✅ L753-755 |
+| `llm_with_cutedsl.py`（`LLMWithCuteDsl`） | ✅ 已补（早期版本缺失，即本坑） |
+
+**注意**：不能直接复用基类 `Model._nvfp4_post_processing`——它首行
+`self.model.save_pretrained(...)` 假设 `self.model` 是 HF `PreTrainedModel`；而
+cutedsl 路径的 `self.model` 是 `Pi05CuteDslLanguageModel`（普通 `nn.Module`，真正的
+HF 解码器藏在 `_hf_gemma`），没有 `save_pretrained`，会抛 `AttributeError`。故
+`LLMWithCuteDsl` 用了适配版：从 `_hf_gemma` 取 config 容错保存，核心
+`fp4qdq_to_2dq` 转换逻辑与其它路径一致。
+
+**自查**：导出后确认 ONNX 里不再有 `TRT_FP4QDQ` 节点：
+
+```python
+import onnx
+m = onnx.load("llm.onnx")
+assert not any(n.op_type == "TRT_FP4QDQ" for n in m.graph.node), "缺 nvfp4 后处理"
+```
+
+---
+
+## 六、后续（方案 B / C）
 
 若需进一步的 L2/L3 深度融合（消除中间落盘、CuTe DSL epilogue fusion），属于方案 B/C
 范畴，需要写 plugin；当前方案 A 是无损、零依赖的第一步。详见 `kernelSrc/docs/fused_mlp.md`。
