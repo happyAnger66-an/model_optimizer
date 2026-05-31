@@ -121,7 +121,16 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     if _perf_model is None:
         _perf_model = _policy_torch_model(policy)
 
-    tr = getattr(_perf_model, "time_results", None) if _perf_model is not None else None
+    # 模型级逐 stage 计时只在 ``model.perf=True`` 时写入 ``time_results``（与 standalone 一致）。
+    # webui 由 ``args.trt_perf`` 控制是否开启（TRT 路径下各 stage 即各 engine 调用）。
+    _perf_on = bool(getattr(args, "trt_perf", False))
+    if _perf_on and _perf_model is not None and not getattr(_perf_model, "perf", False):
+        try:
+            _perf_model.perf = True
+        except Exception:
+            pass
+
+    tr = getattr(_perf_model, "time_results", None) if (_perf_on and _perf_model is not None) else None
     if tr:
         for key, label in (
             ("suffix", "suffix"),
@@ -137,6 +146,10 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
                         "green",
                     )
                 )
+    # 总耗时（本段 e2e；TRT 单后端路径下 infer_ms_pt 即该后端单次推理耗时，单位 ms）。
+    if _perf_on and infer_ms_pt:
+        _e2e = float(infer_ms_pt) + (float(infer_ms_second) if infer_ms_second else 0.0)
+        print(colored(f"e2e {_e2e:.2f} ms (chunk idx={idx})", "green"))
 
     if pred_h.shape[0] < action_horizon or gt_h.shape[0] < action_horizon:
         logging.warning(
