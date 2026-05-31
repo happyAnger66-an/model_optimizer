@@ -10,6 +10,7 @@ inference_mode: tensorrt
 device: cuda:0
 precision: bf16
 denoise_adarms_precompute: true
+vit_batch_views: true
 
 engine_path: /tmp/build/pi05/opt
 vit_engine: vit_fp8.engine

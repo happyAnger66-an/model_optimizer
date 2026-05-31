@@ -7,7 +7,7 @@
 #   - opt/max batch=_NUM_VIEWS  按真实工作点选 tactic（pi05_libero 默认 2 视角）。
 # 若部署视角数不同，改 _NUM_VIEWS 即可。
 
-_NUM_VIEWS = 2
+_NUM_VIEWS = 3
 
 build_cfg = {
     "precision": "bf16",
