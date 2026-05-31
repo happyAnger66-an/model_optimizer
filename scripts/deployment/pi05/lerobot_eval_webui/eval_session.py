@@ -11,7 +11,7 @@ from termcolor import colored
 
 from .bundle import load_infer_bundle
 from .calib import stop_pi05_calib_collectors
-from .chunk_infer import process_infer_chunk
+from .chunk_infer import dump_perf_final_summary, process_infer_chunk
 from .config import Args
 from .ports import SyncOutboundPort
 from .protocol import event_to_json
@@ -92,6 +92,10 @@ def run_infer_worker(
             pass
     finally:
         stop_pi05_calib_collectors(bundle.get("calib_collectors") if bundle else None)
+        try:
+            dump_perf_final_summary(bundle)
+        except Exception as exc:
+            logging.warning("打印最终性能汇总失败: %s", exc)
         print(colored("[infer] 线程退出", "cyan"), flush=True)
         try:
             bridge.sync_close()

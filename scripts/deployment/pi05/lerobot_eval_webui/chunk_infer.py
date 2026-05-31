@@ -91,6 +91,91 @@ def _maybe_print_chunk_profile(args: Any, idx: int) -> None:
             )
 
 
+def _stats_line_ms(values: list[float]) -> str:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.size == 0:
+        return "n=0"
+    return (
+        f"n={int(arr.size)} mean={float(np.mean(arr)):.2f} "
+        f"p50={float(np.percentile(arr, 50)):.2f} p90={float(np.percentile(arr, 90)):.2f} "
+        f"p99={float(np.percentile(arr, 99)):.2f} ms"
+    )
+
+
+def dump_perf_final_summary(bundle: dict[str, Any] | None) -> None:
+    """推理结束时输出一次最终性能汇总。"""
+    if not bundle:
+        return
+    args = bundle.get("args")
+    if args is None:
+        return
+
+    policy = bundle.get("policy")
+    model = _policy_torch_model(policy) if policy is not None else None
+    tr = getattr(model, "time_results", None) if model is not None else None
+
+    print(colored("========== FINAL PERF SUMMARY ==========", "yellow"))
+    if _chunk_prof["total_ms"]:
+        print(colored(f"[summary] e2e/chunk   {_stats_line_ms(_chunk_prof['total_ms'])}", "yellow"))
+        if _chunk_prof["predict_ms"]:
+            print(colored(f"[summary] predict_ms  {_stats_line_ms(_chunk_prof['predict_ms'])}", "yellow"))
+        if _chunk_prof["load_ms"]:
+            print(colored(f"[summary] load_ms     {_stats_line_ms(_chunk_prof['load_ms'])}", "yellow"))
+        if _chunk_prof["repack_ms"]:
+            print(colored(f"[summary] repack_ms   {_stats_line_ms(_chunk_prof['repack_ms'])}", "yellow"))
+        if _chunk_prof["post_ms"]:
+            print(colored(f"[summary] post_ms     {_stats_line_ms(_chunk_prof['post_ms'])}", "yellow"))
+        data_ms = (
+            float(np.mean(np.asarray(_chunk_prof["load_ms"], dtype=np.float64))) +
+            float(np.mean(np.asarray(_chunk_prof["repack_ms"], dtype=np.float64)))
+            if _chunk_prof["load_ms"] and _chunk_prof["repack_ms"]
+            else 0.0
+        )
+        total_ms = float(np.mean(np.asarray(_chunk_prof["total_ms"], dtype=np.float64)))
+        pred_ms = (
+            float(np.mean(np.asarray(_chunk_prof["predict_ms"], dtype=np.float64)))
+            if _chunk_prof["predict_ms"]
+            else 0.0
+        )
+        py_overhead_ms = max(total_ms - pred_ms, 0.0)
+        print(colored(f"[summary] data_processing ~= {data_ms:.2f} ms", "yellow"))
+        print(colored(f"[summary] python_overhead ~= {py_overhead_ms:.2f} ms ({(py_overhead_ms/total_ms*100.0) if total_ms > 0 else 0.0:.1f}%)", "yellow"))
+
+    if isinstance(tr, dict):
+        for key, label in (
+            ("suffix", "suffix"),
+            ("action", "action"),
+            ("vit", "embed_prefix"),
+            ("lang_emb", "lang_emb"),
+            ("llm", "llm"),
+        ):
+            vals = tr.get(key, None)
+            if vals:
+                ms_vals = [float(x) * 1000.0 for x in vals]
+                print(colored(f"[summary:model] {label:<11} {_stats_line_ms(ms_vals)}", "yellow"))
+
+    # engine 级汇总（prepare/execute/post/total）
+    ex = getattr(policy, "_trt_executor", None) if policy is not None else None
+    engs = getattr(ex, "_trt_engines", None) if ex is not None else None
+    if isinstance(engs, dict) and engs:
+        for name in sorted(engs.keys()):
+            eng = engs[name]
+            tr_e = getattr(eng, "time_results", None)
+            if not isinstance(tr_e, dict):
+                continue
+            total_s = tr_e.get("total", [])
+            if not total_s:
+                continue
+            total_ms_vals = [float(x) * 1000.0 for x in total_s]
+            print(colored(f"[summary:engine] {name}.total   {_stats_line_ms(total_ms_vals)}", "yellow"))
+            for k in ("prepare", "execute", "post"):
+                vv = tr_e.get(k, [])
+                if vv:
+                    ms_vals = [float(x) * 1000.0 for x in vv]
+                    print(colored(f"[summary:engine] {name}.{k:<7} {_stats_line_ms(ms_vals)}", "yellow"))
+    print(colored("========================================", "yellow"))
+
+
 def _policy_torch_model(policy: Any) -> Any:
     """解析 PyTorch 策略上的 PI0 模块：openpi ``Policy`` 为 ``_model``，少数封装为 ``_policy._model``。"""
     m = getattr(policy, "_model", None)

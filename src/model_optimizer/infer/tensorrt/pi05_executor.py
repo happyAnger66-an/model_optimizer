@@ -91,6 +91,12 @@ class Pi05TensorRTExecutor(Executor):
         self.pi05_model = pi05_model.model
 #        self.pi05_model.to(precision)
         self.config = config
+        self._trt_engines: dict[str, Engine] = {}
+        # 暴露给上层（webui 汇总）读取 engine 级统计
+        try:
+            setattr(self.policy, "_trt_executor", self)
+        except Exception:
+            pass
 
     def load_model(self, config=None):
         if config is None:
@@ -149,6 +155,7 @@ class Pi05TensorRTExecutor(Executor):
 
     def _setup_trt_engine(self):
         if self.config.engine_path:
+            self._trt_engines = {}
             # 全局 TRT engine 开关：perf 耗时统计（默认开）、CUDA Graph（默认关）。
             _trt_perf = bool(_cfg_get(self.config, "trt_perf", True))
             _trt_cuda_graph = bool(_cfg_get(self.config, "trt_cuda_graph", False))
@@ -167,6 +174,7 @@ class Pi05TensorRTExecutor(Executor):
                     perf=_trt_perf, use_cuda_graph=_trt_cuda_graph,
                     cuda_graph_warmup=_trt_cg_warmup, perf_warmup=_trt_perf_warmup,
                     perf_print_interval=_trt_perf_print_interval)
+                self._trt_engines["vit"] = vit_engine
 
                 def get_image_features(pixel_values):
                     out = vit_engine(pixel_values)
@@ -359,6 +367,7 @@ class Pi05TensorRTExecutor(Executor):
                     perf_warmup=_trt_perf_warmup,
                     perf_print_interval=_trt_perf_print_interval,
                 )
+                self._trt_engines["embed_prefix"] = embed_prefix_engine
 
                 def embed_prefix_trt(self_m, images, img_masks, lang_tokens, lang_masks):
                     """与 ``PI0Pytorch.embed_prefix`` 同签名；输入名对齐 ``embed_prefix.onnx``。"""
@@ -387,6 +396,7 @@ class Pi05TensorRTExecutor(Executor):
                     self.config.engine_path, self.config.llm_engine), perf=_trt_perf,
                     use_cuda_graph=_trt_cuda_graph, cuda_graph_warmup=_trt_cg_warmup,
                     perf_warmup=_trt_perf_warmup, perf_print_interval=_trt_perf_print_interval)
+                self._trt_engines["llm"] = llm_engine
 
                 def llm_forward(input_ids=None,
                                 attention_mask=None,
@@ -462,6 +472,7 @@ class Pi05TensorRTExecutor(Executor):
                     perf=_trt_perf, use_cuda_graph=_trt_cuda_graph,
                     cuda_graph_warmup=_trt_cg_warmup, perf_warmup=_trt_perf_warmup,
                     perf_print_interval=_trt_perf_print_interval)
+                self._trt_engines["expert"] = expert_engine
 
                 def expert_forward(inputs_ids=None, attention_mask=None,
                                    position_ids=None,
@@ -503,6 +514,7 @@ class Pi05TensorRTExecutor(Executor):
                     perf_warmup=_trt_perf_warmup,
                     perf_print_interval=_trt_perf_print_interval,
                 )
+                self._trt_engines["denoise"] = denoise_engine
 
                 # AdaRMS Dense 预计算（roadmap #22）：引擎以 adarms_mod 输入导出时，host 预算并喂入。
                 from model_optimizer.infer.pi05_adarms import (
