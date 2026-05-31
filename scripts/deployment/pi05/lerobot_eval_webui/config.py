@@ -92,6 +92,20 @@ class Args:
     """多视角 batching：把所有相机视角堆成 batch 维一次过 vit 引擎（需 vit 引擎按 vit_build_cfg
     的 batch 维 ≥ num_views 编译，且 vit.onnx 含 batch 动态轴）。与 embed_prefix_engine 互斥。"""
 
+    trt_perf: bool = True
+    """打开 TRT engine 的逐次耗时统计（>100 次后打印各 engine 的均值/分位耗时）。"""
+
+    trt_cuda_graph: bool = False
+    """对所有 TRT engine 启用 CUDA Graph 捕获/回放，降低 kernel launch 开销；
+    仅在输入 shape 稳定时安全（动态 shape 会触发重捕获）。"""
+
+    trt_cuda_graph_warmup: int = 3
+    """CUDA Graph 捕获前的 warmup 次数。"""
+
+    denoise_adarms_precompute: bool = False
+    """denoise 引擎以 adarms_mod 输入导出时（AdaRMS Dense host 预计算 / roadmap #22），
+    在 host 侧预算调制系数并喂入引擎。须与对应的 denoise 引擎（含 adarms_mod 输入）配套。"""
+
     # ONNX Runtime 引擎（inference_mode=onnxrt 或 ort_compare 时使用）
     ort_engine_path: str = ""
     """ONNX 模型目录（包含 vit.onnx / llm.onnx / expert.onnx 等）。"""

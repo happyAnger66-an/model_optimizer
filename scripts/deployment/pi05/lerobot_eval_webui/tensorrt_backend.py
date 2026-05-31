@@ -16,6 +16,10 @@ def load_tensorrt_engines(
     denoise_engine: str,
     embed_prefix_engine: str,
     vit_batch_views: bool = False,
+    trt_perf: bool = True,
+    trt_cuda_graph: bool = False,
+    trt_cuda_graph_warmup: int = 3,
+    denoise_adarms_precompute: bool = False,
 ) -> None:
     import addict
     import torch
@@ -43,4 +47,8 @@ def load_tensorrt_engines(
         cfg["embed_prefix_engine"] = embed_prefix_engine
     if vit_batch_views:
         cfg["vit_batch_views"] = True
+    cfg["trt_perf"] = bool(trt_perf)
+    cfg["trt_cuda_graph"] = bool(trt_cuda_graph)
+    cfg["trt_cuda_graph_warmup"] = int(trt_cuda_graph_warmup)
+    cfg["denoise_adarms_precompute"] = bool(denoise_adarms_precompute)
     executor.load_model(addict.Dict(cfg))

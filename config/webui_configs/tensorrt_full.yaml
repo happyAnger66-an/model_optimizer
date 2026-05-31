@@ -16,6 +16,12 @@ vit_engine: vit_fp8.engine
 llm_engine: llm_nvfp4_lat.engine
 denoise_engine: denoise_st_fp8.engine
 
+# —— TRT engine 运行开关 ——
+# perf：>100 次后打印各 engine 的耗时统计；cuda_graph：捕获/回放降低 launch 开销（输入 shape 稳定时安全）。
+trt_perf: true
+trt_cuda_graph: true
+trt_cuda_graph_warmup: 3
+
 num_samples: 100
 start_index: 0
 noise: fixed

@@ -470,6 +470,10 @@ def load_infer_bundle(
             denoise_engine=args.denoise_engine,
             embed_prefix_engine=args.embed_prefix_engine,
             vit_batch_views=bool(getattr(args, "vit_batch_views", False)),
+            trt_perf=bool(getattr(args, "trt_perf", True)),
+            trt_cuda_graph=bool(getattr(args, "trt_cuda_graph", False)),
+            trt_cuda_graph_warmup=int(getattr(args, "trt_cuda_graph_warmup", 3)),
+            denoise_adarms_precompute=bool(getattr(args, "denoise_adarms_precompute", False)),
         )
         print(colored("[infer] TensorRT 引擎已就绪", "cyan"), flush=True)
         _p("tensorrt", "TensorRT 引擎已就绪")
