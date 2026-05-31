@@ -372,6 +372,11 @@ class ArgsConfig:
     embed_prefix_engine: str = ""
     """Pi05EmbedPrefix 融合前缀嵌入引擎（如 ``embed_prefix.engine``），置于 ``trt_engine_path`` 下。仅 inference_mode='tensorrt' 时使用。"""
 
+    denoise_adarms_precompute: bool = False
+    """denoise 引擎以 AdaRMS 预计算模式导出（第 5 输入为 ``adarms_mod`` 而非 ``timestep``）时置 True：
+    host 侧按步预算 modulation 并喂入引擎（roadmap #22 / docs/optimizer/ddup/adarms_pre_compute.md）。
+    等价于设置环境变量 ``PI05_ADARMS_PRECOMPUTE=1``。"""
+
     denoising_steps: int = 10
     """Number of denoising steps to use."""
 
@@ -483,6 +488,9 @@ def main(args: ArgsConfig):
 
             if args.embed_prefix_engine:
                 config["embed_prefix_engine"] = args.embed_prefix_engine
+
+            if args.denoise_adarms_precompute:
+                config["denoise_adarms_precompute"] = True
 
             if config is not None:
                 config = addict.Dict(config)

@@ -1,0 +1,29 @@
+# lerobot_eval_webui_server —— ONNX Runtime 后端推理。
+# 用法：
+#   python scripts/deployment/pi05/lerobot_eval_webui_server.py \
+#     --webui-config config/webui_configs/onnxrt.yaml
+#
+# ort_engine_path 为 ONNX 模型目录（含 vit.onnx / llm.onnx / expert.onnx / denoise.onnx）。
+# NVFP4（ONNX dtype 23）等需 TensorRTExecutionProvider；未安装则自动跳过该 EP。
+checkpoint: /srcs/openpi/pytorch_pi05_libero/
+config: pi05_libero
+inference_mode: onnxrt
+device: cuda:0
+
+ort_engine_path: /tmp/pi05/onnx
+ort_vit_engine: vit.onnx
+ort_llm_engine: llm.onnx
+ort_expert_engine: expert.onnx
+ort_denoise_engine: denoise.onnx
+ort_providers:
+  - TensorRTExecutionProvider
+  - CUDAExecutionProvider
+  - CPUExecutionProvider
+
+num_samples: 100
+start_index: 0
+noise: fixed
+noise_seed: 0
+
+host: 0.0.0.0
+port: 8765

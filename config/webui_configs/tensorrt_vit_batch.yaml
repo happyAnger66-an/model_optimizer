@@ -1,0 +1,29 @@
+# lerobot_eval_webui_server —— 全 TensorRT 引擎 + 多视角 batching（延时优化）。
+# 用法：
+#   python scripts/deployment/pi05/lerobot_eval_webui_server.py \
+#     --webui-config config/webui_configs/tensorrt_vit_batch.yaml
+#
+# 前置：vit 引擎必须支持动态 batch（vit.py 已放开 batch 轴 + vit_build_cfg 的 opt/max batch≥视角数）。
+# 把所有相机视角堆成 batch 维一次过 vit 引擎（SigLIP 各图独立、数值等价于逐视角）。
+# 与 embed_prefix_engine 互斥（勿同时配置）。
+checkpoint: /srcs/openpi/pytorch_pi05_libero/
+config: pi05_libero
+inference_mode: tensorrt
+device: cuda:0
+precision: bf16
+
+engine_path: /tmp/pi05/build/quant
+vit_engine: vit_fp8_bv2.engine        # 按 _NUM_VIEWS 编译的多视角 batch 引擎
+llm_engine: llm_nvfp4_lat.engine
+expert_engine: expert_fp8.engine
+denoise_engine: denoise_fused_st_fp8.engine
+
+vit_batch_views: true
+
+num_samples: 100
+start_index: 0
+noise: fixed
+noise_seed: 0
+
+host: 0.0.0.0
+port: 8765

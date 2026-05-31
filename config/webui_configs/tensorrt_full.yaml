@@ -1,0 +1,25 @@
+# lerobot_eval_webui_server —— 全 TensorRT 引擎推理（vit/llm/expert/denoise）。
+# 用法：
+#   python scripts/deployment/pi05/lerobot_eval_webui_server.py \
+#     --webui-config config/webui_configs/tensorrt_full.yaml
+#
+# engine_path 为引擎目录；各 *_engine 是该目录下的文件名。未提供的阶段回退 PyTorch。
+checkpoint: /srcs/openpi/pytorch_pi05_libero/
+config: pi05_libero
+inference_mode: tensorrt
+device: cuda:0
+precision: bf16
+denoise_adarms_precompute: true
+
+engine_path: /tmp/pi05/build/opt
+vit_engine: vit_fp8.engine
+llm_engine: llm_nvfp4_lat.engine
+denoise_engine: denoise_st_fp8.engine
+
+num_samples: 100
+start_index: 0
+noise: fixed
+noise_seed: 0
+
+host: 0.0.0.0
+port: 8765

@@ -1,0 +1,19 @@
+# lerobot_eval_webui_server —— PyTorch 浮点基线（精度/对齐参考）。
+# 用法：
+#   python scripts/deployment/pi05/lerobot_eval_webui_server.py \
+#     --webui-config config/webui_configs/pytorch_baseline.yaml
+# 键为 Args 的 snake_case 字段；命令行参数写在 --webui-config 之后可覆盖这里的项。
+checkpoint: /srcs/openpi/pytorch_pi05_libero/
+config: pi05_libero
+inference_mode: pytorch
+device: cuda:0
+
+num_samples: 100
+start_index: 0
+
+# 推理初值固定，便于与 TRT/ONNX 后端逐 chunk 复现对比。
+noise: fixed
+noise_seed: 0
+
+host: 0.0.0.0
+port: 8765

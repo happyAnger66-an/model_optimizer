@@ -1,0 +1,30 @@
+# lerobot_eval_webui_server —— PyTorch(浮点) vs TensorRT 双路对比。
+# 用法：
+#   python scripts/deployment/pi05/lerobot_eval_webui_server.py \
+#     --webui-config config/webui_configs/pt_trt_compare.yaml
+#
+# compare_mode=True：固定 PyTorch + TensorRT 双策略并逐 chunk 对比（与 ptq_compare 等互斥）。
+# vit_pt_trt_compare=True：额外对比 ViT 的 get_image_features（PT vs vit.engine）。
+checkpoint: /srcs/openpi/pytorch_pi05_libero/
+config: pi05_libero
+inference_mode: tensorrt           # compare_mode 下 TRT 路读取该后端引擎
+device: cuda:0
+precision: bf16
+
+compare_mode: true
+vit_pt_trt_compare: true
+
+engine_path: /tmp/pi05/build/quant
+vit_engine: vit_fp8.engine
+llm_engine: llm_nvfp4_lat.engine
+expert_engine: expert_fp8.engine
+denoise_engine: denoise_fused_st_fp8.engine
+
+num_samples: 100
+start_index: 0
+# 双路共用同一块固定噪声，保证可比。
+noise: fixed
+noise_seed: 0
+
+host: 0.0.0.0
+port: 8765

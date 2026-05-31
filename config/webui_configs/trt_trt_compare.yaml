@@ -1,0 +1,34 @@
+# lerobot_eval_webui_server —— 双 TensorRT 对比（如 FP8 主路 vs NVFP4 第二路）。
+# 用法：
+#   python scripts/deployment/pi05/lerobot_eval_webui_server.py \
+#     --webui-config config/webui_configs/trt_trt_compare.yaml
+#
+# trt_trt_compare=True 需 --inference-mode tensorrt；主路 engine_path + 第二路 trt_trt_second_engine_path。
+# 第二路各子图文件名留空则沿用主路的同名 *_engine。
+checkpoint: /srcs/openpi/pytorch_pi05_libero/
+config: pi05_libero
+inference_mode: tensorrt
+device: cuda:0
+precision: bf16
+
+trt_trt_compare: true
+
+# 主路（如 FP8）
+engine_path: /tmp/pi05/build/quant
+vit_engine: vit_fp8.engine
+llm_engine: llm_fp8.engine
+expert_engine: expert_fp8.engine
+denoise_engine: denoise_fused_st_fp8.engine
+
+# 第二路（如 NVFP4 延时优先）
+trt_trt_second_engine_path: /tmp/pi05/build/quant
+trt_trt_second_llm_engine: llm_nvfp4_lat.engine
+# 其余子图未指定 → 复用主路文件名
+
+num_samples: 100
+start_index: 0
+noise: fixed
+noise_seed: 0
+
+host: 0.0.0.0
+port: 8765
