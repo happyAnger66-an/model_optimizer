@@ -345,7 +345,89 @@ observation
 
 ---
 
-## 9. 一句话总结
+## 9. 叠加 fused MLP（gate/up 合并，roadmap #9）
+
+AdaRMS 预计算把 370 个 `dense` GEMM 移出图后，denoise expert 仍处于 **launch-bound** 区间（suffix S=10）。
+此时可叠加 **fused MLP**：把 expert 每层 `GemmaMLP` 的 `gate_proj`/`up_proj` 在输出维 concat 成单个
+`gate_up_proj`（一次 FC1 GEMM），与原计算 **数学等价、无精度损失**。
+
+```text
+原：g = gate_proj(x); u = up_proj(x); h = down_proj(act(g) * u)   # 2 次 FC1 GEMM/层
+新：gu = gate_up_proj(x); g,u = gu.chunk(2,-1); h = down_proj(act(g)*u)  # 1 次 FC1 GEMM/层
+```
+
+### 收益（与 AdaRMS 同向，可叠加）
+
+- 每层省 1 个 GEMM launch：18 层 → 每 denoise step 少 18 次；`num_steps=10` → 整段动作生成少约 **180 次** GEMM launch。
+- FC1 权重一次连续 HBM load（`[2I, H]`）、算术强度更高；后续 `chunk/act/mul/down` 仍为 ONNX 原生 op，由 Myelin 融合。
+- 纯 ONNX 图重写（concat 权重→更大 MatMul），**编译器友好**，与手写融合 kernel（roadmap #13 实测会 regress）性质不同；该实现已在 LLM/cutedsl 路径上线验证。
+
+### 实现（复用 `fused_mlp.py`，仍不改原始 `modeling_gemma.py`）
+
+- `dit.py` 注册 `fused_mlp` 特性（`supported_models=None`、`default_enabled=True`，与 `llm.py` 一致）；
+  `apply_features` 的 target 统一传 `gemma_expert`，`install_fused_mlp` 就地替换每层 `.mlp` 为 `FusedGemmaMLP`。
+- adarms 经 `ctx.extra["denoise_step"]` 回到 `Pi05DenoiseStep`，与 fused_mlp 共用一次 `apply_features`，互不干扰
+  （fused_mlp 改 `.mlp`，adarms 改 layernorm.forward）。
+- 直接构造路径新增 `fuse_mlp: bool=False` 开关；`construct_model(..., fuse_mlp=...)` 透传。
+- 时序：`fused_mlp` 在 `__init__` 完成，早于 `quantize()`，ModelOpt 直接量化合并后的 `gate_up_proj`；
+  `_LinearMetaShim` 保证不会给已合并的 gate/up 重复插量化器。
+
+### 量化注意（必看）⚠️
+
+合并后模块名变为 `*layers.{i}.mlp.gate_up_proj`，**针对 `gate_proj`/`up_proj` 的旧量化规则不再命中**。
+
+**FP8 必须 per-tensor**：标准 ONNX 的 FP8(E4M3) 导出只支持 per-tensor（ModelOpt
+`tensor_quantizer._check_onnx_readiness` 要求 `amax` 为标量）。对 `gate_up_proj` 设 per-channel（axis=0）
+会在 `torch.onnx.export` 阶段断言失败：
+
+```text
+AssertionError: E4M3 supports ONNX export only for per-tensor quantization.
+Received non-scalar amax of shape: torch.Size([8192, 1])
+```
+
+> per-channel FP8 仅在 **TRT 插件 QDQ 导出路径**（如 cutedsl LLM，会产出 `TRT_FP8QDQ`/`TRT_FP4QDQ` 节点）可用；
+> denoise 走标准 `torch.onnx.export`，故 `gate_up_proj` 用 **per-tensor FP8**（`FP8_DEFAULT_CFG` 默认即此）。
+> 若担心 gate/up 量纲混叠影响精度，改用 **NVFP4**：沿输入维 block 量化，按输出维 concat 不混 block，天然无此问题。
+
+### 配套配置（新增）
+
+| 用途 | 文件 |
+|---|---|
+| feature_config（同时开 adarms + fused_mlp） | `config/feature_configs/denoise_fused_adarms.json` |
+| 量化（`gate_up_proj` per-tensor FP8） | `config/quant/denoise_fused_adrams_st_quant_fp8_cfg.py` |
+| 编译（I/O 与纯 adarms 版相同，单列仅为命名清晰） | `config/build_configs/denoise_fused_adrams_build_cfg.py` |
+
+> 注：`config/feature_configs/adarms_precompute.json`（纯 adarms）已显式写入 `"fused_mlp": {"enabled": false}`，
+> 避免 fused_mlp 全局默认 True 被误开、破坏旧量化配置的规则匹配。
+
+### 命令
+
+```bash
+# 量化导出（feature_config 同时开 fused_mlp + adarms；用新量化配置）
+model-opt quantize \
+  --model_name pi05_libero/denoise \
+  --model_path /srcs/openpi/pytorch_pi05_libero/ \
+  --quantize_cfg config/quant/denoise_fused_adrams_st_quant_fp8_cfg.py \
+  --calibrate_data /data/pi05/denoise/ \
+  --export_dir /tmp/quantize/pi05/denoise_fused_st \
+  --feature_config config/feature_configs/denoise_fused_adarms.json
+
+# 编译
+model-opt build \
+  --model_path /tmp/quantize/pi05/denoise_fused_st/denoise.onnx \
+  --export_dir /tmp/pi05/build/quant/denoise_fused_st_fp8.engine \
+  --build_cfg config/build_configs/denoise_fused_adrams_build_cfg.py
+```
+
+### 验证
+
+- 数值：开/关 fused_mlp 对 `v_t` 逐元素 cos 应 ≥ 0.999（数学等价）。
+- 图：每层 MLP 由两个 MatMul 变一个；denoise engine kernel 数下降。
+- 量化：`mtq.print_quant_summary` 出现 `gate_up_proj` 量化器（per-tensor FP8），且无 `gate_proj/up_proj` 重复量化。
+
+---
+
+## 10. 一句话总结
 
 > Pi0.5 denoise 的 AdaRMS 时间调制 **只依赖固定的扩散时间步调度**，与推理输入无关；
 > 因此 370 个 `dense(cond)` GEMM 全是**离线可算的常量**。把它们从导出图里剥离（modulation 作为输入或常量折叠），
@@ -354,10 +436,11 @@ observation
 
 ---
 
-## 10. 修订记录
+## 11. 修订记录
 
 | 日期 | 内容 |
 |---|---|
 | 2026-05-31 | 初版：AdaRMS Dense 预计算技术细节与 model_optimizer 实现思路（roadmap #22） |
 | 2026-05-31 | 落地方案 A：`dit.py` 运行时 monkey-patch + `adarms_mod` 导出；host 侧 `AdaRmsModulator` 记忆化预算；feature_config / serve JSON / env 三种可配开关。未改原始 `modeling_gemma.py`。 |
 | 2026-05-31 | 新增 §7 使用指南（export/quantize/build/serve 全流程 + 一致性自检表）与 §8 整体推理流程总结。 |
+| 2026-05-31 | 新增 §9 叠加 fused MLP（gate/up 合并，roadmap #9）：实现接线、per-channel 量化注意、配套配置与命令。 |
