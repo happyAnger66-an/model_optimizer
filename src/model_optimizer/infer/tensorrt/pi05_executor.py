@@ -402,18 +402,41 @@ class Pi05TensorRTExecutor(Executor):
                     perf=True,
                 )
 
+                # AdaRMS Dense 预计算（roadmap #22）：引擎以 adarms_mod 输入导出时，host 预算并喂入。
+                from model_optimizer.infer.pi05_adarms import (
+                    AdaRmsModulator,
+                    adarms_precompute_enabled,
+                )
+
+                adarms_modulator = (
+                    AdaRmsModulator(self.pi05_model)
+                    if adarms_precompute_enabled(self.config)
+                    else None
+                )
+                if adarms_modulator is not None:
+                    print(colored("[adarms] denoise host 侧预计算已启用（喂 adarms_mod）", "green"))
+
                 def denoise_step_trt(self_m, state, prefix_pad_masks, past_key_values, x_t, timestep):
                     del state  # pi05 embed_suffix 不使用 state；保留签名以兼容 PI0Pytorch.denoise_step
                     input_keys, input_values = self._stack_past_key_value_tensors(
                         past_key_values
                     )
-                    outputs = denoise_engine(
-                        prefix_pad_masks=prefix_pad_masks,
-                        past_keys=input_keys,
-                        past_values=input_values,
-                        x_t=x_t,
-                        timestep=timestep,
-                    )
+                    if adarms_modulator is not None:
+                        outputs = denoise_engine(
+                            prefix_pad_masks=prefix_pad_masks,
+                            past_keys=input_keys,
+                            past_values=input_values,
+                            x_t=x_t,
+                            adarms_mod=adarms_modulator(timestep),
+                        )
+                    else:
+                        outputs = denoise_engine(
+                            prefix_pad_masks=prefix_pad_masks,
+                            past_keys=input_keys,
+                            past_values=input_values,
+                            x_t=x_t,
+                            timestep=timestep,
+                        )
                     if isinstance(outputs, dict):
                         return outputs["v_t"]
                     return outputs

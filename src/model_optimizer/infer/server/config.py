@@ -11,11 +11,19 @@ InferMode = Literal[
     "pytorch",
     "tensorrt",
     "onnxrt",
+    "flashrt",
     "pt_trt_compare",
     "pt_ptq_compare",
     "ptq_trt_compare",
     "pt_ort_compare",
+    "pt_flashrt_compare",
 ]
+
+# 单后端取值（用于分阶段后端矩阵 StagesConfig）。
+StageBackend = Literal["pytorch", "tensorrt", "onnxrt", "flashrt"]
+
+# pi05 推理的 5 个可独立替换阶段。
+PI05_STAGES: tuple[str, ...] = ("vit", "embed_prefix", "llm", "expert", "denoise")
 
 
 @dataclass
@@ -34,6 +42,9 @@ class TensorRTConfig:
     expert_engine: str = ""
     denoise_engine: str = ""
     embed_prefix_engine: str = ""
+    denoise_adarms_precompute: bool = False
+    """denoise 引擎以 AdaRMS 预计算模式导出（输入 ``adarms_mod`` 而非 ``timestep``）时置 True，
+    宿主将按步预算 modulation 并喂入（roadmap #22 / docs/optimizer/ddup/adarms_pre_compute.md）。"""
 
 
 @dataclass
@@ -44,6 +55,41 @@ class OnnxRTConfig:
     expert_engine: str = ""
     denoise_engine: str = ""
     embed_prefix_engine: str = ""
+    denoise_adarms_precompute: bool = False
+    """同 :attr:`TensorRTConfig.denoise_adarms_precompute`。"""
+
+
+@dataclass
+class FlashRtCalibConfig:
+    """FlashRT 静态 FP8 校准参数（详见 docs/optimizer/ddup/flashrt_backend_design.md §6.2）。"""
+
+    n: int = 64
+    percentile: float = 99.9
+    recalibrate_with_real_data: bool = False
+
+
+@dataclass
+class FlashRtConfig:
+    """FlashRT 手写后端配置。"""
+
+    checkpoint_dir: str = ""
+    """safetensors 权重源；为空时回退到 tensorrt.engine_path 所在目录。"""
+    num_views: int = 2
+    use_cuda_graph: bool = True
+    lib_dir: str = ""
+    """libfmha_*.so 搜索目录（为空则用 flash_rt 默认）。"""
+    calib: FlashRtCalibConfig = field(default_factory=FlashRtCalibConfig)
+
+
+@dataclass
+class StagesConfig:
+    """分阶段后端矩阵：每个阶段独立选后端，``None`` 表示跟随 ``ServerConfig.mode``。"""
+
+    vit: StageBackend | None = None
+    embed_prefix: StageBackend | None = None
+    llm: StageBackend | None = None
+    expert: StageBackend | None = None
+    denoise: StageBackend | None = None
 
 
 @dataclass
@@ -119,10 +165,29 @@ class ServerConfig:
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     tensorrt: TensorRTConfig = field(default_factory=TensorRTConfig)
     onnxrt: OnnxRTConfig = field(default_factory=OnnxRTConfig)
+    flashrt: FlashRtConfig = field(default_factory=FlashRtConfig)
+    stages: StagesConfig = field(default_factory=StagesConfig)
     ptq: PTQConfig = field(default_factory=PTQConfig)
     websocket: WebSocketConfig = field(default_factory=WebSocketConfig)
     serve: ServeConfig = field(default_factory=ServeConfig)
     calib: CalibConfig = field(default_factory=CalibConfig)
+
+    def resolve_stages(self) -> dict[str, str]:
+        """归一化分阶段后端矩阵：``stages.<stage>`` 优先，否则由 ``mode`` 推导。
+
+        细粒度 ``stages`` 字段覆盖粗粒度 ``mode``。对于纯后端 mode
+        （pytorch/tensorrt/onnxrt/flashrt），未显式指定的阶段取该后端；
+        对于对比 / PTQ 模式，基线阶段默认 ``pytorch``（第二路策略在 loader 中单独构建）。
+
+        Returns:
+            ``{stage: backend}``，stage ∈ :data:`PI05_STAGES`。
+        """
+        base: str = self.mode if self.mode in ("pytorch", "tensorrt", "onnxrt", "flashrt") else "pytorch"
+        resolved: dict[str, str] = {}
+        for stage in PI05_STAGES:
+            override = getattr(self.stages, stage, None)
+            resolved[stage] = override if override else base
+        return resolved
 
     def validate(self) -> None:
         if not self.checkpoint:
@@ -163,9 +228,35 @@ class ServerConfig:
             if bad:
                 raise ValueError(f"Invalid ptq.parts: {bad}")
 
+        # 分阶段后端矩阵校验
+        valid_backends = ("pytorch", "tensorrt", "onnxrt", "flashrt")
+        resolved = self.resolve_stages()
+        bad_be = {s: b for s, b in resolved.items() if b not in valid_backends}
+        if bad_be:
+            raise ValueError(
+                f"Invalid stage backend(s): {bad_be}; allowed={valid_backends}"
+            )
+
+        # 任一阶段走 flashrt（或 mode=flashrt / pt_flashrt_compare）时需要 checkpoint。
+        wants_flashrt = "flashrt" in resolved.values() or self.mode in (
+            "flashrt",
+            "pt_flashrt_compare",
+        )
+        if wants_flashrt:
+            ckpt = self.flashrt.checkpoint_dir or self.tensorrt.engine_path
+            if not ckpt:
+                raise ValueError(
+                    "flashrt backend requires flashrt.checkpoint_dir "
+                    "(or tensorrt.engine_path as fallback)"
+                )
+
 
 def _build_nested(cls: type, data: dict[str, Any]) -> Any:
-    """Recursively build a dataclass from a dict, ignoring unknown keys."""
+    """Recursively build a dataclass from a dict, ignoring unknown keys.
+
+    ``from __future__ import annotations`` 使 ``field.type`` 为字符串，故此处
+    通过模块 globals 解析前向引用，以支持嵌套 dataclass（如 FlashRtConfig.calib）。
+    """
     import dataclasses
 
     if not dataclasses.is_dataclass(cls):
@@ -176,8 +267,11 @@ def _build_nested(cls: type, data: dict[str, Any]) -> Any:
         if key not in fields:
             continue
         f = fields[key]
-        if dataclasses.is_dataclass(f.type if isinstance(f.type, type) else None):
-            kwargs[key] = _build_nested(f.type, value) if isinstance(value, dict) else value
+        ftype = f.type
+        if isinstance(ftype, str):
+            ftype = globals().get(ftype)
+        if dataclasses.is_dataclass(ftype) and isinstance(value, dict):
+            kwargs[key] = _build_nested(ftype, value)
         else:
             kwargs[key] = value
     return cls(**kwargs)
@@ -197,6 +291,8 @@ def load_config(path: str | Path) -> ServerConfig:
         "dataset": DatasetConfig,
         "tensorrt": TensorRTConfig,
         "onnxrt": OnnxRTConfig,
+        "flashrt": FlashRtConfig,
+        "stages": StagesConfig,
         "ptq": PTQConfig,
         "websocket": WebSocketConfig,
         "serve": ServeConfig,

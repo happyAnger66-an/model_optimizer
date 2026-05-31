@@ -51,6 +51,39 @@ def _load_pytorch_policy(config: ServerConfig, on_progress: ProgressCallback):
     return policy, train_cfg
 
 
+def _guard_flashrt_scope(config: ServerConfig) -> None:
+    """P1 仅实现 ``stages.vit=flashrt``（FlashRT SigLIP + TRT 其余）。
+
+    其余 FlashRT 路径（整体 ``mode=flashrt``、对比模式、expert/denoise 等阶段走 flashrt）
+    属于 P2/P3，未实现时明确报错而非静默退回，避免误导。详见
+    docs/optimizer/ddup/flashrt_backend_design.md §7。
+    """
+    if config.mode in ("flashrt", "pt_flashrt_compare"):
+        raise NotImplementedError(
+            f"mode={config.mode!r} 尚未实现（P2/P3）。当前可用：mode='tensorrt' + "
+            "stages.vit='flashrt' 的混合后端。"
+        )
+
+    resolved = config.resolve_stages()
+    unsupported = {
+        s: b for s, b in resolved.items() if b == "flashrt" and s != "vit"
+    }
+    if unsupported:
+        raise NotImplementedError(
+            f"FlashRT 后端目前仅支持 vit 阶段（P1）；以下阶段属于 P2/P3：{unsupported}。"
+        )
+    # vit=flashrt 仅在已挂载 TRT 引擎的路径下生效（_mount_tensorrt_engines 内接入）。
+    if resolved.get("vit") == "flashrt" and config.mode not in (
+        "tensorrt",
+        "pt_trt_compare",
+        "ptq_trt_compare",
+    ):
+        raise NotImplementedError(
+            "stages.vit='flashrt' 目前需配合 mode='tensorrt'（其余阶段走 TRT）；"
+            f"当前 mode={config.mode!r} 暂不支持。"
+        )
+
+
 def _mount_tensorrt_engines(policy: Any, config: ServerConfig, on_progress: ProgressCallback) -> None:
     """在已有策略上挂载 TensorRT 引擎。"""
     from model_optimizer.infer.tensorrt.pi05_executor import Pi05TensorRTExecutor
@@ -61,11 +94,26 @@ def _mount_tensorrt_engines(policy: Any, config: ServerConfig, on_progress: Prog
     on_progress("tensorrt", "加载 TensorRT 引擎 …")
     executor = Pi05TensorRTExecutor(policy, prec)
 
-    trt_cfg: dict[str, str] = {"engine_path": config.tensorrt.engine_path}
+    trt_cfg: dict[str, Any] = {"engine_path": config.tensorrt.engine_path}
     for attr in ("vit_engine", "llm_engine", "expert_engine", "denoise_engine", "embed_prefix_engine"):
         val = getattr(config.tensorrt, attr, "")
         if val:
             trt_cfg[attr] = val
+
+    # AdaRMS Dense 预计算（roadmap #22）：denoise 引擎以 adarms_mod 输入导出时，host 侧预算并喂入。
+    if getattr(config.tensorrt, "denoise_adarms_precompute", False):
+        trt_cfg["denoise_adarms_precompute"] = True
+
+    # 分阶段后端矩阵：vit=flashrt 时，把 FlashRT SigLIP 视觉栈接入（其余阶段仍走 TRT）。
+    # 这是把历史 ad-hoc 开关 use_flashrt_siglip_embed_prefix 迁移成一等公民的入口。
+    resolved = config.resolve_stages()
+    if resolved.get("vit") == "flashrt":
+        ckpt = config.flashrt.checkpoint_dir or str(Path(config.tensorrt.engine_path).parent)
+        trt_cfg["use_flashrt_siglip_embed_prefix"] = True
+        trt_cfg["flashrt_checkpoint_dir"] = str(Path(ckpt).expanduser().resolve())
+        trt_cfg["num_views"] = int(config.flashrt.num_views)
+        trt_cfg["flashrt_siglip_use_cuda_graph"] = bool(config.flashrt.use_cuda_graph)
+        on_progress("flashrt", f"vit 阶段切换到 FlashRT SigLIP（ckpt={trt_cfg['flashrt_checkpoint_dir']}）")
 
     executor.load_model(addict.Dict(trt_cfg))
     on_progress("tensorrt", "TensorRT 引擎已就绪")
@@ -115,11 +163,15 @@ def _mount_onnxrt_engines(policy: Any, config: ServerConfig, on_progress: Progre
     on_progress("onnxrt", "加载 ONNX Runtime 引擎 …")
     executor = Pi05OnnxRTExecutor(policy, prec)
 
-    ort_cfg: dict[str, str] = {"engine_path": config.onnxrt.engine_path}
+    ort_cfg: dict[str, Any] = {"engine_path": config.onnxrt.engine_path}
     for attr in ("vit_engine", "llm_engine", "expert_engine", "denoise_engine", "embed_prefix_engine"):
         val = getattr(config.onnxrt, attr, "")
         if val:
             ort_cfg[attr] = val
+
+    # AdaRMS Dense 预计算（roadmap #22）：denoise 引擎以 adarms_mod 输入导出时，host 侧预算并喂入。
+    if getattr(config.onnxrt, "denoise_adarms_precompute", False):
+        ort_cfg["denoise_adarms_precompute"] = True
 
     executor.load_model(addict.Dict(ort_cfg))
     on_progress("onnxrt", "ONNX Runtime 引擎已就绪")
@@ -230,6 +282,8 @@ def load_policy_for_serve(
     if on_progress is None:
         on_progress = _noop_progress
 
+    _guard_flashrt_scope(config)
+
     from openpi.policies import policy_config
     from openpi.training import config as _config
 
@@ -279,6 +333,8 @@ def load_policies(
     """
     if on_progress is None:
         on_progress = _noop_progress
+
+    _guard_flashrt_scope(config)
 
     from openpi.policies import policy_config
     from openpi.training import config as _config

@@ -1,0 +1,177 @@
+# AdaRMS Dense 预计算（Pi0.5 action expert / DiT denoise）
+
+> roadmap #22。FlashRT 实证：**编译器路径 -5.5ms**（v1.4 → v1.6-L2），是 FlashRT 那批优化里
+> **最该移植到 model_optimizer（编译器/Myelin 路径）的一项**——因为它靠的是"图简化让编译器选到更好 tactic"，
+> 而非"抛弃编译器手写 kernel"。
+>
+> 关联：`docs/optimizer/roadmap.md` §8 / #22；`docs/flashRT/pipeline.md`；FlashRT `docs/optimization-details.md` §1.4。
+
+---
+
+## 1. 背景：AdaRMS 在 Pi0.5 expert 里是什么
+
+Pi0.5 的 action expert（denoise/DiT）用 **自适应 RMSNorm（Adaptive RMSNorm, AdaRMS）** 把"扩散时间步 t"
+作为条件注入每一层归一化。代码见
+`third_party/openpi/.../gemma/modeling_gemma.py::GemmaRMSNorm.forward`：
+
+```python
+# cond = adarms_cond，形状 [batch, cond_dim]，与 token 无关
+modulation = self.dense(cond)              # Linear: cond_dim → dim*3   ← 关键 GEMM
+modulation = modulation.unsqueeze(1)       # [batch, 1, dim*3] 广播到 [batch, seq, dim*3]
+scale, shift, gate = torch.chunk(modulation, 3, dim=-1)
+normed = self._norm(x) * (1 + scale) + shift     # 仿射调制
+return normed, gate                              # gate 用于 _gated_residual
+```
+
+条件 `adarms_cond` 的来源（`dit.py::_embed_suffix_pi05`）：
+
+```
+timestep(标量 t)
+   └─ create_sinusoidal_pos_embedding(t)      # sin/cos 位置编码，仅依赖 t
+        └─ time_mlp_in → SiLU → time_mlp_out → SiLU
+             └─ adarms_cond   [batch, cond_dim]
+```
+
+每个 decoder layer 有 **2 个 AdaRMS**（`input_layernorm`、`post_attention_layernorm`），
+外加 1 个 **final `norm`**，每个 AdaRMS 内含一个 `dense`（`cond_dim → dim*3` 的 Linear）。
+
+**计数**：`(2 × num_layers + 1) × num_denoise_steps = (2×18 + 1) × 10 = 37 × 10 = 370` 个 Dense GEMM。
+这就是 FlashRT 文档里"370 Dense GEMMs computed inside the engine every inference"的来源。
+
+---
+
+## 2. 核心洞察：这 370 个 Dense 全是"静态常量"
+
+关键事实链：
+
+1. **`adarms_cond` 只依赖 `timestep`**，与 `x_t`（噪声动作）、prefix KV、观测输入**完全无关**。
+   （链路里没有任何一项来自 image/state/action token。）
+2. **denoise 的时间步调度是固定的**：flow-matching 采样用确定的 `num_steps` 与固定 `dt`，
+   N 个时间步 `t_0, t_1, …, t_{N-1}` 是**编译/部署期就确定的常量**，不随推理输入变化。
+3. **`dense` 是冻结权重**（推理期不变）。
+
+三者叠加 ⇒ 每个 step、每个 norm 的 `modulation = dense(cond(t_k))` 及其拆出的
+`(scale, shift, gate)` 都是**与具体推理输入无关的常量**，可以**离线一次性算好**：
+
+```
+style[k, i] = dense_i( SiLU(time_mlp_out(SiLU(time_mlp_in(sinusoid(t_k))))) )
+            = (scale, shift, gate)            # k=step, i=norm 索引；共 N×37 个常量
+```
+
+所以这 370 个 GEMM **根本不需要在每次推理的 GPU 图里跑**——把结果当常量注入即可。
+FlashRT 就是在 `set_prompt()` 时用 Python/CPU 预算所有 `style`，再注入。
+
+---
+
+## 3. 为什么能省 5.5ms（不是省 GEMM 算力，是省"图复杂度"）
+
+这 370 个 Dense 每个都极小（`[1, cond_dim] × [cond_dim, dim*3]`，batch 通常 = 1）。
+denoise 段 **S=10（action horizon）是 launch-bound**（host 启动开销主导，不是算力主导）。因此：
+
+- **直接收益**：370 个 tiny GEMM 从 GPU 图里消失 → 少 370 次 kernel 调度 / 中间张量。
+- **更大的间接收益（关键）**：去掉这些零碎小算子后，**主 transformer 图被显著简化**，
+  Myelin 能把剩下的 norm 仿射、gated residual、attention、FFN **融合得更彻底、选到更好的 tactic**。
+  roadmap/FlashRT 都标注 “graph simplification → better Myelin tactic”。
+
+> 一句话：**这是"编译器友好"型优化**——交给编译器的图更干净，编译器自己就跑得更快。
+> 与 FlashRT 那 26ms 大头（手写 fused kernel、抛弃编译器）性质不同，**这一项在 TRT/Myelin 路径上照搬即可受益**。
+
+---
+
+## 4. 在 model_optimizer 上的实现思路
+
+当前 `dit.py` 的导出形态：**单步** `denoise.onnx`，`timestep` 是**运行时输入**，host 循环喂 N 个不同的 t；
+`dense(cond)` 嵌在 `gemma_expert` 的每个 RMSNorm 里，被一起导进 ONNX。目标是把 `dense` 从图里拿掉。
+
+### 方案 A（推荐，改动小）：modulation 作为图输入 + AdaRMS 退化为纯仿射
+
+把"条件 → modulation"的整条链从导出图里剥离，`timestep` 不再进图，改成把**预算好的 modulation**喂进去。
+
+1. **新增导出开关（feature）**：如 `adarms_precompute`，开启时改写 `GemmaRMSNorm.forward`：
+   不再 `self.dense(cond)`，而是消费外部传入的 `(scale, shift, gate)`，AdaRMS 变成纯 elementwise：
+   `normed*(1+scale)+shift`、返回 `gate`。`dense` 不出现在图里。
+2. **改 `Pi05DenoiseStep.forward` / `export` 的签名**：
+   - 移除 `timestep` 入图（或保留但不参与计算）；
+   - 新增入参 `adarms_mod`（把 37 个 norm 的 modulation 打包，布局如
+     `[num_norms, batch, dim*3]` 或按 `(layer, sub-block)` 展平），由 host 按当前 step 选切片喂入。
+3. **host 侧预计算（一次性）**：在引擎构建 / prompt-set 期，用原始 PyTorch 子图算出
+   `mod[k, i]`（k∈N 步，i∈37 norm），缓存为常量张量。denoise 循环第 k 步直接取 `mod[k]`。
+4. **engine 仍是单份**，N 份常量驻留 host，按 step 索引。
+
+> 这样图里彻底没有 `time_mlp_*` / `sinusoid` / `dense`，只剩仿射调制 + 主干。
+
+### 方案 B（最激进，最贴近 FlashRT）：每步常量折叠
+
+把 step-specific 的 modulation 直接 bake 成 ONNX **initializer（常量）**：
+
+- 要么导出 **N 份特化图**（每步把 37 个 modulation 写死成常量），
+- 要么导出 **1 份图 + step 索引**，在图里用常量张量按 step gather。
+
+`do_constant_folding=True` 会把这些常量彻底折进相邻算子，Myelin 看到的图最干净。
+代价：N 份图 / 较大常量、与固定调度强耦合。
+
+### 改动落点清单（✅ = 已实现，全部封装在 model_optimizer，未改原始 `modeling_gemma.py`）
+
+| 文件 | 改动 | 状态 |
+|---|---|---|
+| `models/pi05/dit.py` 模块级 `_adarms_injected_forward` | `GemmaRMSNorm.forward` 的"注入版"（读 `_injected_mod`，不调 `dense`），数学等价 | ✅ |
+| `dit.py::Pi05DenoiseStep.enable_adarms_precompute` | 运行时把 expert 内 37 个 AdaRMS 的 `forward` 替换为注入版，可还原 | ✅ |
+| `dit.py::precompute_adarms_modulation` | 用真实 `dense` 离线预算打包 modulation `[num_norms,batch,dim*3]` | ✅ |
+| `dit.py::Pi05DenoiseStep.{forward,export}` | 第 5 入参 `time_or_mod`：默认 `timestep`，预计算模式 `adarms_mod`；导出移除 sinusoid/time_mlp/dense | ✅ |
+| `dit.py::quantize` | 校准走 timestep 路径（calib 数据喂 timestep），仅导出时切到预计算 | ✅ |
+| `dit.py` 特性注册 `adarms_dense_precompute` + `__init__(feature_config=...)` | 与 `llm.py` 同构，可在 JSON 配置启停 | ✅ |
+| `infer/pi05_adarms.py::AdaRmsModulator` | host 侧按时间步值记忆化预算 modulation（dense 只在 torch 全精度跑有限次） | ✅ |
+| `infer/{tensorrt,onnxrt}/pi05_executor.py` denoise 段 | 启用时喂 `adarms_mod` 取代 `timestep` | ✅ |
+| `infer/server/{config,policy_loader}.py` | 新增 `tensorrt/onnxrt.denoise_adarms_precompute`（serve JSON 可配） | ✅ |
+
+> 注：本实现采用**方案 A**（modulation 作为图输入 + host 记忆化预算），未改原始 `modeling_gemma.py`
+> （改用运行时 monkey-patch）。方案 B（ONNX 常量折叠）保留为后续可选项。
+
+### 启用方式（三选一，优先级 高→低）
+
+1. **导出 / 量化（feature_config）**：JSON 写 `{"features": {"adarms_dense_precompute": true}}`，
+   传给 `Pi05DenoiseStep.construct_model(..., feature_config=...)` → 导出 `adarms_mod` 引擎。
+2. **serve 配置**：服务 JSON 里 `tensorrt.denoise_adarms_precompute=true`（或 `onnxrt.*`）→ host 自动预算并喂入。
+3. **环境变量**：`PI05_ADARMS_PRECOMPUTE=1`（导出端与 host 端均识别），便于快速 A/B。
+
+---
+
+## 5. 风险与注意事项
+
+- **调度一致性**：预算依赖固定的 `num_steps / dt / sinusoid(min_period=4e-3, max_period=4.0)`。
+  若运行时调度可变，必须在调度变更时（如 prompt-set/build 期）**重算 modulation**，否则结果错。
+- **dtype 对齐**：`adarms_cond` 链路在 fp32 计算，`(scale, shift, gate)` 注入时与 expert 权重 dtype（bf16）对齐，
+  仿射在 fp32 做（与现实现 `normed*(1+scale.float())+shift.float()` 一致）。
+- **batch 维度**：cond 是 `[batch, cond_dim]`，pi05 采样中同一 step 的 `expanded_time` 跨 batch 相同 → modulation 可 batch 广播；
+  若未来支持每样本不同 t，预算需按样本展开。
+- **量化交互**：dense 是极小 GEMM，移出图后也无需对其做 FP8 量化，量化目标更聚焦在主干 GEMM。
+- **数值等价校验**：开关前后必须对 `v_t` 做逐步 cos 比对（建议门禁 cos ≥ 0.999），确保仿射常量注入与原 `dense(cond)` 一致。
+
+---
+
+## 6. 与 FlashRT 的对照
+
+| 维度 | FlashRT（手写） | model_optimizer（本方案，编译器路径） |
+|---|---|---|
+| 预算时机 | `set_prompt()` Python/CPU 预算 `style` | 引擎构建 / prompt-set 期预算 `mod[k,i]` |
+| 注入方式 | 常量指针，`(s*layers+l)*S*D3` 偏移索引 | 方案 A：图输入切片；方案 B：ONNX 常量折叠 |
+| 收益来源 | 去 370 GEMM + 全程同套 kernel 复用 | 去 370 GEMM + **图简化让 Myelin 选更优 tactic** |
+| 实测 | -5.5ms（v1.4→v1.6-L2） | 预期同量级（编译器友好，可直接移植） |
+
+---
+
+## 7. 一句话总结
+
+> Pi0.5 denoise 的 AdaRMS 时间调制 **只依赖固定的扩散时间步调度**，与推理输入无关；
+> 因此 370 个 `dense(cond)` GEMM 全是**离线可算的常量**。把它们从导出图里剥离（modulation 作为输入或常量折叠），
+> 既省掉 370 次 launch，又让 Myelin 在更干净的图上选到更好 tactic —— FlashRT 实测 **-5.5ms**，
+> 是最值得优先移植的编译器友好优化。
+
+---
+
+## 8. 修订记录
+
+| 日期 | 内容 |
+|---|---|
+| 2026-05-31 | 初版：AdaRMS Dense 预计算技术细节与 model_optimizer 实现思路（roadmap #22） |
+| 2026-05-31 | 落地方案 A：`dit.py` 运行时 monkey-patch + `adarms_mod` 导出；host 侧 `AdaRmsModulator` 记忆化预算；feature_config / serve JSON / env 三种可配开关。未改原始 `modeling_gemma.py`。 |

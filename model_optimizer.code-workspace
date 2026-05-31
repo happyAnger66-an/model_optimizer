@@ -26,6 +26,9 @@
 		},
 		{
 			"path": "../ffpa-attn"
+		},
+		{
+			"path": "../FlashRT"
 		}
 	],
 	"settings": {}

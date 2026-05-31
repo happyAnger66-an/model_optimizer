@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import time
+import types
 
 import torch
 import torch.nn as nn
@@ -15,15 +16,53 @@ from transformers.cache_utils import DynamicCache
 
 from ..model import Model
 from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
+from model_optimizer.config.feature_config import FeatureConfig
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
+from ..features import FeatureContext, apply_features, register_feature
 from .denoise_onnx_post_export import apply_denoise_onnx_post_export_patches
 
 logger = logging.getLogger(__name__)
 
+# 与 registry.py 注册名一致；用于 FeatureContext.model_name 过滤。
+MODEL_NAME = "pi05_libero/denoise"
+
 
 # 与 openpi pi0_pytorch 中 _prepare_attention_masks_4d 一致
 _ATTN_MASK_FILL_VALUE = -2.3819763e38
+
+
+def _adarms_injected_forward(self, x, cond=None):  # noqa: ARG001
+    """``GemmaRMSNorm.forward`` 的"注入版"：消费预计算 modulation，不调用 ``self.dense``。
+
+    供 :class:`Pi05DenoiseStep` 在 AdaRMS Dense 预计算模式下，对 expert 内各 AdaRMS 实例做
+    运行时替换（不改原始 ``modeling_gemma.py``）。数学与原 ``forward`` 完全一致，区别仅在于
+    ``scale/shift/gate`` 取自外部注入的 ``self._injected_mod`` 而非 ``self.dense(cond)``。
+    详见 docs/optimizer/ddup/adarms_pre_compute.md。
+    """
+    dtype = x.dtype
+    normed_inputs = self._norm(x)
+    mod = self._injected_mod  # [batch, dim*3]，由宿主在 forward 前按 norm 顺序注入
+    if x.dim() == 3:  # [batch, seq, features] → 在 seq 维广播
+        mod = mod.unsqueeze(1)
+    scale, shift, gate = torch.chunk(mod, 3, dim=-1)
+    normed_inputs = normed_inputs * (1 + scale.to(torch.float32)) + shift.to(torch.float32)
+    return normed_inputs.to(dtype), gate.to(dtype)
+
+
+# ── 特性注册：AdaRMS Dense 预计算（roadmap #22） ──────────────────────────────
+# 作用对象为 Pi05DenoiseStep 本身（调用其 enable_adarms_precompute）。仅适用 denoise 组件。
+def _apply_adarms_precompute(target, params: dict, ctx: FeatureContext) -> None:  # noqa: ARG001
+    target.enable_adarms_precompute(True)
+
+
+register_feature(
+    "adarms_dense_precompute",
+    default_enabled=False,
+    apply_fn=_apply_adarms_precompute,
+    description="denoise modulation 只依赖固定步调度 → 预算常量注入，把 dense GEMM 移出导出图。",
+    supported_models=(MODEL_NAME,),
+)
 
 
 def _get_safe_dtype(target_dtype: torch.dtype, device_type: str) -> torch.dtype:
@@ -89,6 +128,8 @@ class Pi05DenoiseStep(nn.Module, Model):
         *,
         action_horizon: int,
         action_dim: int,
+        adarms_precompute: bool = False,
+        feature_config: FeatureConfig | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -110,6 +151,21 @@ class Pi05DenoiseStep(nn.Module, Model):
             torch.tensor(suffix_ar, dtype=torch.int32),
             persistent=False,
         )
+
+        # AdaRMS Dense 预计算（roadmap #22）：modulation 只依赖固定步调度，可离线预算并注入，
+        # 把 expert 内的 dense GEMM 移出导出图。默认关闭，开启时不改原始 modeling_gemma.py。
+        self.adarms_precompute = False
+        self._adarms_patched = False
+        self._adarms_norms_cache: list[nn.Module] = []
+        # 供 export()/quantize() 读取 export/quantize 级覆盖。
+        self.feature_config = feature_config or FeatureConfig.empty()
+        if feature_config is not None:
+            # 配置驱动：由特性注册表（adarms_dense_precompute / ...）按 JSON > env > 默认 决定启停。
+            ctx = FeatureContext(model_name=MODEL_NAME, dtype=getattr(gemma_expert, "dtype", None))
+            apply_features(self, feature_config, ctx)
+        elif adarms_precompute:
+            # 直接构造（非配置）路径的向后兼容入口。
+            self.enable_adarms_precompute(True)
 
     @property
     def model(self):
@@ -165,7 +221,26 @@ class Pi05DenoiseStep(nn.Module, Model):
             dtype=torch.float32,
             device="cuda",
         )
-        timestep = torch.tensor([1.0], dtype=torch.float32, device="cuda")
+
+        # AdaRMS 预计算模式：第 5 个输入由 ``timestep`` 改为打包 modulation ``adarms_mod``
+        # [num_norms, batch, dim*3]，图内不再含 sinusoid/time_mlp/dense。
+        if self.adarms_precompute:
+            norms = self._adarms_norm_modules()
+            dim3 = int(norms[0].dense.out_features)
+            fifth_input = torch.randn(
+                (len(norms), 1, dim3), dtype=torch.float32, device="cuda"
+            )
+            fifth_name = "adarms_mod"
+            print(
+                colored(
+                    f"[adarms] precompute export: {len(norms)} norms × dim*3={dim3}, "
+                    "dense GEMM 已移出图",
+                    "green",
+                )
+            )
+        else:
+            fifth_input = torch.tensor([1.0], dtype=torch.float32, device="cuda")
+            fifth_name = "timestep"
 
         output_path = f"{output_dir}/denoise.onnx"
         export_kw: dict = {}
@@ -174,27 +249,29 @@ class Pi05DenoiseStep(nn.Module, Model):
 
             batch_dim = Dim("batch", min=1, max=4096)
             prefix_seq_dim = Dim("prefix_seq", min=1, max=4096)
+            fifth_shape = {1: batch_dim} if self.adarms_precompute else {0: batch_dim}
             export_kw["dynamic_shapes"] = {
                 "prefix_pad_masks": {0: batch_dim, 1: prefix_seq_dim},
                 "past_keys": {1: batch_dim, 2: prefix_seq_dim},
                 "past_values": {1: batch_dim, 2: prefix_seq_dim},
                 "x_t": {0: batch_dim},
-                "timestep": {0: batch_dim},
+                fifth_name: fifth_shape,
             }
         else:
+            fifth_axes = {1: "batch_size"} if self.adarms_precompute else {0: "batch_size"}
             export_kw["dynamic_axes"] = {
                 "prefix_pad_masks": {0: "batch_size", 1: "prefix_seq_len"},
                 "past_keys": {1: "batch_size", 2: "prefix_seq_len"},
                 "past_values": {1: "batch_size", 2: "prefix_seq_len"},
                 "x_t": {0: "batch_size"},
-                "timestep": {0: "batch_size"},
+                fifth_name: fifth_axes,
                 "v_t": {0: "batch_size"},
             }
 
         with torch.inference_mode():
             torch.onnx.export(
                 self,
-                (prefix_pad_masks, past_keys_tensor, past_values_tensor, x_t, timestep),
+                (prefix_pad_masks, past_keys_tensor, past_values_tensor, x_t, fifth_input),
                 output_path,
                 export_params=True,
                 input_names=[
@@ -202,7 +279,7 @@ class Pi05DenoiseStep(nn.Module, Model):
                     "past_keys",
                     "past_values",
                     "x_t",
-                    "timestep",
+                    fifth_name,
                 ],
                 output_names=["v_t"],
                 opset_version=19,
@@ -227,6 +304,13 @@ class Pi05DenoiseStep(nn.Module, Model):
         # 与 LLM.quantize(self.model, ...) 一致；标定仍走完整 ``forward`` 以覆盖 action/time 投影与 expert。
         from model_optimizer.quantization.quantization_utils import quantize_model  # noqa: F401
         from model_optimizer.quantization.quantization_utils import quant_config_targets_hf_bmm_kv  # noqa: F401
+
+        # 标定数据提供 ``timestep`` 而非 ``adarms_mod``，因此校准期必须走默认时间链路；
+        # AdaRMS 预计算仅在导出时启用（导出图改用 ``adarms_mod`` 输入、移除 dense GEMM）。
+        want_precompute = self.adarms_precompute
+        if want_precompute:
+            self.enable_adarms_precompute(False)
+
         if quant_config_targets_hf_bmm_kv(quant_cfg):
             quantize_model(
                 self.gemma_expert,
@@ -245,7 +329,11 @@ class Pi05DenoiseStep(nn.Module, Model):
         self.is_quantized = True
         set_dynamic_quant(self, "bf16")
 
-        self.export(export_dir, dynamo=False)
+        if want_precompute:
+            self.enable_adarms_precompute(True)
+
+        dynamo = bool(self.feature_config.export.get("dynamo", False))
+        self.export(export_dir, dynamo=dynamo)
         onnx_path = f"{export_dir}/denoise.onnx"
         if is_nvfp4_quantized(quant_cfg):
             print(colored("nvfp4 quantization detected, post processing...", "green"))
@@ -266,15 +354,14 @@ class Pi05DenoiseStep(nn.Module, Model):
         att_2d_masks_4d = att_2d_masks[:, None, :, :]
         return torch.where(att_2d_masks_4d, 0.0, _ATTN_MASK_FILL_VALUE)
 
-    def _embed_suffix_pi05(
-        self, noisy_actions: torch.Tensor, timestep: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """pi05：时间 adaRMS 条件 + action_in_proj，与 openpi embed_suffix（pi05 分支）一致。"""
+    def _compute_adarms_cond(self, timestep: torch.Tensor) -> torch.Tensor:
+        """时间步 → adaRMS 条件向量（sinusoid → time_mlp_in → SiLU → time_mlp_out → SiLU）。
+
+        仅依赖 ``timestep``，与 action token / prefix 无关——这是 AdaRMS Dense 预计算的前提。
+        """
         if timestep.ndim != 1:
             raise ValueError(f"timestep must be 1D (batch,), got shape {tuple(timestep.shape)}")
-        bsize = noisy_actions.shape[0]
-        device = noisy_actions.device
-
+        device = timestep.device
         time_emb = create_sinusoidal_pos_embedding(
             timestep,
             self.action_in_proj.out_features,
@@ -282,52 +369,122 @@ class Pi05DenoiseStep(nn.Module, Model):
             max_period=4.0,
             device=device,
         )
-        # 与 ``action_in_proj`` / ``time_mlp_*`` 的权重 dtype 对齐；标定数据里 ``x_t``/``timestep`` 可能为
-        # bf16（``_calib_batch_to_device_only`` 保留 dtype），而投影层常为 fp32，否则 ``F.linear`` 报
-        # ``mat1 and mat2 must have the same dtype``.
-        mlp_w_dtype = self.time_mlp_in.weight.dtype
-        time_emb = time_emb.to(dtype=mlp_w_dtype)
-
-        action_emb = self.action_in_proj(noisy_actions.to(dtype=self.action_in_proj.weight.dtype))
-
+        # 与 ``time_mlp_*`` 权重 dtype 对齐：标定数据里 ``timestep`` 可能为 bf16，而投影层常为 fp32，
+        # 否则 ``F.linear`` 报 ``mat1 and mat2 must have the same dtype``.
+        time_emb = time_emb.to(dtype=self.time_mlp_in.weight.dtype)
         x = self.time_mlp_in(time_emb)
         x = F.silu(x)
         x = self.time_mlp_out(x)
-        adarms_cond = F.silu(x)
+        return F.silu(x)
 
-        action_time_emb = action_emb
-        action_time_dim = action_time_emb.shape[1]
-        action_time_mask = torch.ones(
-            bsize, action_time_dim, dtype=torch.bool, device=device
+    def _embed_action(
+        self, noisy_actions: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """action_in_proj + suffix 掩码（不含时间条件），预计算模式与默认模式共用。"""
+        bsize = noisy_actions.shape[0]
+        device = noisy_actions.device
+        action_emb = self.action_in_proj(
+            noisy_actions.to(dtype=self.action_in_proj.weight.dtype)
         )
-        pad_masks = action_time_mask
-
+        action_time_dim = action_emb.shape[1]
+        pad_masks = torch.ones(bsize, action_time_dim, dtype=torch.bool, device=device)
         att_base = self._suffix_ar_mask.to(device=device).expand(bsize, -1)
+        return action_emb, pad_masks, att_base
+
+    def _embed_suffix_pi05(
+        self, noisy_actions: torch.Tensor, timestep: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """pi05：时间 adaRMS 条件 + action_in_proj，与 openpi embed_suffix（pi05 分支）一致。"""
+        action_time_emb, pad_masks, att_base = self._embed_action(noisy_actions)
+        adarms_cond = self._compute_adarms_cond(timestep)
         return action_time_emb, pad_masks, att_base, adarms_cond
 
-    def forward(
+    # ------------------------------------------------------------------
+    # AdaRMS Dense 预计算（roadmap #22 / docs/optimizer/ddup/adarms_pre_compute.md）
+    # ------------------------------------------------------------------
+    def _adarms_norm_modules(self) -> list[nn.Module]:
+        """按稳定顺序枚举 expert 内含 ``dense`` 的 AdaRMS 归一化模块。
+
+        顺序：``layer[i].input_layernorm``、``layer[i].post_attention_layernorm``（i 递增），
+        最后 ``gemma_expert.norm``。该顺序即预计算 modulation 的打包索引。
+        """
+        mods: list[nn.Module] = []
+        for layer in self.gemma_expert.layers:
+            mods.append(layer.input_layernorm)
+            mods.append(layer.post_attention_layernorm)
+        final_norm = getattr(self.gemma_expert, "norm", None)
+        if final_norm is not None:
+            mods.append(final_norm)
+        return [m for m in mods if getattr(m, "dense", None) is not None]
+
+    def enable_adarms_precompute(self, enable: bool = True) -> "Pi05DenoiseStep":
+        """开启/关闭 AdaRMS Dense 预计算模式（运行时替换 expert 内 AdaRMS 的 forward）。"""
+        if enable and not self._adarms_patched:
+            norms = self._adarms_norm_modules()
+            if not norms:
+                raise RuntimeError(
+                    "AdaRMS precompute 需要 expert 使用自适应 RMSNorm（含 dense），"
+                    "但未在 gemma_expert 中找到任何 AdaRMS 模块。"
+                )
+            for n in norms:
+                n._orig_forward_for_adarms = n.forward  # noqa: SLF001
+                n.forward = types.MethodType(_adarms_injected_forward, n)
+            self._adarms_norms_cache = norms
+            self._adarms_patched = True
+        elif not enable and self._adarms_patched:
+            for n in self._adarms_norms_cache:
+                if hasattr(n, "_orig_forward_for_adarms"):
+                    n.forward = n._orig_forward_for_adarms  # noqa: SLF001
+                    del n._orig_forward_for_adarms
+            self._adarms_norms_cache = []
+            self._adarms_patched = False
+        self.adarms_precompute = bool(enable)
+        return self
+
+    @torch.no_grad()
+    def precompute_adarms_modulation(self, timestep: torch.Tensor) -> torch.Tensor:
+        """离线/宿主侧预算：给定 ``timestep`` [batch]，返回打包 modulation。
+
+        Returns:
+            形状 ``[num_norms, batch, dim*3]``，``num_norms`` 与
+            :meth:`_adarms_norm_modules` 顺序一致；用真实 ``dense`` 权重计算。
+            固定步调度下，对 N 个时间步各调一次即可缓存全部常量（见文档 §4）。
+        """
+        cond = self._compute_adarms_cond(timestep)
+        norms = self._adarms_norm_modules()
+        if not norms:
+            raise RuntimeError("无 AdaRMS 模块，无法预计算 modulation。")
+        # dense 此时可能已被替换；从原始 forward 不影响 dense 权重，直接调 dense 即可。
+        mods = [n.dense(cond) for n in norms]
+        return torch.stack(mods, dim=0)
+
+    def _inject_modulation(self, adarms_mod: torch.Tensor) -> None:
+        """把打包 modulation 按 norm 顺序注入各 AdaRMS 模块，供注入版 forward 读取。"""
+        if not self._adarms_patched:
+            self.enable_adarms_precompute(True)
+        norms = self._adarms_norms_cache
+        if adarms_mod.shape[0] != len(norms):
+            raise ValueError(
+                f"adarms_mod[0]={adarms_mod.shape[0]} 与 AdaRMS 模块数 {len(norms)} 不一致"
+            )
+        for i, n in enumerate(norms):
+            n._injected_mod = adarms_mod[i]  # noqa: SLF001
+
+    def _run_expert(
         self,
         prefix_pad_masks: torch.Tensor,
         past_keys: torch.Tensor,
         past_values: torch.Tensor,
-        x_t: torch.Tensor,
-        timestep: torch.Tensor,
+        suffix_embs: torch.Tensor,
+        suffix_pad_masks: torch.Tensor,
+        suffix_att_masks: torch.Tensor,
+        adarms_cond: torch.Tensor | None,
     ) -> torch.Tensor:
-        """
-        Args:
-            prefix_pad_masks: bool/float [batch, prefix_len]，与 LLM prefix 一致。
-            past_keys: [num_layers, batch, num_kv_heads, prefix_len, head_dim]（与 LLM 导出堆叠方式一致）。
-            past_values: 与 past_keys 相同布局。
-            x_t: float [batch, action_horizon, action_dim]。
-            timestep: float [batch]，与 openpi sample 中 expanded_time 一致。
+        """掩码/位置构造 + expert 前向 + action_out_proj（两种模式共用）。
 
-        Returns:
-            v_t: float32 [batch, action_horizon, action_dim]。
+        ``adarms_cond`` 为 ``None`` 时表示预计算模式：modulation 已通过
+        :meth:`_inject_modulation` 注入到各 AdaRMS 模块，expert 内不再调用 ``dense``。
         """
-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self._embed_suffix_pi05(
-            x_t, timestep
-        )
-
         suffix_len = suffix_pad_masks.shape[1]
         batch_size = prefix_pad_masks.shape[0]
         prefix_len = prefix_pad_masks.shape[1]
@@ -362,10 +519,69 @@ class Pi05DenoiseStep(nn.Module, Model):
         suffix_out = suffix_out.to(dtype=torch.float32)
         return self.action_out_proj(suffix_out)
 
+    def forward(
+        self,
+        prefix_pad_masks: torch.Tensor,
+        past_keys: torch.Tensor,
+        past_values: torch.Tensor,
+        x_t: torch.Tensor,
+        time_or_mod: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Args:
+            prefix_pad_masks: bool/float [batch, prefix_len]，与 LLM prefix 一致。
+            past_keys: [num_layers, batch, num_kv_heads, prefix_len, head_dim]（与 LLM 导出堆叠方式一致）。
+            past_values: 与 past_keys 相同布局。
+            x_t: float [batch, action_horizon, action_dim]。
+            time_or_mod: 默认模式为 ``timestep`` float [batch]（同 openpi expanded_time）；
+                AdaRMS 预计算模式（``self.adarms_precompute=True``）为打包 modulation
+                ``adarms_mod`` [num_norms, batch, dim*3]（见 docs/optimizer/ddup/adarms_pre_compute.md）。
+
+        Returns:
+            v_t: float32 [batch, action_horizon, action_dim]。
+        """
+        if self.adarms_precompute:
+            suffix_embs, suffix_pad_masks, suffix_att_masks = self._embed_action(x_t)
+            self._inject_modulation(time_or_mod)
+            return self._run_expert(
+                prefix_pad_masks,
+                past_keys,
+                past_values,
+                suffix_embs,
+                suffix_pad_masks,
+                suffix_att_masks,
+                adarms_cond=None,
+            )
+
+        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self._embed_suffix_pi05(
+            x_t, time_or_mod
+        )
+        return self._run_expert(
+            prefix_pad_masks,
+            past_keys,
+            past_values,
+            suffix_embs,
+            suffix_pad_masks,
+            suffix_att_masks,
+            adarms_cond=adarms_cond,
+        )
+
     @classmethod
-    def construct_model(cls, pi05_model, dtype: torch.dtype | None = None):
+    def construct_model(
+        cls,
+        pi05_model,
+        dtype: torch.dtype | None = None,
+        *,
+        adarms_precompute: bool | None = None,
+        feature_config: FeatureConfig | None = None,
+    ):
         """
         从 Pi05Model 包装器或已加载的 PI0Pytorch（policy._model）构建，共享子模块权重引用。
+
+        启用 AdaRMS Dense 预计算（roadmap #22）的三种方式（优先级 高→低）：
+          1. ``feature_config``（JSON 配置文件，``features.adarms_dense_precompute``）；
+          2. 显式 ``adarms_precompute=True``；
+          3. 环境变量 ``PI05_ADARMS_PRECOMPUTE``（``1/true/yes/on``）。
         """
         if not getattr(pi05_model.config, "pi05", False):
             raise ValueError("Pi05DenoiseStep 仅支持 config.pi05 is True 的 PI0Pytorch 模型")
@@ -376,6 +592,12 @@ class Pi05DenoiseStep(nn.Module, Model):
         if dtype is not None:
             logger.debug("construct_model dtype=%s ignored (weights keep loaded dtype)", dtype)
 
+        # feature_config 优先；否则回退到布尔/环境变量。
+        if feature_config is None and adarms_precompute is None:
+            adarms_precompute = os.environ.get(
+                "PI05_ADARMS_PRECOMPUTE", ""
+            ).strip().lower() in ("1", "true", "yes", "y", "on")
+
         return cls(
             gemma_expert=gemma_expert,
             expert_config=expert_config,
@@ -385,13 +607,19 @@ class Pi05DenoiseStep(nn.Module, Model):
             action_out_proj=pi05_model.action_out_proj,
             action_horizon=pi05_model.config.action_horizon,
             action_dim=pi05_model.config.action_dim,
+            adarms_precompute=bool(adarms_precompute) if adarms_precompute else False,
+            feature_config=feature_config,
         )
 
     @classmethod
-    def construct_from_name_path(cls, model_name: str, model_path: str, train_config=None):
+    def construct_from_name_path(
+        cls, model_name: str, model_path: str, train_config=None, feature_config=None
+    ):
         from .model_pi05 import Pi05Model
 
         wrapper = Pi05Model.construct_from_name_path(
             model_name, model_path, train_config
         )
-        return cls.construct_model(wrapper, dtype=torch.bfloat16)
+        return cls.construct_model(
+            wrapper, dtype=torch.bfloat16, feature_config=feature_config
+        )

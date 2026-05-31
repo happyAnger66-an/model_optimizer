@@ -46,13 +46,13 @@
 | 4 | System prompt KV cache | `enable_block_reuse` radix tree | `SystemPromptKVCache` + JSON `save_system_prompt_kv_cache` | 校准集需覆盖 system prompt；export sidecar 记录 prompt hash | denoise 多步 30-50% per-action↓ | ★★★★★ | 未启用 |
 | 5 | Fused gate+up MLP (方案 A) | `_torch/modules/gated_mlp.py` | TRT Myelin epilogue fusion | `fused_mlp.py` (default ON) | FC1 HBM 带宽 ½ | ✅ 完成 | DONE |
 | 6 | NVFP4 weight + FP8 activation (W4A8) | `cutlass_kernels/fpA_intB_gemm/...sm100.h`, `QuantAlgo.W4A8_*` | `mixed_precision` cfg + weight repack | `quantization/cfg.py` 加 W4A8 preset；ModelOpt 已支持 | 再 25% 显存↓；算力换内存的最佳点 | ★★★★☆ | 未启用 |
-| 7 | Vision tower 切 `vitAttentionPlugin` (FP8 可选) | `_torch/visual_gen/jit_kernels/flash_attention/cute/flash_fwd_sm100.py` | `vit_fmha_d{64,72,80,128}` + `vitAttentionPlugin` | `vit.py` 当前 SDPA-math → 改 export `trt::vit_attention_plugin`（head_dim=72） | SigLIP encode 1.4-1.6x | ★★★★☆ | 未启用 |
+| 7 | Vision tower 切 `vitAttentionPlugin` (FP8 可选) | `_torch/visual_gen/jit_kernels/flash_attention/cute/flash_fwd_sm100.py` | `vit_fmha_d{64,72,80,128}` + `vitAttentionPlugin` | `vit.py` 当前 SDPA-math → 改 export `trt::vit_attention_plugin`（head_dim=72） | SigLIP encode 1.4-1.6x | ★★☆☆☆ ⚠️**降级** | **重估/可能弃**（见 §8）：FlashRT 实测 SigLIP 上 Myelin 全局融合完胜手写（1.0ms vs 6.3ms），插 plugin 制造 opaque boundary 反破坏融合（RoPE plugin 净 +10ms） |
 | 8 | Vocab reduction（机器人词表裁剪） | — | `experimental/llm_loader/vocab_reduction/` | 统计校准集 token 频次；调 `tensorrt-edgellm-reduce-vocab`；export `--reduced-vocab-dir` | LM head 显存 ↓ 50%+ (256k→~10k) | ★★★★☆ | 未启用 |
 | 9 | Per-channel weight quantizer for `gate_up_proj` | — | — | cfg override：`*gate_up_proj*weight_quantizer.axis=(0,)` | 防止 gate/up 合并后 per-tensor scale 拉伸 | ★★★★☆ | 紧跟 #5 |
 | 10 | CuTe DSL sm_110 artifact 预生成 | — | `kernelSrcs/build_cutedsl.py --gpu_arch sm_110 --arch aarch64` | 写入 `convert_format` README + CI | 防止 fallback 到 SM101 cubin (~20% latency 损失) | ★★★★☆ | 文档/CI 缺失 |
 | 11 | Action expert (DiT) CUDA Graph (denoise inner loop) | `cuda_graph_runner.py`, piecewise graph | runtime `mCudaGraphs` + pinned H2D | `trt_torch.py` 已有；扩展到 denoise 全循环；`pi05_executor.py` 强制默认开 | 单 action 50 步 ↓ 100-200ms host overhead | ★★★★☆ | 部分支持 |
 | 12 | FP8 embedding | — | `--fp8-embedding` sidecar + `embeddingKernels` | `llm.py` export 写 `embedding.safetensors` + per-row scale (block 128) | embed + LM head 显存 ½ | ★★★☆☆ | 未启用 |
-| 13 | Fused RMSNorm + Quant (FP8/NVFP4) | `cpp/.../fusedGatedRMSNormQuant.cu` | TRT native fusion | export 时确保 RMSNorm + 紧邻 Q/DQ 在 ONNX 相邻；参考 `denoise_onnx_post_export.py: fp4qdq_to_2dq` | LayerNorm host stall ↓ 5-8% iter time | ★★★☆☆ | 已有 helper，未泛化 |
+| 13 | Fused RMSNorm + Quant (FP8/NVFP4) | `cpp/.../fusedGatedRMSNormQuant.cu` | TRT native fusion | export 时确保 RMSNorm + 紧邻 Q/DQ 在 ONNX 相邻；参考 `denoise_onnx_post_export.py: fp4qdq_to_2dq` | LayerNorm host stall ↓ 5-8% iter time | ★★☆☆☆ ⚠️**降级** | **高风险，仅 TRT-native**（见 §8）：FlashRT 实证手写移 cast/重排在 Myelin 上 regress（M6 +1.03ms、OPT-3 +3.30ms）；手写 ONNX 图重写是雷区 |
 | 14 | NVTX 标注 + layer-wise profiler | `perf-nsight-systems` skill | `cpp/profiling/{nvtx_wrapper,layerProfiler}.h` | builder 默认带 `-DENABLE_NVTX_PROFILING=ON`（开发版）；`pi05_executor.py` 加 NVTX range | 不直接提速；定位下一轮 | ★★★☆☆ | 未启用 |
 | 15 | Chunked prefill | `enable_chunked_prefill` | `LLMInferenceRuntime` | model_optimizer 不动；Edge-LLM 侧配置 | prefix 968 时显存波动 ↓ | ★★☆☆☆ | 收益小 |
 | 16 | LoRA hot-swap | — | `experimental/llm_loader/lora/` | export 加 LoRA 通路；目前单任务不需要 | 多任务/多机器人时启用 | ☆ 备选 | — |
@@ -61,6 +61,10 @@
 | 19 | MoE optimization | trtllm-gen MoE | `cpp/kernels/moe/` | — | Gemma 2B 是 dense | ✗ | N/A |
 | 20 | Mamba/SSM kernel | — | `cpp/kernels/mamba/` | — | pi05 是纯 transformer | ✗ | N/A |
 | 21 | AutoDeploy piecewise graph | `auto_deploy/compile/piecewise_runner.py` | — | — | 走 C++ runtime，不走 PyExecutor | ✗ | N/A |
+| 22 | **AdaRMS Dense 预计算（action expert/DiT）** | — | — | `expert.py`/`dit.py`：denoise 各步 modulation `style=time_emb@W+b` 只依赖步序、与 action token 无关 → 导出/prompt-set 期预算成常量注入，砍 ~370 Dense GEMM | **编译器实测 -5.5ms**（FlashRT v1.4→v1.6-L2，§8） | ★★★★★ 🆕 | 未启用 |
+| 23 | **多帧分层校准 + percentile**（精度） | — | `experimental/quantization/` calibrate API | `pi05_calib_load`：校准集改 episode×frame-position 分层采样，Thor 用 **N=64**、`percentile=99.9` | cos 0.9989→0.9997，maxdiff 减半（§8） | ★★★★★ 🆕 | 未启用 |
+| 24 | **实数据 recalibration**（精度） | — | FlashRT `_recalibrate_with_real_data` | 提供"首帧真实输入重标定"开关，覆盖 zero-input 校准 | LIBERO Spatial **91.8%→98.2%**（§8） | ★★★★★ 🆕 | 未启用 |
+| 25 | RMSNorm `(1+w)` 折叠进相邻 GEMM 权重 | — | FlashRT §1.3 weight fold | 导出/量化期权重预处理 `W'=W·(1+rms_w)` + 无权重 RMSNorm；数学等价 | 无权重 norm kernel ~15%↓（须 TRT A/B） | ★★★☆☆ 🆕 | 未启用（需 A/B）|
 
 ---
 
@@ -209,7 +213,55 @@ calibration set ──────►  PTQ (ModelOpt / mtq.quantize)
 
 ---
 
-## 8. 相关源码 / 文档索引
+## 8. FlashRT 交叉分析与再认知（Pi0.5 / Thor 实测对照）
+
+> 来源：`/home/zhangxa/codes/FlashRT/docs/{optimization-details,kernel_fusion,precision_spec,calibration}.md`。
+> FlashRT 是针对 pi0.5 在 Jetson AGX Thor (SM110) 的专用优化项目，实测 **70.2ms → 44ms (-37.3%)**。
+
+### 8.1 两种部署范式（理解一切的前提）
+
+| | model_optimizer 当前路线 | FlashRT |
+|---|---|---|
+| 形态 | PTQ + ONNX → **TensorRT-Edge-LLM 编译器引擎**（TRT/Myelin） | **手写 C++/CUDA pipeline** + cuBLASLt FP8 GEMM + 自定义融合 kernel + 单 CUDA Graph |
+| pi05/Thor | ≈ FlashRT 的 **70.2ms 基线**（mlir-tensorrt+Myelin，同属"编译器引擎"范式） | **44ms** |
+| 哲学 | 喂图给编译器，靠 Myelin 全局融合 + tactic 搜索 | **抛弃编译器**，自己掌控每个 kernel 与启动序列 |
+
+**核心结论：FlashRT 的 44ms 建立在"丢掉 Myelin"之上。** 其手段不能无脑照搬——必须判定每项在编译器路径上是否还成立。FlashRT 自己给了最有力反证（`kernel_fusion.md` §4.2/§5）：它在编译器上尝试这些融合**全部 regress**（M6 去 attention QDQ +1.03ms；OPT-3 移 cast +3.30ms；OPT-5 einsum→matmul +5.18ms）。
+
+### 8.2 可移植性判定表
+
+| FlashRT 技术 | 原理 | 移植到 model_optimizer（TRT 路径）? | 对应项 |
+|---|---|---|---|
+| 静态 FP8（dynamic→static） | 校准烘成常量 scale，消除每 GEMM 的 amax/quant/dequant + sync | ✅ **已有**（ModelOpt PTQ 本就静态 Q/DQ） | — |
+| Kernel 融合（norm+quant、gate+gelu+mul） | 22→13 kernel/层，decoder 省 10.1ms | ❌ **编译器路径会 regress**，只有抛弃 Myelin 才拿得到 | #13（降级） |
+| RMSNorm `(1+w)` 折叠进下一 GEMM | load 时 `W'=W·(1+rms_w)`，无权重 norm 快 ~15% | ◐ 权重预处理可做，TRT 上须 A/B | #25 🆕 |
+| **AdaRMS Dense 预计算** | denoise modulation 只依赖步序 → 预算常量，砍 370 Dense GEMM | ✅✅ **编译器实测 -5.5ms**，最该移植 | #22 🆕 |
+| 向量化访存（half2/packed FP8） | 自写 kernel 级 | ❌ 需自写 kernel = `kernelSrc` CuTe DSL 路线 | — |
+| CUDA Graph 少节点（2840 vs 21000） | 节点数由 Myelin 决定 | ◐ 改不了节点数，但 runtime 默认开 graph 仍有效 | #11 |
+| **多帧分层校准 + percentile** | N=8~64 stratified（episode×frame），percentile=99.9 | ✅✅ 精度大杀器，直接移植 | #23 🆕 |
+| **实数据 recalibration** | 首帧真实输入重标定 | ✅✅ LIBERO Spatial 91.8%→98.2% | #24 🆕 |
+
+### 8.3 三个改变本 roadmap 判断的再认知
+
+1. **decoder（S=10、10 步去噪）是 launch-bound，不是 compute-bound。** FlashRT §6 实测编译器 16480 次启动×2μs≈33ms 调度开销，**调度本身就是那 26ms 差距**。
+   - ⮕ **修正"全网 NVFP4 收益最大"的判断**：NVFP4 主要帮 compute/memory-bound 的 **encoder/prefill** 与权重显存；对 launch-bound 的 **decoder 收益有限**。而 decoder 真瓶颈（kernel 数）在编译器路径上**动不了**——这是编译器路径的天花板。
+2. **#13（fused RMSNorm+Quant 图重写）降级**：正是 FlashRT 实证在 Myelin 上 regress 的那类（移 cast 位置）。仅 TRT-native epilogue 安全。
+3. **#7（vit_attention_plugin）重估/可能弃**：FlashRT §2.2 实测 SigLIP 上 Myelin 全局融合完胜手写（1.0 vs 6.3ms），插 plugin 制造 opaque boundary 反破坏融合（§6 RoPE plugin 净 +10ms）。**SigLIP 应保持纯编译器。**
+
+### 8.4 综合优化思路（重排后；性能 + 精度）
+
+- **Phase 0｜精度先行**（低成本、纯 model_optimizer）：#23 多帧分层校准 + #24 实数据 recalib + 校准三铁律（去噪**跨步聚合 amax**勿逐步标定；weight-scale 顺序按 loader 对齐；alpha 用 `np.float32*np.float32`）。
+- **Phase 1｜编译器友好性能**：**#22 AdaRMS Dense 预计算（-5.5ms，最高优先）** → #11 CUDA Graph 默认 → #1 NVFP4（**收益重定位**：主攻 encoder/prefill，非 decoder）。#5/#9 已完成。
+- **Phase 2｜需 A/B（regress 风险）**：#25 RMSNorm 折叠；谨慎 #13；重估/可能弃 #7。
+- **Phase 3｜战略选择**：decoder 的 launch-bound 天花板在编译器路径无法突破。要拿 FlashRT 那 26ms，只有 (a) 对 denoise loop 走 FlashRT 式手写 runtime / `kernelSrc` CuTe DSL 融合 kernel，或 (b) 直接复用 FlashRT 作 pi05/Thor 后端、model_optimizer 退到产出校准/权重/PrecisionSpec 的角色。
+
+### 8.5 一句话结论
+
+> **能从 FlashRT 低成本拿到的是"精度"（#23/#24）和一个编译器友好的性能项（#22 AdaRMS 预计算 -5.5ms）；FlashRT 那 26ms 大头（decoder kernel 融合）是"抛弃编译器"换来的，在 TRT 路径上既照搬不动、强行做还会 regress。** 综合性价比最高的开工顺序：Phase 0 精度 → #22 + #11 → 战略评估 decoder 是否值得走 FlashRT 式手写。
+
+---
+
+## 9. 相关源码 / 文档索引
 
 ### model_optimizer
 
@@ -260,10 +312,11 @@ calibration set ──────►  PTQ (ModelOpt / mtq.quantize)
 
 ---
 
-## 9. 修订记录
+## 10. 修订记录
 
 | 日期 | 内容 |
 |---|---|
 | 2026-05-27 | 初版，基于 `TensorRT-LLM` / `TensorRT-Edge-LLM` 优化技术交叉清单 |
 | 2026-05-30 | 修复 `LLMWithCuteDsl` NVFP4 导出缺 `_nvfp4_post_processing` 导致 TRT 编译报 `TRT_FP4QDQ Plugin not found`；踩坑详见 `docs/optimizer/ddup/fused_mlp.md` §5.1 |
 | 2026-05-30 | **#9 落地**：`config/quant/llm_quant_nvfp4_fp8_mix_cutedsl_cfg.py` 中 fused `mlp.gate_up_proj` 的 FP8 `weight_quantizer` 由 per-tensor(`axis=None`) 改为 per-channel(`axis=0`)，消除 fused 后 gate/up 共用 amax 的 scale 拉伸；activation 保持 per-tensor。作为 #5 fused MLP 的精度收尾，是 #1 的子步骤。 |
+| 2026-05-31 | **新增 §8 FlashRT 交叉分析**（实测 70.2→44ms）：拆解可移植性，新增 #22 AdaRMS Dense 预计算（编译器实测 -5.5ms）、#23 多帧分层校准、#24 实数据 recalibration、#25 RMSNorm 权重折叠；据 FlashRT 实证**降级 #7（SigLIP 保持纯编译器）/ #13（手写 norm+quant 重排在 Myelin 上 regress）**；修正"全网 NVFP4 收益最大"判断（decoder 为 launch-bound）。 |
