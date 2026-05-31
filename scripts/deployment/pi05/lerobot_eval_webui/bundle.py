@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -458,6 +459,14 @@ def load_infer_bundle(
     ):
         if not args.engine_path:
             raise ValueError("inference_mode=tensorrt 时必须设置 --engine-path（引擎目录）。")
+        if bool(getattr(args, "trt_enable_stage_profile", True)):
+            os.environ["MO_PI0_STAGE_PROFILE"] = "1"
+            os.environ["PI05_PROFILE_WARMUP"] = str(
+                int(getattr(args, "trt_stage_profile_warmup", 10))
+            )
+        if bool(getattr(args, "trt_enable_hook_profile", True)):
+            os.environ["MO_TRT_HOOK_STATS"] = "1"
+            os.environ["MO_TRT_HOOK_STATS_PRINT"] = "1"
         print(colored("[infer] 加载 TensorRT 引擎 ...", "cyan"), flush=True)
         _p("tensorrt", "加载 TensorRT 引擎（vit/llm/expert 等）…")
         load_tensorrt_engines(
@@ -471,6 +480,8 @@ def load_infer_bundle(
             embed_prefix_engine=args.embed_prefix_engine,
             vit_batch_views=bool(getattr(args, "vit_batch_views", False)),
             trt_perf=bool(getattr(args, "trt_perf", True)),
+            trt_perf_warmup=int(getattr(args, "trt_perf_warmup", 20)),
+            trt_perf_print_interval=int(getattr(args, "trt_perf_print_interval", 50)),
             trt_cuda_graph=bool(getattr(args, "trt_cuda_graph", False)),
             trt_cuda_graph_warmup=int(getattr(args, "trt_cuda_graph_warmup", 3)),
             denoise_adarms_precompute=bool(getattr(args, "denoise_adarms_precompute", False)),

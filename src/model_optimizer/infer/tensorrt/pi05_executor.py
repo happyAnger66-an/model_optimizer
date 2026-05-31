@@ -153,6 +153,8 @@ class Pi05TensorRTExecutor(Executor):
             _trt_perf = bool(_cfg_get(self.config, "trt_perf", True))
             _trt_cuda_graph = bool(_cfg_get(self.config, "trt_cuda_graph", False))
             _trt_cg_warmup = int(_cfg_get(self.config, "trt_cuda_graph_warmup", 3) or 3)
+            _trt_perf_warmup = int(_cfg_get(self.config, "trt_perf_warmup", 20) or 20)
+            _trt_perf_print_interval = int(_cfg_get(self.config, "trt_perf_print_interval", 50) or 50)
             if self.config.vit_engine:
                 print(
                     colored(f"replace vision_tower with {self.config.vit_engine}", "green"))
@@ -163,7 +165,8 @@ class Pi05TensorRTExecutor(Executor):
                 vit_engine = Engine(os.path.join(
                     self.config.engine_path, self.config.vit_engine), return_wrap=vit_return_wrap,
                     perf=_trt_perf, use_cuda_graph=_trt_cuda_graph,
-                    cuda_graph_warmup=_trt_cg_warmup)
+                    cuda_graph_warmup=_trt_cg_warmup, perf_warmup=_trt_perf_warmup,
+                    perf_print_interval=_trt_perf_print_interval)
 
                 def get_image_features(pixel_values):
                     out = vit_engine(pixel_values)
@@ -353,6 +356,8 @@ class Pi05TensorRTExecutor(Executor):
                     os.path.join(self.config.engine_path, embed_prefix_engine_name),
                     perf=_trt_perf, use_cuda_graph=_trt_cuda_graph,
                     cuda_graph_warmup=_trt_cg_warmup,
+                    perf_warmup=_trt_perf_warmup,
+                    perf_print_interval=_trt_perf_print_interval,
                 )
 
                 def embed_prefix_trt(self_m, images, img_masks, lang_tokens, lang_masks):
@@ -380,7 +385,8 @@ class Pi05TensorRTExecutor(Executor):
                     colored(f"replace language_model with {self.config.llm_engine}", "green"))
                 llm_engine = Engine(os.path.join(
                     self.config.engine_path, self.config.llm_engine), perf=_trt_perf,
-                    use_cuda_graph=_trt_cuda_graph, cuda_graph_warmup=_trt_cg_warmup)
+                    use_cuda_graph=_trt_cuda_graph, cuda_graph_warmup=_trt_cg_warmup,
+                    perf_warmup=_trt_perf_warmup, perf_print_interval=_trt_perf_print_interval)
 
                 def llm_forward(input_ids=None,
                                 attention_mask=None,
@@ -454,7 +460,8 @@ class Pi05TensorRTExecutor(Executor):
                 expert_engine = Engine(os.path.join(
                     self.config.engine_path, self.config.expert_engine), return_wrap=expert_return_wrap,
                     perf=_trt_perf, use_cuda_graph=_trt_cuda_graph,
-                    cuda_graph_warmup=_trt_cg_warmup)
+                    cuda_graph_warmup=_trt_cg_warmup, perf_warmup=_trt_perf_warmup,
+                    perf_print_interval=_trt_perf_print_interval)
 
                 def expert_forward(inputs_ids=None, attention_mask=None,
                                    position_ids=None,
@@ -493,6 +500,8 @@ class Pi05TensorRTExecutor(Executor):
                     os.path.join(self.config.engine_path, denoise_engine_name),
                     perf=_trt_perf, use_cuda_graph=_trt_cuda_graph,
                     cuda_graph_warmup=_trt_cg_warmup,
+                    perf_warmup=_trt_perf_warmup,
+                    perf_print_interval=_trt_perf_print_interval,
                 )
 
                 # AdaRMS Dense 预计算（roadmap #22）：引擎以 adarms_mod 输入导出时，host 预算并喂入。

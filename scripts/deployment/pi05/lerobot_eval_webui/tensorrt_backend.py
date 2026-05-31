@@ -17,6 +17,8 @@ def load_tensorrt_engines(
     embed_prefix_engine: str,
     vit_batch_views: bool = False,
     trt_perf: bool = True,
+    trt_perf_warmup: int = 20,
+    trt_perf_print_interval: int = 50,
     trt_cuda_graph: bool = False,
     trt_cuda_graph_warmup: int = 3,
     denoise_adarms_precompute: bool = False,
@@ -48,6 +50,8 @@ def load_tensorrt_engines(
     if vit_batch_views:
         cfg["vit_batch_views"] = True
     cfg["trt_perf"] = bool(trt_perf)
+    cfg["trt_perf_warmup"] = int(trt_perf_warmup)
+    cfg["trt_perf_print_interval"] = int(trt_perf_print_interval)
     cfg["trt_cuda_graph"] = bool(trt_cuda_graph)
     cfg["trt_cuda_graph_warmup"] = int(trt_cuda_graph_warmup)
     cfg["denoise_adarms_precompute"] = bool(denoise_adarms_precompute)

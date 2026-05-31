@@ -95,6 +95,12 @@ class Args:
     trt_perf: bool = True
     """打开 TRT engine 的逐次耗时统计（>100 次后打印各 engine 的均值/分位耗时）。"""
 
+    trt_perf_warmup: int = 20
+    """TRT engine 性能统计 warmup 次数（前 N 次不计入统计）。"""
+
+    trt_perf_print_interval: int = 50
+    """TRT engine 性能统计打印间隔（每 M 次打印一次 mean/p50/p90/p99）。"""
+
     trt_cuda_graph: bool = False
     """对所有 TRT engine 启用 CUDA Graph 捕获/回放，降低 kernel launch 开销；
     仅在输入 shape 稳定时安全（动态 shape 会触发重捕获）。"""
@@ -105,6 +111,24 @@ class Args:
     denoise_adarms_precompute: bool = False
     """denoise 引擎以 adarms_mod 输入导出时（AdaRMS Dense host 预计算 / roadmap #22），
     在 host 侧预算调制系数并喂入引擎。须与对应的 denoise 引擎（含 adarms_mod 输入）配套。"""
+
+    perf_profile_chunk: bool = True
+    """打印 chunk 级分解耗时（数据读取/重排/推理/后处理/总计），用于定位 e2e 与引擎时间差。"""
+
+    perf_profile_warmup_chunks: int = 10
+    """chunk 级 profile 的 warmup 段数（前 N 段不计）。"""
+
+    perf_profile_print_interval: int = 20
+    """chunk 级 profile 打印间隔（每 M 段打印一次）。"""
+
+    trt_enable_stage_profile: bool = True
+    """启用 PI0 stage profiler（sample_actions/preprocess/paligemma_forward/denoise_step）。"""
+
+    trt_stage_profile_warmup: int = 10
+    """PI0 stage profiler warmup（按 sample_actions 次数跳过）。"""
+
+    trt_enable_hook_profile: bool = True
+    """启用 TRT hook 计时（trt.vit/llm/expert/denoise 等入口 wall-time 统计，退出时汇总）。"""
 
     # ONNX Runtime 引擎（inference_mode=onnxrt 或 ort_compare 时使用）
     ort_engine_path: str = ""

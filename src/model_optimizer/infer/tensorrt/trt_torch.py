@@ -60,6 +60,8 @@ class Engine(object):
         plugins=[],
         use_cuda_graph=None,
         cuda_graph_warmup=1,
+        perf_warmup=20,
+        perf_print_interval=50,
     ):
         super().__init__()
 
@@ -77,11 +79,16 @@ class Engine(object):
             use_cuda_graph = os.getenv("MODEL_OPT_TRT_CUDA_GRAPH", "0") in ("1", "true", "True")
         self.use_cuda_graph = bool(use_cuda_graph and torch.cuda.is_available())
         self.cuda_graph_warmup = max(int(cuda_graph_warmup), 0)
+        self.perf_warmup = max(int(perf_warmup), 0)
+        self.perf_print_interval = max(int(perf_print_interval), 0)
         self._graph_cache = {}
 
         if self.perf:
             self.time_results = {
                 'total': [],
+                'prepare': [],
+                'execute': [],
+                'post': [],
             }
 
         def destroy(self):
@@ -176,6 +183,31 @@ class Engine(object):
             sig.append((name, tuple(x.shape), x.dtype, x.device))
         return tuple(sig)
 
+    def _stats_ms(self, values: list[float]) -> str:
+        arr = np.asarray(values, dtype=np.float64) * 1000.0
+        if arr.size == 0:
+            return "n=0"
+        return (
+            f"n={int(arr.size)} mean={float(np.mean(arr)):.3f} "
+            f"p50={float(np.percentile(arr, 50)):.3f} p90={float(np.percentile(arr, 90)):.3f} "
+            f"p99={float(np.percentile(arr, 99)):.3f} ms"
+        )
+
+    def _maybe_print_perf_summary(self) -> None:
+        if not self.perf:
+            return
+        if int(os.getenv("LOCAL_RANK", -1)) not in [0, -1]:
+            return
+        total = self.time_results.get("total", [])
+        if not total:
+            return
+        stem = os.path.basename(self.file)
+        print(colored(f"[TRT PERF] {stem} total   {self._stats_ms(total)}", "cyan"))
+        for key in ("prepare", "execute", "post"):
+            vals = self.time_results.get(key, [])
+            if vals:
+                print(colored(f"[TRT PERF] {stem} {key:>7} {self._stats_ms(vals)}", "cyan"))
+
     def forward(self, *args, **kwargs):
         self.count += 1
         start_time = time.perf_counter()
@@ -188,6 +220,7 @@ class Engine(object):
         prepared_inputs = {}
         for name, _, dtype in self.in_meta:
             prepared_inputs[name] = self._prepare_input_tensor(name, all_inputs[name], dtype)
+        prepare_end = time.perf_counter()
 
         outputs = None
         if self.use_cuda_graph:
@@ -268,23 +301,25 @@ class Engine(object):
                 item[0]: reference_tensors[len(self.in_meta) + i]
                 for i, item in enumerate(self.out_meta)
             }
+        execute_end = time.perf_counter()
 
-        end_time = time.perf_counter()
-        if self.perf and self.count > 100:
-            self.time_results['total'].append(end_time - start_time)
-            #print(colored(
-            #    f"total time: {np.mean(self.time_results['total'])*1000:.2f} ± {np.std(self.time_results['total'])*1000:.2f} ms", "green"))
-
+        output = None
         if return_list:
-            #print(f"return_list: {return_list}")
-            return [outputs[item[0]] for item in self.out_meta]
+            output = [outputs[item[0]] for item in self.out_meta]
         else:
-            #            output = BaseModelOutputWithPooling(
-            #                last_hidden_state=reference_tensors[len(self.in_meta)]
-            #            )
-            #            print(f"output: {output}")
-            #           return output
             output = outputs
             if self.return_wrap:
                 output = self.return_wrap(output)
-            return output
+        end_time = time.perf_counter()
+
+        if self.perf and self.count > self.perf_warmup:
+            self.time_results['total'].append(end_time - start_time)
+            self.time_results['prepare'].append(prepare_end - start_time)
+            self.time_results['execute'].append(execute_end - prepare_end)
+            self.time_results['post'].append(end_time - execute_end)
+            if self.perf_print_interval > 0:
+                effective_count = self.count - self.perf_warmup
+                if effective_count % self.perf_print_interval == 0:
+                    self._maybe_print_perf_summary()
+
+        return output

@@ -19,8 +19,16 @@ denoise_engine: denoise_st_fp8.engine
 # —— TRT engine 运行开关 ——
 # perf：>100 次后打印各 engine 的耗时统计；cuda_graph：捕获/回放降低 launch 开销（输入 shape 稳定时安全）。
 trt_perf: true
+trt_perf_warmup: 20
+trt_perf_print_interval: 50
 trt_cuda_graph: true
 trt_cuda_graph_warmup: 3
+perf_profile_chunk: true
+perf_profile_warmup_chunks: 10
+perf_profile_print_interval: 20
+trt_enable_stage_profile: true
+trt_stage_profile_warmup: 10
+trt_enable_hook_profile: true
 
 num_samples: 100
 start_index: 0
