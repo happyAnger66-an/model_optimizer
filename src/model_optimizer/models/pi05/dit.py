@@ -196,7 +196,9 @@ class Pi05DenoiseStep(nn.Module, Model):
         os.makedirs(output_dir, exist_ok=True)
         start = time.time()
         num_layers = int(self.expert_config.num_hidden_layers)
-        prefix_len = 968
+        # prefix_len 仅用于生成导出假输入（prefix 维是动态轴，不会约束引擎）；
+        # 可经 feature_config.export.prefix_len 覆盖，默认 968。
+        prefix_len = int(self.feature_config.export.get("prefix_len", 968))
 
         logger.info("Start export denoise onnx ...")
         print(colored("Start Pi05 denoise (Pi05DenoiseStep) export onnx...", "green"))

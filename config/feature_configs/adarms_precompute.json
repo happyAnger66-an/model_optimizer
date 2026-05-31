@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "features": {
+    "adarms_dense_precompute": { "enabled": true }
+  },
+  "export": { "dynamo": false, "prefix_len": 818 },
+  "quantize": { "dynamic_quant": "bf16" }
+}

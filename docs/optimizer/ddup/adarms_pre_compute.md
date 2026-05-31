@@ -160,7 +160,192 @@ denoise 段 **S=10（action horizon）是 launch-bound**（host 启动开销主�
 
 ---
 
-## 7. 一句话总结
+## 7. 使用指南（export → quantize → build → serve 全流程）
+
+> 组件注册名 `pi05_libero/denoise`（`models/registry.py`），类 `Pi05DenoiseStep`（`models/pi05/dit.py`）。
+> 统一 CLI：`model-opt`（= `model-optimizer-cli`，`src/model_optimizer/cli.py`）。
+> **贯穿全程的开关一致性**：export 一旦开启预计算，ONNX 第 5 输入变成 `adarms_mod`，
+> 那么 **build_cfg 必须改名/改 shape**、**serve 必须置 `denoise_adarms_precompute=true`**，三处缺一不可。
+
+### 准备：feature_config JSON
+
+```jsonc
+// config/feature_configs/adarms_precompute.json
+{
+  "version": 1,
+  "features": { "adarms_dense_precompute": true },
+  "export":   { "dynamo": false, "prefix_len": 968 }
+}
+```
+
+> `export.prefix_len` 覆盖导出假输入的 prefix 长度（默认 968，仅影响 tracing，prefix 维是动态轴）。
+> 把它设成与 `build_cfg` 的 `_PREFIX_LEN` 一致，可消除 export(968) 与 build(818) 的历史不一致。
+
+也可不写 JSON，改用环境变量 `PI05_ADARMS_PRECOMPUTE=1`（export/quantize/serve 均识别）。
+
+### 步骤 1｜Export（bf16，无量化）
+
+```bash
+model-opt export \
+  --model_name pi05_libero/denoise \
+  --model_path /path/to/pytorch_pi05_checkpoint \
+  --export_dir /tmp/export/pi05 \
+  --feature_config adarms_precompute.json
+```
+
+- CLI 经 `convert/convert_formt.py` 把 `FeatureConfig` 透传到 `construct_from_name_path` → `Pi05DenoiseStep`。
+- `__init__` 里 `apply_features` 命中 `adarms_dense_precompute` → `enable_adarms_precompute(True)`。
+- `export()` 走预计算分支：第 5 输入为 `adarms_mod`，图内**无 sinusoid / time_mlp / dense**。
+- **关注日志**：`[adarms] precompute export: N norms × dim*3=D, dense GEMM 已移出图`
+  —— 记下 `N`（=2×层数+1，18 层即 **37**）与 `D`（=expert hidden_size×3），build_cfg 要用。
+
+产物：`/tmp/export/pi05/denoise.onnx`（输入 `prefix_pad_masks/past_keys/past_values/x_t/adarms_mod`）。
+
+### 步骤 2｜Quantize（可选，FP8/NVFP4）
+
+```bash
+model-opt quantize \
+  --model_name pi05_libero/denoise \
+  --model_path /path/to/pytorch_pi05_checkpoint \
+  --quantize_cfg config/quant/denoise_quant_fp8_cfg.py \
+  --calibrate_data /path/to/denoise_calib.pt \
+  --export_dir /tmp/quantize/pi05 \
+  --feature_config adarms_precompute.json
+```
+
+- **关键**：校准数据喂的是 `timestep`，故 `quantize()` 会**自动临时关闭**预计算走时间链路校准，
+  校准完再恢复、以预计算模式重新导出（`dit.py::quantize`）。无需手动干预。
+- dense 是极小算子，预计算后不出现在导出图，因此其量化器在导出时自然丢弃；量化聚焦主干 GEMM。
+- 产物同样是 `denoise.onnx`（含 QDQ；NVFP4 时再过 `_nvfp4_post_processing`）。
+
+### 步骤 3｜Build（ONNX → TensorRT engine）
+
+预计算后输入名/shape 变了，**必须改 build_cfg**。基于 `config/build_configs/denoise_step_build_cfg.py` 复制一份：
+
+```python
+# denoise_step_build_cfg_adarms.py
+_NUM_LAYERS = 18
+_PREFIX_LEN = 818          # 按实际 prefix 长度对齐
+_ACTION_HORIZON = 10
+_ACTION_DIM = 32
+_HEAD_DIM = 256
+_NUM_NORMS = 2 * _NUM_LAYERS + 1     # = 37，取 export 日志的 N
+_DIM3 = 3072                          # = export 日志的 D（expert hidden_size×3），按实际填
+
+def _shapes():
+    return {
+        "prefix_pad_masks": (1, _PREFIX_LEN),
+        "past_keys":  (_NUM_LAYERS, 1, _PREFIX_LEN, _HEAD_DIM),
+        "past_values": (_NUM_LAYERS, 1, _PREFIX_LEN, _HEAD_DIM),
+        "x_t": (1, _ACTION_HORIZON, _ACTION_DIM),
+        "adarms_mod": (_NUM_NORMS, 1, _DIM3),   # ← 取代 timestep
+    }
+
+build_cfg = {
+    "precision": "bf16",
+    "strongly_typed_network": True,
+    "workspace_mb": 8192,
+    "min_shapes": _shapes(),
+    "opt_shapes": _shapes(),
+    "max_shapes": _shapes(),
+}
+```
+
+```bash
+model-opt build \
+  --model_path /tmp/export/pi05/denoise.onnx \
+  --build_cfg config/build_configs/denoise_step_build_cfg_adarms.py \
+  --export_dir /tmp/build/pi05/denoise.engine
+```
+
+> `--export_dir` 在 build 子命令里是 **engine 输出文件完整路径**（非目录）。
+
+### 步骤 4｜Serve / Infer（host 侧按步预算并喂入）
+
+serve JSON 置 `denoise_adarms_precompute=true`：
+
+```jsonc
+{
+  "checkpoint": "/path/to/pytorch_pi05_libero",
+  "config_name": "pi05_libero",
+  "mode": "tensorrt",
+  "precision": "bf16",
+  "tensorrt": {
+    "engine_path": "/tmp/build/pi05",
+    "vit_engine": "vit.engine",
+    "llm_engine": "llm.engine",
+    "expert_engine": "expert.engine",
+    "denoise_engine": "denoise.engine",
+    "embed_prefix_engine": "embed_prefix.engine",
+    "denoise_adarms_precompute": true
+  }
+}
+```
+
+启动后日志出现 `[adarms] denoise host 侧预计算已启用（喂 adarms_mod）`：
+- `policy_loader._mount_tensorrt_engines` 把开关透传给 executor；
+- `Pi05TensorRTExecutor` 用 `infer/pi05_adarms.py::AdaRmsModulator` 在每个 denoise step
+  按 `timestep` 值**记忆化**预算 `adarms_mod`（dense 只在 torch 全精度跑有限次，首步后命中缓存），
+  以 `adarms_mod=` 取代 `timestep=` 喂引擎。
+
+> ONNX Runtime 后端同理：`onnxrt.denoise_adarms_precompute=true`。
+
+### 一致性自检表
+
+| 项 | 默认模式 | 预计算模式 |
+|---|---|---|
+| ONNX 第 5 输入 | `timestep (B,)` | `adarms_mod (N, B, D)` |
+| build_cfg shapes | 含 `timestep` | 改为 `adarms_mod` |
+| serve 开关 | 关 | `denoise_adarms_precompute=true` |
+| 图内是否含 sinusoid/time_mlp/dense | 是 | **否** |
+
+> 三处任一不匹配的典型报错：build 阶段 profile 输入名找不到、或 serve 阶段引擎绑定输入名不符。
+
+---
+
+## 8. 当前 Pi0.5 整体推理流程总结
+
+### 5 阶段串联（`PI05_STAGES = (vit, embed_prefix, llm, expert, denoise)`）
+
+```
+observation
+  → [vit]          SigLIP 多视角图像 → 视觉 token        (get_image_features)
+  → [embed_prefix] 视觉 token + 语言嵌入 拼成 prefix      (embed_prefix)
+  → [llm]          paligemma LLM 对 prefix 做 prefill → past_key_values(KV cache)
+  → sample_actions  Euler 去噪循环（PyTorch 宿主，未进引擎）：
+        x_t ← 随机噪声;  dt = -1/num_steps;  time = 1.0
+        repeat num_steps(默认 10) 次:
+          v_t = denoise_step(prefix_pad_masks, past_key_values, x_t, timestep)
+                 └─ [expert] action expert 读同一份 prefix KV + AdaRMS(time) → v_t
+          x_t ← x_t + dt * v_t      # Euler 更新（图外宿主）
+  → actions (= x_t)  → 后处理(LiberoOutputs 截断维度) → 返回动作 chunk
+```
+
+- **宿主循环**：`third_party/openpi/.../pi0_pytorch.py::sample_actions`（prefill + Euler 循环）。
+  TRT 路径加载后 `_restore_eager_sample_actions`，**循环仍在 PyTorch**，仅**单步 `denoise_step` 进引擎**。
+- **denoise 单步**：`Pi05DenoiseStep`（`dit.py`）= `embed_suffix`(action 投影 + 时间条件) + expert forward + `action_out_proj`。
+
+### 各阶段后端替换（`infer/tensorrt/pi05_executor.py` 运行时挂载）
+
+| 阶段 | 替换对象 | 触发条件 |
+|---|---|---|
+| vit | `paligemma.model.get_image_features` | `tensorrt.vit_engine` |
+| embed_prefix | `pi05_model.embed_prefix` | `embed_prefix_engine`，或 `use_flashrt_siglip_embed_prefix`/`stages.vit=flashrt`（FlashRT SigLIP） |
+| llm | `language_model.forward` | `tensorrt.llm_engine` |
+| expert | `gemma_expert.model.forward` | `tensorrt.expert_engine` |
+| **denoise** | `pi05_model.denoise_step` | `tensorrt.denoise_engine`（含 AdaRMS 预计算分支） |
+
+> 每阶段可独立选 PyTorch / TensorRT / ONNX / FlashRT，详见 `flashrt_backend_design.md`（分阶段后端矩阵）。
+
+### AdaRMS 预计算在该流程中的位置
+
+- **离线（export/build 期）**：把 expert 内 37 个 AdaRMS 的 `dense(cond)` 移出 denoise 引擎图。
+- **在线（每个 denoise step）**：host 的 `AdaRmsModulator` 按 `timestep` 预算 `adarms_mod` 喂入引擎；
+  因调度固定，仅前几步真正算 dense，其后全部命中缓存 → 引擎图更干净、launch 更少。
+
+---
+
+## 9. 一句话总结
 
 > Pi0.5 denoise 的 AdaRMS 时间调制 **只依赖固定的扩散时间步调度**，与推理输入无关；
 > 因此 370 个 `dense(cond)` GEMM 全是**离线可算的常量**。把它们从导出图里剥离（modulation 作为输入或常量折叠），
@@ -169,9 +354,10 @@ denoise 段 **S=10（action horizon）是 launch-bound**（host 启动开销主�
 
 ---
 
-## 8. 修订记录
+## 10. 修订记录
 
 | 日期 | 内容 |
 |---|---|
 | 2026-05-31 | 初版：AdaRMS Dense 预计算技术细节与 model_optimizer 实现思路（roadmap #22） |
 | 2026-05-31 | 落地方案 A：`dit.py` 运行时 monkey-patch + `adarms_mod` 导出；host 侧 `AdaRmsModulator` 记忆化预算；feature_config / serve JSON / env 三种可配开关。未改原始 `modeling_gemma.py`。 |
+| 2026-05-31 | 新增 §7 使用指南（export/quantize/build/serve 全流程 + 一致性自检表）与 §8 整体推理流程总结。 |
