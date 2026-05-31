@@ -527,7 +527,7 @@ class Pi05DenoiseStep(nn.Module, Model):
         past_keys: torch.Tensor,
         past_values: torch.Tensor,
         x_t: torch.Tensor,
-        time_or_mod: torch.Tensor,
+        timestep: torch.Tensor,
     ) -> torch.Tensor:
         """
         Args:
@@ -535,16 +535,17 @@ class Pi05DenoiseStep(nn.Module, Model):
             past_keys: [num_layers, batch, num_kv_heads, prefix_len, head_dim]（与 LLM 导出堆叠方式一致）。
             past_values: 与 past_keys 相同布局。
             x_t: float [batch, action_horizon, action_dim]。
-            time_or_mod: 默认模式为 ``timestep`` float [batch]（同 openpi expanded_time）；
-                AdaRMS 预计算模式（``self.adarms_precompute=True``）为打包 modulation
-                ``adarms_mod`` [num_norms, batch, dim*3]（见 docs/optimizer/ddup/adarms_pre_compute.md）。
+            timestep: 默认模式为时间标量 float [batch]（同 openpi expanded_time）；
+                AdaRMS 预计算模式（``self.adarms_precompute=True``）下，此入参改为承载打包 modulation
+                ``adarms_mod`` [num_norms, batch, dim*3]（导出按位置传入；校准始终走默认时间链路，
+                因此 ``timestep`` 这个关键字名须保留以匹配校准 batch 的键）。
 
         Returns:
             v_t: float32 [batch, action_horizon, action_dim]。
         """
         if self.adarms_precompute:
             suffix_embs, suffix_pad_masks, suffix_att_masks = self._embed_action(x_t)
-            self._inject_modulation(time_or_mod)
+            self._inject_modulation(timestep)
             return self._run_expert(
                 prefix_pad_masks,
                 past_keys,
@@ -556,7 +557,7 @@ class Pi05DenoiseStep(nn.Module, Model):
             )
 
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self._embed_suffix_pi05(
-            x_t, time_or_mod
+            x_t, timestep
         )
         return self._run_expert(
             prefix_pad_masks,
