@@ -46,14 +46,20 @@ class NativeDenoiseLoopRunner:
         use_cuda_graph: bool = True,
         graph_warmup: int = 3,
         perf: bool = False,
+        log_interval: int = 50,
     ) -> None:
         self._raw = raw_denoise_step
         self.use_cuda_graph = bool(use_cuda_graph)
         self.graph_warmup = max(int(graph_warmup), 0)
         self.perf = bool(perf)
+        self.log_interval = max(int(log_interval), 1)
         self._graph_cache: dict[tuple[Any, ...], NativeGraphEntry] = {}
+        self._capture_blacklist: set[tuple[Any, ...]] = set()
         self._capture_ms: list[float] = []
         self._run_ms: list[float] = []
+        self._num_calls = 0
+        self._num_replay = 0
+        self._num_eager = 0
 
     def _maybe_build_entry(
         self,
@@ -64,6 +70,8 @@ class NativeDenoiseLoopRunner:
         timestep: torch.Tensor,
     ) -> NativeGraphEntry | None:
         key = _signature_key_for_denoise(prefix_pad_masks, past_key_values, x_t, timestep)
+        if key in self._capture_blacklist:
+            return None
         entry = self._graph_cache.get(key)
         if entry is not None:
             return entry
@@ -87,6 +95,7 @@ class NativeDenoiseLoopRunner:
             return entry
         except Exception as exc:
             logger.warning("[native] capture failed, fallback eager: %s", exc)
+            self._capture_blacklist.add(key)
             return None
 
     def run(
@@ -98,7 +107,9 @@ class NativeDenoiseLoopRunner:
         timestep: torch.Tensor,
     ) -> torch.Tensor:
         t0 = time.perf_counter()
+        self._num_calls += 1
         out = None
+        mode = "pt_eager_fallback"
         if self.use_cuda_graph and torch.cuda.is_available():
             entry = self._maybe_build_entry(
                 state, prefix_pad_masks, past_key_values, x_t, timestep
@@ -107,13 +118,38 @@ class NativeDenoiseLoopRunner:
                 out = entry.replay(
                     state, prefix_pad_masks, past_key_values, x_t, timestep
                 )
+                mode = "pt_cuda_graph_replay"
+                self._num_replay += 1
         if out is None:
             out = self._raw(state, prefix_pad_masks, past_key_values, x_t, timestep)
+            self._num_eager += 1
         self._run_ms.append((time.perf_counter() - t0) * 1000.0)
+        if self.perf and (
+            self._num_calls <= 5 or self._num_calls % self.log_interval == 0
+        ):
+            logger.info(
+                "[native] denoise call=%d mode=%s replay=%d eager=%d cache=%d blacklist=%d",
+                self._num_calls,
+                mode,
+                self._num_replay,
+                self._num_eager,
+                len(self._graph_cache),
+                len(self._capture_blacklist),
+            )
         return out
 
     def dump_summary(self) -> str:
         lines = ["NativeDenoiseLoopRunner summary:"]
+        replay_ratio = (
+            float(self._num_replay) / float(self._num_calls)
+            if self._num_calls > 0
+            else 0.0
+        )
+        lines.append(
+            "  path_stats: "
+            f"calls={self._num_calls} replay={self._num_replay} "
+            f"eager={self._num_eager} replay_ratio={replay_ratio*100.0:.1f}%"
+        )
         if self._run_ms:
             a = np.asarray(self._run_ms, dtype=np.float64)
             lines.append(

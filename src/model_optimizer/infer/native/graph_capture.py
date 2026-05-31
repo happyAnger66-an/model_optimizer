@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import dataclasses
 import time
 from collections.abc import Callable
@@ -8,9 +9,35 @@ from typing import Any
 import torch
 
 
+def _is_dynamic_cache_like(past_key_values: Any) -> bool:
+    return hasattr(past_key_values, "key_cache") and hasattr(past_key_values, "value_cache")
+
+
 def _flatten_past_key_values(past_key_values: Any) -> list[torch.Tensor]:
-    """把 ``[(k0,v0), (k1,v1), ...]`` 拍平成 tensor 列表。"""
+    """把 KV cache 统一拍平成 tensor 列表。
+
+    支持两种常见形态：
+    - ``list/tuple[(k,v), ...]``
+    - ``transformers.DynamicCache``（``key_cache/value_cache``）
+    """
     flat: list[torch.Tensor] = []
+    if _is_dynamic_cache_like(past_key_values):
+        keys = getattr(past_key_values, "key_cache")
+        vals = getattr(past_key_values, "value_cache")
+        if len(keys) != len(vals):
+            raise ValueError(
+                f"DynamicCache key/value lengths mismatch: {len(keys)} vs {len(vals)}"
+            )
+        for i, (k, v) in enumerate(zip(keys, vals, strict=True)):
+            if not (torch.is_tensor(k) and torch.is_tensor(v)):
+                raise TypeError(
+                    f"Unexpected DynamicCache[{i}] element types: "
+                    f"{type(k).__name__}, {type(v).__name__}"
+                )
+            flat.append(k)
+            flat.append(v)
+        return flat
+
     for i, entry in enumerate(past_key_values):
         if not isinstance(entry, (tuple, list)) or len(entry) < 2:
             raise TypeError(
@@ -28,13 +55,24 @@ def _flatten_past_key_values(past_key_values: Any) -> list[torch.Tensor]:
     return flat
 
 
-def _unflatten_past_key_values(
-    flat: list[torch.Tensor], template: Any
-) -> list[tuple[torch.Tensor, torch.Tensor]]:
+def _build_static_past_key_values(
+    template: Any, static_flat: list[torch.Tensor]
+) -> Any:
+    if _is_dynamic_cache_like(template):
+        obj = copy.copy(template)
+        keys: list[torch.Tensor] = []
+        vals: list[torch.Tensor] = []
+        for i in range(0, len(static_flat), 2):
+            keys.append(static_flat[i])
+            vals.append(static_flat[i + 1])
+        obj.key_cache = keys
+        obj.value_cache = vals
+        return obj
+
     out: list[tuple[torch.Tensor, torch.Tensor]] = []
     j = 0
     for _ in template:
-        out.append((flat[j], flat[j + 1]))
+        out.append((static_flat[j], static_flat[j + 1]))
         j += 2
     return out
 
@@ -103,7 +141,7 @@ def build_graph_entry_for_denoise_step(
     static_flat = [torch.empty_like(t) for t in in_flat]
     for dst, src in zip(static_flat, in_flat, strict=True):
         dst.copy_(src, non_blocking=False)
-    static_past = _unflatten_past_key_values(static_flat, past_key_values)
+    static_past = _build_static_past_key_values(past_key_values, static_flat)
 
     static_x_t = torch.empty_like(x_t)
     static_x_t.copy_(x_t, non_blocking=False)
