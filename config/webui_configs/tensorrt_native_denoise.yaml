@@ -33,7 +33,7 @@ native_enable_denoise: true
 native_use_cuda_graph: true
 native_graph_warmup: 3
 native_compile_expert: false
-native_quant_spec_path: ""
+native_quant_spec_path: "/tmp/quantize/pi05/native_quant_spec.json"
 native_recalib_enable: false
 native_recalib_max_samples: 0
 native_recalib_percentile: 99.9
