@@ -88,6 +88,9 @@ class Args:
     expert_engine: str = ""
     denoise_engine: str = ""
     embed_prefix_engine: str = ""
+    vit_batch_views: bool = False
+    """多视角 batching：把所有相机视角堆成 batch 维一次过 vit 引擎（需 vit 引擎按 vit_build_cfg
+    的 batch 维 ≥ num_views 编译，且 vit.onnx 含 batch 动态轴）。与 embed_prefix_engine 互斥。"""
 
     # ONNX Runtime 引擎（inference_mode=onnxrt 或 ort_compare 时使用）
     ort_engine_path: str = ""

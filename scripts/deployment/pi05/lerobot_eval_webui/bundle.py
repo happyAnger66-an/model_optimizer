@@ -469,6 +469,7 @@ def load_infer_bundle(
             expert_engine=args.expert_engine,
             denoise_engine=args.denoise_engine,
             embed_prefix_engine=args.embed_prefix_engine,
+            vit_batch_views=bool(getattr(args, "vit_batch_views", False)),
         )
         print(colored("[infer] TensorRT 引擎已就绪", "cyan"), flush=True)
         _p("tensorrt", "TensorRT 引擎已就绪")

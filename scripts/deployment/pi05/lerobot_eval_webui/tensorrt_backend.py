@@ -15,6 +15,7 @@ def load_tensorrt_engines(
     expert_engine: str,
     denoise_engine: str,
     embed_prefix_engine: str,
+    vit_batch_views: bool = False,
 ) -> None:
     import addict
     import torch
@@ -40,4 +41,6 @@ def load_tensorrt_engines(
         cfg["denoise_engine"] = denoise_engine
     if embed_prefix_engine:
         cfg["embed_prefix_engine"] = embed_prefix_engine
+    if vit_batch_views:
+        cfg["vit_batch_views"] = True
     executor.load_model(addict.Dict(cfg))

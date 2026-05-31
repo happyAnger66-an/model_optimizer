@@ -45,6 +45,9 @@ class TensorRTConfig:
     denoise_adarms_precompute: bool = False
     """denoise 引擎以 AdaRMS 预计算模式导出（输入 ``adarms_mod`` 而非 ``timestep``）时置 True，
     宿主将按步预算 modulation 并喂入（roadmap #22 / docs/optimizer/ddup/adarms_pre_compute.md）。"""
+    vit_batch_views: bool = False
+    """多视角 batching：把所有相机视角堆成 batch 维一次过 vit 引擎（需 vit 引擎支持动态 batch）。
+    与 use_flashrt_siglip_embed_prefix / embed_prefix_engine 互斥。"""
 
 
 @dataclass

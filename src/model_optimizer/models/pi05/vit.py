@@ -101,10 +101,11 @@ class Vit(torch.nn.Module, Model):
                         opset_version=19,
                         dynamo=dynamo,
                         do_constant_folding=True,
-                        #                dynamic_axes={
-                        #                    "pixel_values": {0: "batch_size"},
-                        #                    "vit_embeds": {0: "batch_size"},
-                        #                },
+                        # batch 维放开：多视角 batching 时一次喂入 N 张图（token 维 256 固定）。
+                        dynamic_axes={
+                            "pixel_values": {0: "batch_size"},
+                            "image_features": {0: "batch_size"},
+                        },
                     )
         end = time.time()
         logger.info(f"export onnx to {output_dir} done cost:{end - start}s")

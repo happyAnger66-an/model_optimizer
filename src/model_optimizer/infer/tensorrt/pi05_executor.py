@@ -179,11 +179,81 @@ class Pi05TensorRTExecutor(Executor):
             embed_prefix_engine_name = getattr(
                 self.config, "embed_prefix_engine", None
             )
+            vit_batch_views = bool(getattr(self.config, "vit_batch_views", False))
             if use_flashrt_siglip and embed_prefix_engine_name:
                 raise ValueError(
                     "config.use_flashrt_siglip_embed_prefix=True is incompatible with "
                     "config.embed_prefix_engine (TRT whole-graph embed_prefix). "
                     "Disable one of them."
+                )
+            if vit_batch_views and (use_flashrt_siglip or embed_prefix_engine_name):
+                raise ValueError(
+                    "config.vit_batch_views=True is incompatible with "
+                    "use_flashrt_siglip_embed_prefix / embed_prefix_engine "
+                    "(those already own the vision/embed_prefix stage). Disable one."
+                )
+            if vit_batch_views and not self.config.vit_engine:
+                raise ValueError(
+                    "config.vit_batch_views=True requires config.vit_engine "
+                    "(the batched SigLIP TRT engine to call once for all views)."
+                )
+            if vit_batch_views:
+                # 多视角 batching：openpi embed_prefix 原本逐视角调 vit 引擎；这里改为把所有视角
+                # 堆成 batch 维一次过引擎（SigLIP 各图独立、无跨图注意力，数值等价），其余 embs/
+                # pad_masks/att_masks 构造与 PI0Pytorch.embed_prefix 完全一致。复用已 hook 的
+                # get_image_features（含 /sqrt(hidden) 缩放与可选 PI05_TRT_VIT_SCALE_FIX）。
+                _paligemma_model = (
+                    self.pi05_model.paligemma_with_expert.paligemma.model
+                )
+
+                def embed_prefix_vit_batched(
+                    self_m, images, img_masks, lang_tokens, lang_masks
+                ):
+                    images = list(images)
+                    img_masks = list(img_masks)
+                    bview = images[0].shape[0]
+                    stacked = torch.cat(images, dim=0)  # [N*B, 3, 224, 224]
+                    feats = _paligemma_model.get_image_features(stacked)  # 单次引擎调用
+
+                    embs = []
+                    pad_masks = []
+                    att_masks: list[int] = []
+                    for i, img_mask in enumerate(img_masks):
+                        img_emb = feats[i * bview:(i + 1) * bview]
+                        bsize, num_img_embs = img_emb.shape[:2]
+                        embs.append(img_emb)
+                        pad_masks.append(
+                            img_mask[:, None].expand(bsize, num_img_embs)
+                        )
+                        att_masks += [0] * num_img_embs
+
+                    lang_emb = self_m.paligemma_with_expert.embed_language_tokens(
+                        lang_tokens
+                    )
+                    lang_emb = lang_emb * math.sqrt(lang_emb.shape[-1])
+                    embs.append(lang_emb)
+                    pad_masks.append(lang_masks)
+                    att_masks += [0] * lang_emb.shape[1]
+
+                    embs = torch.cat(embs, dim=1)
+                    pad_masks = torch.cat(pad_masks, dim=1)
+                    att = torch.tensor(
+                        att_masks, dtype=torch.bool, device=pad_masks.device
+                    )
+                    att = att[None, :].expand(pad_masks.shape[0], len(att_masks))
+                    return embs, pad_masks, att
+
+                embed_prefix_vit_batched = trt_hook_timer("trt.embed_prefix_vit_batched")(
+                    embed_prefix_vit_batched
+                )
+                self.pi05_model.embed_prefix = types.MethodType(
+                    embed_prefix_vit_batched, self.pi05_model
+                )
+                print(
+                    colored(
+                        "embed_prefix: batched SigLIP (all views in one vit engine call)",
+                        "green",
+                    )
                 )
             if use_flashrt_siglip:
                 ckpt = getattr(self.config, "flashrt_checkpoint_dir", None)

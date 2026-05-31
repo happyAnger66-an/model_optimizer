@@ -104,6 +104,10 @@ def _mount_tensorrt_engines(policy: Any, config: ServerConfig, on_progress: Prog
     if getattr(config.tensorrt, "denoise_adarms_precompute", False):
         trt_cfg["denoise_adarms_precompute"] = True
 
+    # 多视角 batching：所有相机视角堆成 batch 维一次过 vit 引擎（需 vit 引擎支持动态 batch）。
+    if getattr(config.tensorrt, "vit_batch_views", False):
+        trt_cfg["vit_batch_views"] = True
+
     # 分阶段后端矩阵：vit=flashrt 时，把 FlashRT SigLIP 视觉栈接入（其余阶段仍走 TRT）。
     # 这是把历史 ad-hoc 开关 use_flashrt_siglip_embed_prefix 迁移成一等公民的入口。
     resolved = config.resolve_stages()
