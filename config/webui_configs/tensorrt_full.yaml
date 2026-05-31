@@ -11,7 +11,7 @@ device: cuda:0
 precision: bf16
 denoise_adarms_precompute: true
 
-engine_path: /tmp/pi05/build/opt
+engine_path: /tmp/build/pi05/opt
 vit_engine: vit_fp8.engine
 llm_engine: llm_nvfp4_lat.engine
 denoise_engine: denoise_st_fp8.engine
@@ -26,11 +26,12 @@ trt_cuda_graph_warmup: 3
 perf_profile_chunk: true
 perf_profile_warmup_chunks: 10
 perf_profile_print_interval: 20
+perf_profile_top_n: 3
 trt_enable_stage_profile: true
 trt_stage_profile_warmup: 10
 trt_enable_hook_profile: true
 
-num_samples: 100
+num_samples: 500
 start_index: 0
 noise: fixed
 noise_seed: 0

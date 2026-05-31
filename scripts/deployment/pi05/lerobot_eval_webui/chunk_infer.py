@@ -71,6 +71,24 @@ def _maybe_print_chunk_profile(args: Any, idx: int) -> None:
                     "magenta",
                 )
             )
+    # 自动瓶颈排名：按平均耗时降序输出 Top-N（默认 3）
+    top_n = max(int(getattr(args, "perf_profile_top_n", 3)), 1)
+    means: list[tuple[str, float]] = []
+    for key in ("predict_ms", "post_ms", "load_ms", "repack_ms"):
+        vals = _chunk_prof[key]
+        if vals:
+            means.append((key, float(np.mean(np.asarray(vals, dtype=np.float64)))))
+    if means:
+        means.sort(key=lambda x: x[1], reverse=True)
+        total_mean = float(np.mean(np.asarray(_chunk_prof["total_ms"], dtype=np.float64))) if _chunk_prof["total_ms"] else 0.0
+        for rank, (name, mean_ms) in enumerate(means[:top_n], start=1):
+            ratio = (mean_ms / total_mean * 100.0) if total_mean > 0.0 else 0.0
+            print(
+                colored(
+                    f"[chunk-prof][rank#{rank}] {name}: {mean_ms:.2f} ms ({ratio:.1f}% of total)",
+                    "magenta",
+                )
+            )
 
 
 def _policy_torch_model(policy: Any) -> Any:

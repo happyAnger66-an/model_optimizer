@@ -203,10 +203,23 @@ class Engine(object):
             return
         stem = os.path.basename(self.file)
         print(colored(f"[TRT PERF] {stem} total   {self._stats_ms(total)}", "cyan"))
+        mean_total_ms = float(np.mean(np.asarray(total, dtype=np.float64)) * 1000.0)
+        breakdown: list[tuple[str, float]] = []
         for key in ("prepare", "execute", "post"):
             vals = self.time_results.get(key, [])
             if vals:
                 print(colored(f"[TRT PERF] {stem} {key:>7} {self._stats_ms(vals)}", "cyan"))
+                breakdown.append((key, float(np.mean(np.asarray(vals, dtype=np.float64)) * 1000.0)))
+        if breakdown:
+            breakdown.sort(key=lambda x: x[1], reverse=True)
+            for rank, (name, mean_ms) in enumerate(breakdown, start=1):
+                ratio = (mean_ms / mean_total_ms * 100.0) if mean_total_ms > 0.0 else 0.0
+                print(
+                    colored(
+                        f"[TRT PERF][rank#{rank}] {stem} {name}: {mean_ms:.3f} ms ({ratio:.1f}% of total)",
+                        "cyan",
+                    )
+                )
 
     def forward(self, *args, **kwargs):
         self.count += 1

@@ -121,6 +121,9 @@ class Args:
     perf_profile_print_interval: int = 20
     """chunk 级 profile 打印间隔（每 M 段打印一次）。"""
 
+    perf_profile_top_n: int = 3
+    """chunk 级瓶颈排名输出 Top-N（按平均耗时降序）。"""
+
     trt_enable_stage_profile: bool = True
     """启用 PI0 stage profiler（sample_actions/preprocess/paligemma_forward/denoise_step）。"""
 
