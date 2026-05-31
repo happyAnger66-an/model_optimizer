@@ -11,6 +11,7 @@ import torch
 from ..executor import Executor
 from ...models.pi05.model_pi05 import Pi05Model
 from .decoder_runner import NativeDenoiseLoopRunner
+from .quant_runtime import NativeQuantRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class Pi05NativeExecutor(Executor):
         self.precision = precision
         self.config = config
         self._denoise_runner: NativeDenoiseLoopRunner | None = None
+        self._quant_runtime: NativeQuantRuntime | None = None
         self._orig_denoise = None
         self._orig_expert_forward = None
         try:
@@ -56,6 +58,21 @@ class Pi05NativeExecutor(Executor):
         graph_warmup = int(_cfg_get(config, "graph_warmup", 3) or 3)
         compile_expert = bool(_cfg_get(config, "compile_expert", False))
         perf = bool(_cfg_get(config, "perf", True))
+        quant_spec_path = str(_cfg_get(config, "quant_spec_path", "") or "").strip()
+        recalib_enable = bool(_cfg_get(config, "recalib_enable", False))
+        recalib_max_samples = int(_cfg_get(config, "recalib_max_samples", 0) or 0)
+        recalib_percentile = float(_cfg_get(config, "recalib_percentile", 99.9) or 99.9)
+
+        if quant_spec_path:
+            try:
+                self._quant_runtime = NativeQuantRuntime.from_path(
+                    quant_spec_path,
+                    recalib_enable=recalib_enable,
+                    recalib_max_samples=recalib_max_samples,
+                    recalib_percentile=recalib_percentile,
+                )
+            except Exception as exc:
+                logger.warning("[native-quant] failed to load spec, continue without it: %s", exc)
 
         if enable_expert:
             self._install_expert_runtime(compile_expert=compile_expert)
@@ -112,6 +129,19 @@ class Pi05NativeExecutor(Executor):
             timestep,
         ):
             assert self._denoise_runner is not None
+            if self._quant_runtime is not None:
+                self._quant_runtime.observe_sample(
+                    {
+                        "prefix_pad_masks": prefix_pad_masks,
+                        "x_t": x_t,
+                        "timestep": timestep,
+                    }
+                )
+                prefix_pad_masks, x_t, timestep = self._quant_runtime.apply_quantized_inputs(
+                    prefix_pad_masks=prefix_pad_masks,
+                    x_t=x_t,
+                    timestep=timestep,
+                )
             return self._denoise_runner.run(
                 state, prefix_pad_masks, past_key_values, x_t, timestep
             )
@@ -129,6 +159,8 @@ class Pi05NativeExecutor(Executor):
         try:
             if self._denoise_runner is not None:
                 logger.info("%s", self._denoise_runner.dump_summary())
+            if self._quant_runtime is not None:
+                logger.info("%s", self._quant_runtime.dump_summary())
         except Exception as exc:
             logger.warning("[native] dump summary failed: %s", exc)
 

@@ -382,6 +382,10 @@ class ArgsConfig:
     native_compile_expert: bool = False
     native_enable_expert: bool = True
     native_enable_denoise: bool = True
+    native_quant_spec_path: str = ""
+    native_recalib_enable: bool = False
+    native_recalib_max_samples: int = 0
+    native_recalib_percentile: float = 99.9
 
     denoising_steps: int = 10
     """Number of denoising steps to use."""
@@ -523,6 +527,10 @@ def main(args: ArgsConfig):
                     "graph_warmup": int(args.native_graph_warmup),
                     "compile_expert": bool(args.native_compile_expert),
                     "perf": bool(args.perf),
+                    "quant_spec_path": str(args.native_quant_spec_path or ""),
+                    "recalib_enable": bool(args.native_recalib_enable),
+                    "recalib_max_samples": int(args.native_recalib_max_samples),
+                    "recalib_percentile": float(args.native_recalib_percentile),
                 }
             )
             executor.load_model(ncfg)

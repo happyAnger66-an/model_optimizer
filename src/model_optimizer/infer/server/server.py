@@ -425,6 +425,10 @@ class InferServer:
                     "use_cuda_graph": cfg.native.use_cuda_graph,
                     "graph_warmup": cfg.native.graph_warmup,
                     "compile_expert": cfg.native.compile_expert,
+                    "quant_spec_path": cfg.native.quant_spec_path,
+                    "recalib_enable": cfg.native.recalib_enable,
+                    "recalib_max_samples": cfg.native.recalib_max_samples,
+                    "recalib_percentile": cfg.native.recalib_percentile,
                 }
 
         if mode in ("pt_ptq_compare", "ptq_trt_compare"):

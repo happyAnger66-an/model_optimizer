@@ -97,6 +97,33 @@ def quantize_cli(args):
             'PTQ 结束后用同一套校准数据再跑一遍前向，打印各 TensorQuantizer 张量级 QDQ 误差（RMSE 等）。'
         ),
     )
+    parser.add_argument(
+        "--native-quant-spec-export",
+        type=str,
+        default="",
+        help=(
+            "可选：导出 native decoder 运行时校准规格 JSON（Phase B），"
+            "例如 /tmp/export/pi05/native_quant_spec.json。"
+        ),
+    )
+    parser.add_argument(
+        "--native-calib-component",
+        type=str,
+        default="pi05_denoise",
+        help="native spec 校准组件名（默认: pi05_denoise）。",
+    )
+    parser.add_argument(
+        "--native-calib-percentile",
+        type=float,
+        default=99.9,
+        help="native spec 统计 percentile（默认: 99.9）。",
+    )
+    parser.add_argument(
+        "--native-calib-max-samples",
+        type=int,
+        default=0,
+        help="native spec 最大采样数（0 表示不限制）。",
+    )
     args = parser.parse_args(args[1:])
     print(colored(f'[cli] quantize args {args}', 'green'))
 
@@ -137,6 +164,26 @@ def quantize_cli(args):
             )
         )
     model.quantize(quant_cfg, args.calibrate_data, args.export_dir, **quant_kwargs)
+
+    if args.native_quant_spec_export:
+        from .native_decoder import export_native_decoder_quant_spec
+
+        spec = export_native_decoder_quant_spec(
+            calib_data=args.calibrate_data,
+            export_path=args.native_quant_spec_export,
+            component=args.native_calib_component,
+            percentile=float(args.native_calib_percentile),
+            max_samples=int(args.native_calib_max_samples),
+        )
+        print(
+            colored(
+                "[native-calib] exported NativeQuantSpec to "
+                f"{args.native_quant_spec_export} "
+                f"(component={spec.component}, tensors={len(spec.tensor_stats)}, "
+                f"timesteps={len(spec.timestep_stats)})",
+                "green",
+            )
+        )
 
     if args.verify:
         print(f'verify model {args.verify_data} after quantize')

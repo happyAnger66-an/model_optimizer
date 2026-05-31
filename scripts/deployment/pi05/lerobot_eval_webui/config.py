@@ -127,6 +127,13 @@ class Args:
     native_overlay_on_tensorrt: bool = False
     """当 inference_mode=tensorrt 时，是否叠加 native runtime 覆盖部分阶段（如只覆盖 denoise）。"""
 
+    native_quant_spec_path: str = ""
+    """native decoder 量化规格 JSON 路径（Phase B）；为空则不加载。"""
+
+    native_recalib_enable: bool = False
+    native_recalib_max_samples: int = 0
+    native_recalib_percentile: float = 99.9
+
     perf_profile_chunk: bool = True
     """打印 chunk 级分解耗时（数据读取/重排/推理/后处理/总计），用于定位 e2e 与引擎时间差。"""
 

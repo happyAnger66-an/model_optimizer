@@ -14,6 +14,10 @@ def load_native_runtime(
     compile_expert: bool = False,
     enable_expert: bool = True,
     enable_denoise: bool = True,
+    quant_spec_path: str = "",
+    recalib_enable: bool = False,
+    recalib_max_samples: int = 0,
+    recalib_percentile: float = 99.9,
 ) -> None:
     import addict
     import torch
@@ -35,6 +39,10 @@ def load_native_runtime(
         "graph_warmup": int(graph_warmup),
         "compile_expert": bool(compile_expert),
         "perf": True,
+        "quant_spec_path": str(quant_spec_path or ""),
+        "recalib_enable": bool(recalib_enable),
+        "recalib_max_samples": int(recalib_max_samples),
+        "recalib_percentile": float(recalib_percentile),
     }
     executor.load_model(addict.Dict(cfg))
 

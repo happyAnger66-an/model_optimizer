@@ -498,6 +498,10 @@ def load_infer_bundle(
                 compile_expert=bool(getattr(args, "native_compile_expert", False)),
                 enable_expert=bool(getattr(args, "native_enable_expert", True)),
                 enable_denoise=bool(getattr(args, "native_enable_denoise", True)),
+                quant_spec_path=str(getattr(args, "native_quant_spec_path", "") or ""),
+                recalib_enable=bool(getattr(args, "native_recalib_enable", False)),
+                recalib_max_samples=int(getattr(args, "native_recalib_max_samples", 0)),
+                recalib_percentile=float(getattr(args, "native_recalib_percentile", 99.9)),
             )
             _p("native", "Native 阶段覆盖已生效")
         print(colored("[infer] TensorRT 引擎已就绪", "cyan"), flush=True)
@@ -513,6 +517,10 @@ def load_infer_bundle(
             compile_expert=bool(getattr(args, "native_compile_expert", False)),
             enable_expert=bool(getattr(args, "native_enable_expert", True)),
             enable_denoise=bool(getattr(args, "native_enable_denoise", True)),
+            quant_spec_path=str(getattr(args, "native_quant_spec_path", "") or ""),
+            recalib_enable=bool(getattr(args, "native_recalib_enable", False)),
+            recalib_max_samples=int(getattr(args, "native_recalib_max_samples", 0)),
+            recalib_percentile=float(getattr(args, "native_recalib_percentile", 99.9)),
         )
         print(colored("[infer] Native decoder 已就绪", "cyan"), flush=True)
         _p("native", "Native decoder 已就绪")
@@ -725,6 +733,26 @@ def load_infer_bundle(
             "compile_expert": bool(getattr(args, "native_compile_expert", False)),
             "enable_expert": bool(getattr(args, "native_enable_expert", True)),
             "enable_denoise": bool(getattr(args, "native_enable_denoise", True)),
+            "quant_spec_path": str(getattr(args, "native_quant_spec_path", "") or ""),
+            "recalib_enable": bool(getattr(args, "native_recalib_enable", False)),
+            "recalib_max_samples": int(getattr(args, "native_recalib_max_samples", 0)),
+            "recalib_percentile": float(getattr(args, "native_recalib_percentile", 99.9)),
+        }
+    elif (
+        args.inference_mode == "tensorrt"
+        and bool(getattr(args, "native_overlay_on_tensorrt", False))
+    ):
+        meta_payload["native"] = {
+            "overlay_on_tensorrt": True,
+            "use_cuda_graph": bool(getattr(args, "native_use_cuda_graph", True)),
+            "graph_warmup": int(getattr(args, "native_graph_warmup", 3)),
+            "compile_expert": bool(getattr(args, "native_compile_expert", False)),
+            "enable_expert": bool(getattr(args, "native_enable_expert", True)),
+            "enable_denoise": bool(getattr(args, "native_enable_denoise", True)),
+            "quant_spec_path": str(getattr(args, "native_quant_spec_path", "") or ""),
+            "recalib_enable": bool(getattr(args, "native_recalib_enable", False)),
+            "recalib_max_samples": int(getattr(args, "native_recalib_max_samples", 0)),
+            "recalib_percentile": float(getattr(args, "native_recalib_percentile", 99.9)),
         }
 
     trt_ort_polygraphy_report: dict[str, Any] | None = None

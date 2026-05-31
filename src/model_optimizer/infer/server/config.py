@@ -93,6 +93,10 @@ class NativeConfig:
     graph_warmup: int = 3
     compile_expert: bool = False
     perf: bool = True
+    quant_spec_path: str = ""
+    recalib_enable: bool = False
+    recalib_max_samples: int = 0
+    recalib_percentile: float = 99.9
 
 
 @dataclass

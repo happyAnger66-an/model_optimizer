@@ -155,6 +155,10 @@ def _mount_native(policy: Any, config: ServerConfig, on_progress: ProgressCallba
         "graph_warmup": int(getattr(config.native, "graph_warmup", 3)),
         "compile_expert": bool(getattr(config.native, "compile_expert", False)),
         "perf": bool(getattr(config.native, "perf", True)),
+        "quant_spec_path": str(getattr(config.native, "quant_spec_path", "") or ""),
+        "recalib_enable": bool(getattr(config.native, "recalib_enable", False)),
+        "recalib_max_samples": int(getattr(config.native, "recalib_max_samples", 0)),
+        "recalib_percentile": float(getattr(config.native, "recalib_percentile", 99.9)),
     }
     executor.load_model(addict.Dict(native_cfg))
     on_progress("native", "Native decoder 已就绪")
