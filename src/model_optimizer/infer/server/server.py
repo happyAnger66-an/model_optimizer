@@ -302,6 +302,10 @@ class InferServer:
             from .backends.pytorch import SinglePyTorchBackend
 
             return SinglePyTorchBackend(policy)
+        elif mode == "native":
+            from .backends.native import SingleNativeBackend
+
+            return SingleNativeBackend(policy)
         elif mode == "tensorrt":
             from .backends.tensorrt import SingleTensorRTBackend
 
@@ -411,6 +415,17 @@ class InferServer:
                 "denoise_engine": cfg.tensorrt.denoise_engine,
                 "embed_prefix_engine": cfg.tensorrt.embed_prefix_engine,
             }
+
+        if mode in ("native", "tensorrt", "pt_trt_compare", "ptq_trt_compare"):
+            resolved = cfg.resolve_stages()
+            if "native" in resolved.values() or mode == "native":
+                meta["native"] = {
+                    "expert": resolved.get("expert"),
+                    "denoise": resolved.get("denoise"),
+                    "use_cuda_graph": cfg.native.use_cuda_graph,
+                    "graph_warmup": cfg.native.graph_warmup,
+                    "compile_expert": cfg.native.compile_expert,
+                }
 
         if mode in ("pt_ptq_compare", "ptq_trt_compare"):
             meta["ptq"] = {

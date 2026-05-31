@@ -11,6 +11,7 @@ InferMode = Literal[
     "pytorch",
     "tensorrt",
     "onnxrt",
+    "native",
     "flashrt",
     "pt_trt_compare",
     "pt_ptq_compare",
@@ -20,7 +21,7 @@ InferMode = Literal[
 ]
 
 # 单后端取值（用于分阶段后端矩阵 StagesConfig）。
-StageBackend = Literal["pytorch", "tensorrt", "onnxrt", "flashrt"]
+StageBackend = Literal["pytorch", "tensorrt", "onnxrt", "native", "flashrt"]
 
 # pi05 推理的 5 个可独立替换阶段。
 PI05_STAGES: tuple[str, ...] = ("vit", "embed_prefix", "llm", "expert", "denoise")
@@ -82,6 +83,16 @@ class FlashRtConfig:
     lib_dir: str = ""
     """libfmha_*.so 搜索目录（为空则用 flash_rt 默认）。"""
     calib: FlashRtCalibConfig = field(default_factory=FlashRtCalibConfig)
+
+
+@dataclass
+class NativeConfig:
+    """Native decoder 运行时配置（Phase A）。"""
+
+    use_cuda_graph: bool = True
+    graph_warmup: int = 3
+    compile_expert: bool = False
+    perf: bool = True
 
 
 @dataclass
@@ -168,6 +179,7 @@ class ServerConfig:
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     tensorrt: TensorRTConfig = field(default_factory=TensorRTConfig)
     onnxrt: OnnxRTConfig = field(default_factory=OnnxRTConfig)
+    native: NativeConfig = field(default_factory=NativeConfig)
     flashrt: FlashRtConfig = field(default_factory=FlashRtConfig)
     stages: StagesConfig = field(default_factory=StagesConfig)
     ptq: PTQConfig = field(default_factory=PTQConfig)
@@ -185,7 +197,11 @@ class ServerConfig:
         Returns:
             ``{stage: backend}``，stage ∈ :data:`PI05_STAGES`。
         """
-        base: str = self.mode if self.mode in ("pytorch", "tensorrt", "onnxrt", "flashrt") else "pytorch"
+        base: str = (
+            self.mode
+            if self.mode in ("pytorch", "tensorrt", "onnxrt", "native", "flashrt")
+            else "pytorch"
+        )
         resolved: dict[str, str] = {}
         for stage in PI05_STAGES:
             override = getattr(self.stages, stage, None)
@@ -207,6 +223,10 @@ class ServerConfig:
                 raise ValueError(
                     "mode='tensorrt' requires tensorrt.engine_path"
                 )
+
+        if self.mode == "native":
+            # native 模式可纯 PyTorch checkpoint 运行，不需要 engine_path。
+            pass
 
         if self.mode in ("onnxrt", "pt_ort_compare"):
             if not self.onnxrt.engine_path:
@@ -232,7 +252,7 @@ class ServerConfig:
                 raise ValueError(f"Invalid ptq.parts: {bad}")
 
         # 分阶段后端矩阵校验
-        valid_backends = ("pytorch", "tensorrt", "onnxrt", "flashrt")
+        valid_backends = ("pytorch", "tensorrt", "onnxrt", "native", "flashrt")
         resolved = self.resolve_stages()
         bad_be = {s: b for s, b in resolved.items() if b not in valid_backends}
         if bad_be:
@@ -294,6 +314,7 @@ def load_config(path: str | Path) -> ServerConfig:
         "dataset": DatasetConfig,
         "tensorrt": TensorRTConfig,
         "onnxrt": OnnxRTConfig,
+        "native": NativeConfig,
         "flashrt": FlashRtConfig,
         "stages": StagesConfig,
         "ptq": PTQConfig,

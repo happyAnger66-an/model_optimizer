@@ -351,8 +351,8 @@ class ArgsConfig:
     model_path: str | None = None
     """Path to the model checkpoint."""
 
-    inference_mode: Literal["pytorch", "tensorrt"] = "pytorch"
-    """Inference mode: 'pytorch' (default) or 'tensorrt'."""
+    inference_mode: Literal["pytorch", "tensorrt", "native"] = "pytorch"
+    """Inference mode: 'pytorch' (default), 'tensorrt', or 'native'."""
 
     trt_engine_path: str = ""
     """Path to TensorRT engine file (.trt). Used only when inference_mode='tensorrt'."""
@@ -376,6 +376,12 @@ class ArgsConfig:
     """denoise 引擎以 AdaRMS 预计算模式导出（第 5 输入为 ``adarms_mod`` 而非 ``timestep``）时置 True：
     host 侧按步预算 modulation 并喂入引擎（roadmap #22 / docs/optimizer/ddup/adarms_pre_compute.md）。
     等价于设置环境变量 ``PI05_ADARMS_PRECOMPUTE=1``。"""
+
+    native_use_cuda_graph: bool = True
+    native_graph_warmup: int = 3
+    native_compile_expert: bool = False
+    native_enable_expert: bool = True
+    native_enable_denoise: bool = True
 
     denoising_steps: int = 10
     """Number of denoising steps to use."""
@@ -498,6 +504,29 @@ def main(args: ArgsConfig):
 #            import pdb; pdb.set_trace()
             executor.load_model(config)
             logging.info(" TensorRT mode enabled")
+        elif args.inference_mode == "native":
+            from model_optimizer.infer.native.pi05_executor import Pi05NativeExecutor
+
+            print(colored(" Native mode enabled", "yellow"))
+            if args.precision == "fp16":
+                precision = torch.float16
+            elif args.precision == "bf16":
+                precision = torch.bfloat16
+            else:
+                precision = torch.float32
+            executor = Pi05NativeExecutor(policy, precision)
+            ncfg = addict.Dict(
+                {
+                    "enable_expert": bool(args.native_enable_expert),
+                    "enable_denoise": bool(args.native_enable_denoise),
+                    "use_cuda_graph": bool(args.native_use_cuda_graph),
+                    "graph_warmup": int(args.native_graph_warmup),
+                    "compile_expert": bool(args.native_compile_expert),
+                    "perf": bool(args.perf),
+                }
+            )
+            executor.load_model(ncfg)
+            logging.info(" Native mode enabled")
         else:
             from model_optimizer.infer.pytorch.pi05_executor import Pi05PyTorchExecutor
             print(colored(" PyTorch mode enabled", "yellow"))

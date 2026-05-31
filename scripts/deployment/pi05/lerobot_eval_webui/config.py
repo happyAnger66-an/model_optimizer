@@ -16,8 +16,8 @@ class Args:
     dataset_root: Path | None = None
     device: str | None = None
 
-    # 单后端：pytorch / tensorrt / onnxrt；compare_mode=True 时忽略此项（固定 PyTorch + TensorRT 双路）
-    inference_mode: Literal["pytorch", "tensorrt", "onnxrt"] = "pytorch"
+    # 单后端：pytorch / native / tensorrt / onnxrt；compare_mode=True 时忽略此项（固定 PyTorch + TensorRT 双路）
+    inference_mode: Literal["pytorch", "native", "tensorrt", "onnxrt"] = "pytorch"
     # 双路对比：需 --engine-path 与各 *_engine（同 tensorrt 模式）；与 ptq_compare 互斥
     compare_mode: bool = False
     vit_pt_trt_compare: bool = False
@@ -111,6 +111,21 @@ class Args:
     denoise_adarms_precompute: bool = False
     """denoise 引擎以 adarms_mod 输入导出时（AdaRMS Dense host 预计算 / roadmap #22），
     在 host 侧预算调制系数并喂入引擎。须与对应的 denoise 引擎（含 adarms_mod 输入）配套。"""
+
+    native_use_cuda_graph: bool = True
+    """native 模式下对 denoise_step 启用 CUDA Graph capture/replay。"""
+
+    native_graph_warmup: int = 3
+    """native 模式 denoise CUDA Graph capture 前 warmup 次数。"""
+
+    native_compile_expert: bool = False
+    """native 模式是否对 expert.forward 尝试 torch.compile(reduce-overhead)。"""
+
+    native_enable_expert: bool = True
+    native_enable_denoise: bool = True
+
+    native_overlay_on_tensorrt: bool = False
+    """当 inference_mode=tensorrt 时，是否叠加 native runtime 覆盖部分阶段（如只覆盖 denoise）。"""
 
     perf_profile_chunk: bool = True
     """打印 chunk 级分解耗时（数据读取/重排/推理/后处理/总计），用于定位 e2e 与引擎时间差。"""

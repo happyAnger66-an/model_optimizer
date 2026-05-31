@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .base import InferBackend, PredictionPack
+from .native import SingleNativeBackend
 from .onnxrt import PtOrtCompareBackend, SingleOnnxRTBackend
 from .pt_ptq_compare import PtPtqCompareBackend
 from .pt_trt_compare import PtTrtCompareBackend
@@ -14,6 +15,7 @@ __all__ = [
     "InferBackend",
     "PredictionPack",
     "SinglePyTorchBackend",
+    "SingleNativeBackend",
     "SingleTensorRTBackend",
     "SingleOnnxRTBackend",
     "PtTrtCompareBackend",

@@ -94,8 +94,19 @@ def _mount_tensorrt_engines(policy: Any, config: ServerConfig, on_progress: Prog
     on_progress("tensorrt", "加载 TensorRT 引擎 …")
     executor = Pi05TensorRTExecutor(policy, prec)
 
+    resolved = config.resolve_stages()
     trt_cfg: dict[str, Any] = {"engine_path": config.tensorrt.engine_path}
+    attr2stage = {
+        "vit_engine": "vit",
+        "llm_engine": "llm",
+        "expert_engine": "expert",
+        "denoise_engine": "denoise",
+        "embed_prefix_engine": "embed_prefix",
+    }
     for attr in ("vit_engine", "llm_engine", "expert_engine", "denoise_engine", "embed_prefix_engine"):
+        stage = attr2stage[attr]
+        if resolved.get(stage) != "tensorrt":
+            continue
         val = getattr(config.tensorrt, attr, "")
         if val:
             trt_cfg[attr] = val
@@ -110,7 +121,6 @@ def _mount_tensorrt_engines(policy: Any, config: ServerConfig, on_progress: Prog
 
     # 分阶段后端矩阵：vit=flashrt 时，把 FlashRT SigLIP 视觉栈接入（其余阶段仍走 TRT）。
     # 这是把历史 ad-hoc 开关 use_flashrt_siglip_embed_prefix 迁移成一等公民的入口。
-    resolved = config.resolve_stages()
     if resolved.get("vit") == "flashrt":
         ckpt = config.flashrt.checkpoint_dir or str(Path(config.tensorrt.engine_path).parent)
         trt_cfg["use_flashrt_siglip_embed_prefix"] = True
@@ -121,6 +131,33 @@ def _mount_tensorrt_engines(policy: Any, config: ServerConfig, on_progress: Prog
 
     executor.load_model(addict.Dict(trt_cfg))
     on_progress("tensorrt", "TensorRT 引擎已就绪")
+
+
+def _mount_native(policy: Any, config: ServerConfig, on_progress: ProgressCallback) -> None:
+    """在已有策略上挂载 Native decoder 路径（expert / denoise）。"""
+    from model_optimizer.infer.native.pi05_executor import Pi05NativeExecutor
+
+    import addict
+
+    resolved = config.resolve_stages()
+    enable_expert = resolved.get("expert") == "native"
+    enable_denoise = resolved.get("denoise") == "native"
+    if not (enable_expert or enable_denoise):
+        return
+
+    prec = _resolve_precision(config.precision)
+    on_progress("native", "加载 Native decoder 运行时 …")
+    executor = Pi05NativeExecutor(policy, prec)
+    native_cfg = {
+        "enable_expert": bool(enable_expert),
+        "enable_denoise": bool(enable_denoise),
+        "use_cuda_graph": bool(getattr(config.native, "use_cuda_graph", True)),
+        "graph_warmup": int(getattr(config.native, "graph_warmup", 3)),
+        "compile_expert": bool(getattr(config.native, "compile_expert", False)),
+        "perf": bool(getattr(config.native, "perf", True)),
+    }
+    executor.load_model(addict.Dict(native_cfg))
+    on_progress("native", "Native decoder 已就绪")
 
 
 def _load_ptq_quant_cfg(path: str) -> dict[str, Any]:
@@ -310,6 +347,9 @@ def load_policy_for_serve(
     if config.mode in ("tensorrt", "pt_trt_compare", "ptq_trt_compare"):
         _mount_tensorrt_engines(policy, config, on_progress)
 
+    if config.mode in ("native", "tensorrt", "pt_trt_compare", "ptq_trt_compare"):
+        _mount_native(policy, config, on_progress)
+
     # ONNX Runtime 引擎挂载（onnxrt / pt_ort_compare 模式）
     if config.mode in ("onnxrt", "pt_ort_compare"):
         _mount_onnxrt_engines(policy, config, on_progress)
@@ -351,6 +391,10 @@ def load_policies(
 
     if mode == "tensorrt":
         _mount_tensorrt_engines(policy, config, on_progress)
+        _mount_native(policy, config, on_progress)
+
+    elif mode == "native":
+        _mount_native(policy, config, on_progress)
 
     elif mode == "onnxrt":
         _mount_onnxrt_engines(policy, config, on_progress)
@@ -363,6 +407,7 @@ def load_policies(
             pytorch_device=config.device,
         )
         _mount_tensorrt_engines(policy_trt, config, on_progress)
+        _mount_native(policy_trt, config, on_progress)
         on_progress("policy_trt", "PyTorch + TensorRT 双路就绪")
 
     elif mode == "pt_ort_compare":
@@ -396,6 +441,7 @@ def load_policies(
             pytorch_device=config.device,
         )
         _mount_tensorrt_engines(policy_trt, config, on_progress)
+        _mount_native(policy_trt, config, on_progress)
         on_progress("policy_trt", "PTQ + TensorRT 双路就绪")
 
     return {

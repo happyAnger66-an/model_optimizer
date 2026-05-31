@@ -31,6 +31,7 @@ from .running_stats import (
     RunningVitCompareStats,
 )
 from .onnxrt_backend import load_onnxrt_engines
+from .native_backend import load_native_runtime
 from .tensorrt_backend import load_tensorrt_engines
 
 
@@ -486,8 +487,35 @@ def load_infer_bundle(
             trt_cuda_graph_warmup=int(getattr(args, "trt_cuda_graph_warmup", 3)),
             denoise_adarms_precompute=bool(getattr(args, "denoise_adarms_precompute", False)),
         )
+        # 在 tensorrt 模式上叠加 native（用于只替换 denoise/expert 等阶段）。
+        if bool(getattr(args, "native_overlay_on_tensorrt", False)):
+            _p("native", "在 TensorRT 上叠加 Native decoder（阶段覆盖）…")
+            load_native_runtime(
+                policy,
+                precision=args.precision,
+                use_cuda_graph=bool(getattr(args, "native_use_cuda_graph", True)),
+                graph_warmup=int(getattr(args, "native_graph_warmup", 3)),
+                compile_expert=bool(getattr(args, "native_compile_expert", False)),
+                enable_expert=bool(getattr(args, "native_enable_expert", True)),
+                enable_denoise=bool(getattr(args, "native_enable_denoise", True)),
+            )
+            _p("native", "Native 阶段覆盖已生效")
         print(colored("[infer] TensorRT 引擎已就绪", "cyan"), flush=True)
         _p("tensorrt", "TensorRT 引擎已就绪")
+    elif not getattr(args, "trt_ort_compare", False) and args.inference_mode == "native":
+        print(colored("[infer] 加载 Native decoder 运行时 ...", "cyan"), flush=True)
+        _p("native", "加载 Native decoder（expert/denoise）…")
+        load_native_runtime(
+            policy,
+            precision=args.precision,
+            use_cuda_graph=bool(getattr(args, "native_use_cuda_graph", True)),
+            graph_warmup=int(getattr(args, "native_graph_warmup", 3)),
+            compile_expert=bool(getattr(args, "native_compile_expert", False)),
+            enable_expert=bool(getattr(args, "native_enable_expert", True)),
+            enable_denoise=bool(getattr(args, "native_enable_denoise", True)),
+        )
+        print(colored("[infer] Native decoder 已就绪", "cyan"), flush=True)
+        _p("native", "Native decoder 已就绪")
     elif not getattr(args, "trt_ort_compare", False) and args.inference_mode == "onnxrt":
         ort_ep = getattr(args, "ort_engine_path", "")
         if not ort_ep:
@@ -688,6 +716,15 @@ def load_infer_bundle(
             "expert_engine": getattr(args, "ort_expert_engine", "") or "",
             "denoise_engine": getattr(args, "ort_denoise_engine", "") or "",
             "embed_prefix_engine": getattr(args, "ort_embed_prefix_engine", "") or "",
+        }
+
+    if args.inference_mode == "native":
+        meta_payload["native"] = {
+            "use_cuda_graph": bool(getattr(args, "native_use_cuda_graph", True)),
+            "graph_warmup": int(getattr(args, "native_graph_warmup", 3)),
+            "compile_expert": bool(getattr(args, "native_compile_expert", False)),
+            "enable_expert": bool(getattr(args, "native_enable_expert", True)),
+            "enable_denoise": bool(getattr(args, "native_enable_denoise", True)),
         }
 
     trt_ort_polygraphy_report: dict[str, Any] | None = None

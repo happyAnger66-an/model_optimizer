@@ -1,29 +1,38 @@
-# lerobot_eval_webui_server —— 全 TensorRT 引擎推理（vit/llm/expert/denoise）。
+# lerobot_eval_webui_server —— TensorRT(vit/llm) + Native(denoise) 混合推理。
 # 用法：
 #   python scripts/deployment/pi05/lerobot_eval_webui_server.py \
-#     --webui-config config/webui_configs/tensorrt_full.yaml
+#     --webui-config config/webui_configs/tensorrt_native_denoise.yaml
 #
-# engine_path 为引擎目录；各 *_engine 是该目录下的文件名。未提供的阶段回退 PyTorch。
+# 说明：
+# - 入口是 webui_server（不是 standalone）。
+# - 基于 tensorrt_full.yaml：保留 TRT 的 vit/llm，denoise 由 native runtime 覆盖。
+# - 因为 denoise 走 native，这里不配置 denoise_engine（留空）。
 checkpoint: /srcs/openpi/pytorch_pi05_libero/
 config: pi05_libero
 inference_mode: tensorrt
 device: cuda:0
 precision: bf16
-denoise_adarms_precompute: true
-vit_batch_views: true
 
 engine_path: /tmp/build/pi05/opt
 vit_engine: vit_fp8_batch.engine
 llm_engine: llm_nvfp4_lat.engine
-denoise_engine: denoise_st_fp8.engine
+denoise_engine: ""
 
-# —— TRT engine 运行开关 ——
-# perf：>100 次后打印各 engine 的耗时统计；cuda_graph：捕获/回放降低 launch 开销（输入 shape 稳定时安全）。
+# —— TRT engine 开关 ——
 trt_perf: true
 trt_perf_warmup: 20
 trt_perf_print_interval: 50
 trt_cuda_graph: true
 trt_cuda_graph_warmup: 3
+
+# —— Native 阶段覆盖（关键） ——
+native_overlay_on_tensorrt: true
+native_enable_expert: false
+native_enable_denoise: true
+native_use_cuda_graph: true
+native_graph_warmup: 3
+native_compile_expert: false
+
 perf_profile_chunk: true
 perf_profile_warmup_chunks: 10
 perf_profile_print_interval: 20
@@ -39,3 +48,4 @@ noise_seed: 0
 
 host: 0.0.0.0
 port: 8765
+
