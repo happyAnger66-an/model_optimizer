@@ -82,14 +82,19 @@ class Pi05NativeExecutor(Executor):
             logger.info("[native] expert stage enabled (compile=%s)", compile_expert)
 
         if enable_denoise:
+            denoise_use_cuda_graph = use_cuda_graph
+            if full_loop_graph and use_cuda_graph:
+                # full-loop capture 会在 sample_actions 内部执行 denoise_step。
+                # 若 denoise_step 也尝试 capture，会产生嵌套/冲突并使 stream capture invalidated。
+                denoise_use_cuda_graph = False
             self._install_denoise_runtime(
-                use_cuda_graph=use_cuda_graph,
+                use_cuda_graph=denoise_use_cuda_graph,
                 graph_warmup=graph_warmup,
                 perf=perf,
             )
             logger.info(
                 "[native] denoise stage enabled (cuda_graph=%s warmup=%s)",
-                use_cuda_graph,
+                denoise_use_cuda_graph,
                 graph_warmup,
             )
             if full_loop_graph:
