@@ -493,7 +493,7 @@ class Pi05NativeExecutor(Executor):
                 fmha_so=fmha_so,
             )
             backend.setup_prompt(enc_seq)
-            if act_scales_path and not calibrate:
+            if use_fp8 and act_scales_path and not calibrate:
                 try:
                     backend.load_act_scales(act_scales_path)
                 except FileNotFoundError:
@@ -541,7 +541,8 @@ class Pi05NativeExecutor(Executor):
                 backend.setup_prompt(enc_seq)
 
                 noise_2d = noise.reshape(-1, noise.shape[-1])
-                if calibrate and not self._flashrt_calibrated:
+                # fp16 模式无需激活标定（act scales 不被读取）；仅 FP8 模式标定。
+                if use_fp8 and calibrate and not self._flashrt_calibrated:
                     # 多样本标定：跨 N 个 observation（KV/noise 各异）累计取 max。
                     if self._flashrt_calib_count == 0:
                         backend.reset_act_scales()

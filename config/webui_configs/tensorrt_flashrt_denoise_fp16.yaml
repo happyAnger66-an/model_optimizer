@@ -1,0 +1,64 @@
+# lerobot_eval_webui_server —— TensorRT(vit/llm) + 仓内 FlashRT decoder(denoise) 混合推理。
+# 【fp16 原生精度版】denoise 走仓内 FlashRT decoder 的 fp16 路径（不量化、无需标定）。
+#
+# 用法：
+#   python scripts/deployment/pi05/lerobot_eval_webui_server.py \
+#     --webui-config config/webui_configs/tensorrt_flashrt_denoise_fp16.yaml
+#
+# 说明：
+# - vit/llm 仍走 TensorRT；denoise 整 10 步循环由仓内 FlashRT decoder 覆盖，精度为 fp16。
+# - fp16 模式：权重保持 fp16、激活不量化，**不需要任何标定**（act scales 不被读取）。
+#   适合做基线/精度对照，或先验证 KV/RoPE 数值一致性，再切到 FP8。
+# - 仍需在 Thor 上构建 kernel（fp16 的 gmm 算子也在 flash_rt_kernels.so 里）：
+#   bash scripts/deployment/pi05/build_flashrt_kernels.sh
+checkpoint: /srcs/openpi/pytorch_pi05_libero/  # π0.5 策略 checkpoint 目录（必填）
+config: pi05_libero                             # openpi 训练/模型配置名
+inference_mode: tensorrt                        # vit/llm 走 TRT，denoise 由 native 叠加覆盖
+device: cuda:0                                  # 推理设备
+precision: bf16                                 # PyTorch 侧精度（TRT 路由引擎自身精度决定）
+vit_batch_views: true                           # ViT 多视角 batching（须配套 batch 版 vit engine）
+
+# —— TensorRT 引擎路径（vit/llm 仍走 TRT） ——
+engine_path: /tmp/build/pi05/opt                # TRT 引擎根目录
+vit_engine: vit_fp8_batch.engine                # ViT 引擎（FP8 + 多视角 batch）
+llm_engine: llm_nvfp4_lat.engine                # LLM 引擎（NVFP4 低时延版）
+denoise_engine: ""                              # 留空：denoise 交给下方 native FlashRT decoder
+
+# —— TRT engine 运行开关（仅作用于 vit/llm） ——
+trt_perf: true                                  # 打印各 TRT 引擎耗时
+trt_perf_warmup: 20                             # 统计前 warmup 次数
+trt_perf_print_interval: 50                     # 每 N 次打印一次
+trt_cuda_graph: true                            # TRT 引擎启用 CUDA Graph
+trt_cuda_graph_warmup: 3                        # CUDA Graph capture 前 warmup 次数
+
+# —— Native 叠加：仅覆盖 denoise ——
+native_overlay_on_tensorrt: true                # 在 TRT 上叠加 native（不替换 vit/llm）
+native_enable_expert: false                     # 不覆盖 expert
+native_enable_denoise: true                     # 覆盖 denoise
+
+# —— 仓内 FlashRT decoder（fp16 原生精度） ——
+native_flashrt_decoder: true                    # 启用仓内 FlashRT decoder
+native_flashrt_build_dir: "/workspace/flash_rt/build"   # flash_rt_kernels*.so 所在目录
+native_flashrt_fmha_so: ""                              # 可选 libfmha_fp16_strided.so
+native_flashrt_use_fp8: false                   # ★ fp16 原生精度：不量化、无需标定
+# fp16 模式下以下 FP8 标定项无效，可不填：
+# native_flashrt_act_scales_path / native_flashrt_calibrate / native_flashrt_calib_samples
+
+# —— 性能 profile ——
+perf_profile_chunk: true                        # chunk 级分解耗时
+perf_profile_warmup_chunks: 10                  # profile warmup chunk 数
+perf_profile_print_interval: 20                 # 每 N 个 chunk 打印
+perf_profile_top_n: 3                           # 瓶颈排名 Top-N
+trt_enable_stage_profile: true                  # 模型阶段级耗时
+trt_stage_profile_warmup: 10                    # 阶段级 profile warmup
+trt_enable_hook_profile: true                   # forward hook 级耗时
+
+# —— 评估区间与可复现 noise ——
+num_samples: 500                                # 评估样本数
+start_index: 0                                  # 数据集起始 index
+noise: fixed                                    # 固定高斯初值（可复现）
+noise_seed: 0                                   # 与 chunk 起点共同决定初值
+
+# —— WebSocket 服务 ——
+host: 0.0.0.0                                   # 监听地址
+port: 8765                                      # 监听端口
