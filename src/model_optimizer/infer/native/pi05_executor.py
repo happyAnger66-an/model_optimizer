@@ -191,6 +191,57 @@ class Pi05NativeExecutor(Executor):
                 if isinstance(probe, dict):
                     probe["stage"] = stage
 
+            def _denoise_step_with_probe(
+                state,
+                prefix_pad_masks,
+                past_key_values,
+                x_t,
+                timestep,
+            ):
+                _set_probe("denoise_embed_suffix_before")
+                suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = (
+                    self.pi05_model.embed_suffix(state, x_t, timestep)
+                )
+                _set_probe("denoise_embed_suffix_after")
+
+                suffix_len = suffix_pad_masks.shape[1]
+                batch_size = prefix_pad_masks.shape[0]
+                prefix_len = prefix_pad_masks.shape[1]
+
+                _set_probe("denoise_build_masks")
+                prefix_pad_2d_masks = prefix_pad_masks[:, None, :].expand(
+                    batch_size, suffix_len, prefix_len
+                )
+                suffix_cumsum = torch.cumsum(suffix_att_masks, dim=1)
+                suffix_att_2d_masks = suffix_cumsum[:, None, :] <= suffix_cumsum[:, :, None]
+                suffix_pad_2d_masks = suffix_pad_masks[:, None, :] * suffix_pad_masks[:, :, None]
+                suffix_att_2d_masks = suffix_att_2d_masks & suffix_pad_2d_masks
+                full_att_2d_masks = torch.cat([prefix_pad_2d_masks, suffix_att_2d_masks], dim=2)
+
+                prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
+                position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
+                full_att_2d_masks_4d = self.pi05_model._prepare_attention_masks_4d(full_att_2d_masks)
+
+                _set_probe("denoise_forward_before")
+                self.pi05_model.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
+                outputs_embeds, _ = self.pi05_model.paligemma_with_expert.forward(
+                    attention_mask=full_att_2d_masks_4d,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    inputs_embeds=[None, suffix_embs],
+                    use_cache=False,
+                    adarms_cond=[None, adarms_cond],
+                )
+                _set_probe("denoise_forward_after")
+
+                _set_probe("denoise_proj_before")
+                suffix_out = outputs_embeds[1]
+                suffix_out = suffix_out[:, -self.pi05_model.config.action_horizon :]
+                suffix_out = suffix_out.to(dtype=torch.float32)
+                out = self.pi05_model.action_out_proj(suffix_out)
+                _set_probe("denoise_proj_after")
+                return out
+
             state = observation["state"]
             prefix_pad_masks = observation["prefix_pad_masks"]
             past_key_values = observation["past_key_values"]
@@ -205,8 +256,7 @@ class Pi05NativeExecutor(Executor):
                 _set_probe(f"denoise_step_{s}_before")
                 t_scalar = 1.0 - (float(s) / float(n_steps))
                 time_buf.fill_(t_scalar)
-                assert self._orig_denoise is not None
-                v_t = self._orig_denoise(
+                v_t = _denoise_step_with_probe(
                     state,
                     prefix_pad_masks,
                     past_key_values,
