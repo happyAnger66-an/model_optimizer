@@ -82,22 +82,9 @@ class Pi05NativeExecutor(Executor):
             logger.info("[native] expert stage enabled (compile=%s)", compile_expert)
 
         if enable_denoise:
-            denoise_use_cuda_graph = use_cuda_graph
-            if full_loop_graph and use_cuda_graph:
-                # full-loop capture 会在 sample_actions 内部执行 denoise_step。
-                # 若 denoise_step 也尝试 capture，会产生嵌套/冲突并使 stream capture invalidated。
-                denoise_use_cuda_graph = False
-            self._install_denoise_runtime(
-                use_cuda_graph=denoise_use_cuda_graph,
-                graph_warmup=graph_warmup,
-                perf=perf,
-            )
-            logger.info(
-                "[native] denoise stage enabled (cuda_graph=%s warmup=%s)",
-                denoise_use_cuda_graph,
-                graph_warmup,
-            )
             if full_loop_graph:
+                # full-loop 模式下，避免安装单步 denoise runner（含额外包装逻辑），
+                # 直接对原始 denoise_step 循环做 graph capture/replay，降低 capture 冲突风险。
                 self._install_full_loop_runtime(
                     use_cuda_graph=use_cuda_graph,
                     graph_warmup=graph_warmup,
@@ -105,6 +92,17 @@ class Pi05NativeExecutor(Executor):
                 )
                 logger.info(
                     "[native-v2] full-loop graph enabled (cuda_graph=%s warmup=%s)",
+                    use_cuda_graph,
+                    graph_warmup,
+                )
+            else:
+                self._install_denoise_runtime(
+                    use_cuda_graph=use_cuda_graph,
+                    graph_warmup=graph_warmup,
+                    perf=perf,
+                )
+                logger.info(
+                    "[native] denoise stage enabled (cuda_graph=%s warmup=%s)",
                     use_cuda_graph,
                     graph_warmup,
                 )
@@ -176,6 +174,8 @@ class Pi05NativeExecutor(Executor):
         graph_warmup: int,
         perf: bool,
     ) -> None:
+        if self._orig_denoise is None:
+            self._orig_denoise = self.pi05_model.denoise_step
         self._orig_sample_actions = self.pi05_model.sample_actions
 
         def denoise_loop_capture_safe(
@@ -196,7 +196,8 @@ class Pi05NativeExecutor(Executor):
             for s in range(n_steps):
                 t_scalar = 1.0 - (float(s) / float(n_steps))
                 expanded_time = torch.full((bsize,), t_scalar, dtype=torch.float32, device=device)
-                v_t = self.pi05_model.denoise_step(
+                assert self._orig_denoise is not None
+                v_t = self._orig_denoise(
                     state,
                     prefix_pad_masks,
                     past_key_values,
