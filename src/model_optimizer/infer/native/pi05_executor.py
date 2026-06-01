@@ -192,10 +192,16 @@ class Pi05NativeExecutor(Executor):
 
             n_steps = max(int(num_steps), 1)
             dt = torch.tensor(-1.0 / float(n_steps), dtype=torch.float32, device=device)
+            timesteps = torch.linspace(
+                1.0,
+                1.0 / float(n_steps),
+                steps=n_steps,
+                dtype=torch.float32,
+                device=device,
+            )
             x_t = noise
             for s in range(n_steps):
-                t_scalar = 1.0 - (float(s) / float(n_steps))
-                expanded_time = torch.full((bsize,), t_scalar, dtype=torch.float32, device=device)
+                expanded_time = timesteps[s].expand(bsize)
                 assert self._orig_denoise is not None
                 v_t = self._orig_denoise(
                     state,

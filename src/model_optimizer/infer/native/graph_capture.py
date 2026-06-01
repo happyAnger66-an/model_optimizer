@@ -269,7 +269,7 @@ def build_graph_entry_for_denoise_step(
 
     graph = torch.cuda.CUDAGraph()
     capture_start = time.perf_counter()
-    with torch.cuda.graph(graph, stream=stream):
+    with torch.cuda.graph(graph, stream=stream, capture_error_mode="thread_local"):
         static_output = raw_denoise_step(
             static_state, static_prefix, static_past, static_x_t, static_timestep
         )
@@ -344,7 +344,7 @@ def build_graph_entry_for_sample_actions(
 
     graph = torch.cuda.CUDAGraph()
     capture_start = time.perf_counter()
-    with torch.cuda.graph(graph, stream=stream):
+    with torch.cuda.graph(graph, stream=stream, capture_error_mode="thread_local"):
         static_output = raw_sample_actions(
             device,
             static_observation,
