@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import atexit
 import logging
+import math
 import types
 from collections.abc import Mapping
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 
 from ..executor import Executor
 from ...models.pi05.model_pi05 import Pi05Model
@@ -199,9 +201,29 @@ class Pi05NativeExecutor(Executor):
                 timestep,
             ):
                 _set_probe("denoise_embed_suffix_before")
-                suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = (
-                    self.pi05_model.embed_suffix(state, x_t, timestep)
-                )
+                # capture-safe suffix embedding（pi05 路径）
+                time_freq = observation["time_freq"]
+                suffix_pad_mask_template = observation["suffix_pad_mask_template"]
+                suffix_att_mask_template = observation["suffix_att_mask_template"]
+
+                _set_probe("denoise_time_emb")
+                sin_input = time_freq[None, :] * timestep[:, None]
+                time_emb = torch.cat([torch.sin(sin_input), torch.cos(sin_input)], dim=1)
+                time_emb = time_emb.to(dtype=timestep.dtype)
+
+                _set_probe("denoise_action_proj")
+                action_emb = self.pi05_model.action_in_proj(x_t)
+
+                _set_probe("denoise_time_mlp")
+                x = self.pi05_model.time_mlp_in(time_emb)
+                x = F.silu(x)
+                x = self.pi05_model.time_mlp_out(x)
+                adarms_cond = F.silu(x)
+
+                suffix_embs = action_emb
+                bsize_local, action_time_dim = suffix_embs.shape[:2]
+                suffix_pad_masks = suffix_pad_mask_template.expand(bsize_local, action_time_dim)
+                suffix_att_masks = suffix_att_mask_template.expand(bsize_local, action_time_dim)
                 _set_probe("denoise_embed_suffix_after")
 
                 suffix_len = suffix_pad_masks.shape[1]
@@ -347,6 +369,36 @@ class Pi05NativeExecutor(Executor):
                     (int(prefix_pad_masks.shape[0]),),
                     dtype=torch.float32,
                     device=device,
+                ),
+                "time_freq": (
+                    (2.0 * math.pi)
+                    / (
+                        4e-3
+                        * (4.0 / 4e-3)
+                        ** torch.linspace(
+                            0.0,
+                            1.0,
+                            int(self_m.action_in_proj.out_features // 2),
+                            dtype=torch.float32,
+                            device=device,
+                        )
+                    )
+                ),
+                "suffix_pad_mask_template": torch.ones(
+                    (1, int(self_m.config.action_horizon)),
+                    dtype=torch.bool,
+                    device=device,
+                ),
+                "suffix_att_mask_template": torch.cat(
+                    [
+                        torch.ones((1, 1), dtype=torch.float32, device=device),
+                        torch.zeros(
+                            (1, max(int(self_m.config.action_horizon) - 1, 0)),
+                            dtype=torch.float32,
+                            device=device,
+                        ),
+                    ],
+                    dim=1,
                 ),
                 "__capture_probe": {"stage": "prepared_inputs"},
             }
