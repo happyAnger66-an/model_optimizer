@@ -494,6 +494,7 @@ def load_infer_bundle(
                 policy,
                 precision=args.precision,
                 use_cuda_graph=bool(getattr(args, "native_use_cuda_graph", True)),
+                full_loop_graph=bool(getattr(args, "native_full_loop_graph", False)),
                 graph_warmup=int(getattr(args, "native_graph_warmup", 3)),
                 compile_expert=bool(getattr(args, "native_compile_expert", False)),
                 enable_expert=bool(getattr(args, "native_enable_expert", True)),
@@ -513,6 +514,7 @@ def load_infer_bundle(
             policy,
             precision=args.precision,
             use_cuda_graph=bool(getattr(args, "native_use_cuda_graph", True)),
+            full_loop_graph=bool(getattr(args, "native_full_loop_graph", False)),
             graph_warmup=int(getattr(args, "native_graph_warmup", 3)),
             compile_expert=bool(getattr(args, "native_compile_expert", False)),
             enable_expert=bool(getattr(args, "native_enable_expert", True)),
@@ -729,6 +731,7 @@ def load_infer_bundle(
     if args.inference_mode == "native":
         meta_payload["native"] = {
             "use_cuda_graph": bool(getattr(args, "native_use_cuda_graph", True)),
+            "full_loop_graph": bool(getattr(args, "native_full_loop_graph", False)),
             "graph_warmup": int(getattr(args, "native_graph_warmup", 3)),
             "compile_expert": bool(getattr(args, "native_compile_expert", False)),
             "enable_expert": bool(getattr(args, "native_enable_expert", True)),
@@ -745,6 +748,7 @@ def load_infer_bundle(
         meta_payload["native"] = {
             "overlay_on_tensorrt": True,
             "use_cuda_graph": bool(getattr(args, "native_use_cuda_graph", True)),
+            "full_loop_graph": bool(getattr(args, "native_full_loop_graph", False)),
             "graph_warmup": int(getattr(args, "native_graph_warmup", 3)),
             "compile_expert": bool(getattr(args, "native_compile_expert", False)),
             "enable_expert": bool(getattr(args, "native_enable_expert", True)),

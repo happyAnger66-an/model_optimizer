@@ -115,6 +115,9 @@ class Args:
     native_use_cuda_graph: bool = True
     """native 模式下对 denoise_step 启用 CUDA Graph capture/replay。"""
 
+    native_full_loop_graph: bool = False
+    """native 模式下对 sample_actions 全循环启用单次 CUDA Graph replay（V2）。"""
+
     native_graph_warmup: int = 3
     """native 模式 denoise CUDA Graph capture 前 warmup 次数。"""
 

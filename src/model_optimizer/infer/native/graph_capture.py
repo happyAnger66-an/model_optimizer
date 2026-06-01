@@ -9,6 +9,66 @@ from typing import Any
 import torch
 
 
+def _tensor_meta_signature(x: Any) -> tuple[Any, ...]:
+    """Build a stable signature for nested tensor containers."""
+    if torch.is_tensor(x):
+        return ("T", tuple(x.shape), str(x.dtype), str(x.device))
+    if isinstance(x, dict):
+        items = []
+        for k in sorted(x.keys(), key=lambda v: str(v)):
+            items.append((str(k), _tensor_meta_signature(x[k])))
+        return ("D", tuple(items))
+    if isinstance(x, (list, tuple)):
+        return ("L", tuple(_tensor_meta_signature(v) for v in x))
+    if hasattr(x, "__dict__"):
+        items = []
+        for k in sorted(vars(x).keys()):
+            items.append((k, _tensor_meta_signature(getattr(x, k))))
+        return ("O", type(x).__name__, tuple(items))
+    return ("V", type(x).__name__)
+
+
+def _clone_tensor_tree(x: Any) -> Any:
+    if torch.is_tensor(x):
+        y = torch.empty_like(x)
+        y.copy_(x, non_blocking=False)
+        return y
+    if isinstance(x, dict):
+        return {k: _clone_tensor_tree(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_clone_tensor_tree(v) for v in x]
+    if isinstance(x, tuple):
+        return tuple(_clone_tensor_tree(v) for v in x)
+    if hasattr(x, "__dict__"):
+        out = copy.copy(x)
+        for k, v in vars(x).items():
+            setattr(out, k, _clone_tensor_tree(v))
+        return out
+    return x
+
+
+def _copy_tensor_tree_inplace(dst: Any, src: Any) -> None:
+    if torch.is_tensor(dst) and torch.is_tensor(src):
+        dst.copy_(src, non_blocking=True)
+        return
+    if isinstance(dst, dict) and isinstance(src, dict):
+        for k in dst.keys():
+            _copy_tensor_tree_inplace(dst[k], src[k])
+        return
+    if isinstance(dst, list) and isinstance(src, list):
+        for d, s in zip(dst, src, strict=True):
+            _copy_tensor_tree_inplace(d, s)
+        return
+    if isinstance(dst, tuple) and isinstance(src, tuple):
+        for d, s in zip(dst, src, strict=True):
+            _copy_tensor_tree_inplace(d, s)
+        return
+    if hasattr(dst, "__dict__") and hasattr(src, "__dict__"):
+        for k in vars(dst).keys():
+            _copy_tensor_tree_inplace(getattr(dst, k), getattr(src, k))
+        return
+
+
 def _is_dynamic_cache_like(past_key_values: Any) -> bool:
     return hasattr(past_key_values, "key_cache") and hasattr(past_key_values, "value_cache")
 
@@ -110,6 +170,27 @@ class NativeGraphEntry:
         return self.static_output.clone()
 
 
+@dataclasses.dataclass
+class NativeFullLoopGraphEntry:
+    key: tuple[Any, ...]
+    graph: torch.cuda.CUDAGraph
+    static_observation: Any
+    static_noise: torch.Tensor
+    static_output: torch.Tensor
+    capture_ms: float
+    num_steps: int
+
+    def replay(
+        self,
+        observation: Any,
+        noise: torch.Tensor,
+    ) -> torch.Tensor:
+        _copy_tensor_tree_inplace(self.static_observation, observation)
+        self.static_noise.copy_(noise, non_blocking=True)
+        self.graph.replay()
+        return self.static_output.clone()
+
+
 def build_graph_entry_for_denoise_step(
     raw_denoise_step: Callable[..., torch.Tensor],
     state: Any,
@@ -195,5 +276,78 @@ def build_graph_entry_for_denoise_step(
         static_timestep=static_timestep,
         static_output=static_output,
         capture_ms=float(capture_ms),
+    )
+
+
+def build_graph_entry_for_sample_actions(
+    raw_sample_actions: Callable[..., torch.Tensor],
+    *,
+    device: torch.device | str,
+    observation: Any,
+    noise: torch.Tensor,
+    num_steps: int,
+    warmup: int = 3,
+) -> NativeFullLoopGraphEntry:
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA graph capture requires CUDA")
+    if not torch.is_tensor(noise):
+        raise TypeError("full-loop graph capture requires tensor noise")
+    if noise.numel() == 0:
+        raise ValueError("noise must be non-empty")
+    if num_steps <= 0:
+        raise ValueError(f"num_steps must be > 0, got {num_steps}")
+
+    stream = torch.cuda.Stream(device=noise.device)
+    cur_stream = torch.cuda.current_stream(device=noise.device)
+    stream.wait_stream(cur_stream)
+
+    with torch.cuda.stream(stream):
+        static_observation = _clone_tensor_tree(observation)
+        static_noise = torch.empty_like(noise)
+        static_noise.copy_(noise, non_blocking=False)
+
+    for _ in range(max(int(warmup), 0)):
+        with torch.cuda.stream(stream):
+            out = raw_sample_actions(
+                device,
+                static_observation,
+                noise=static_noise,
+                num_steps=int(num_steps),
+            )
+            if not torch.is_tensor(out):
+                raise TypeError(
+                    f"sample_actions output must be Tensor, got {type(out).__name__}"
+                )
+    stream.synchronize()
+
+    graph = torch.cuda.CUDAGraph()
+    capture_start = time.perf_counter()
+    with torch.cuda.graph(graph, stream=stream):
+        static_output = raw_sample_actions(
+            device,
+            static_observation,
+            noise=static_noise,
+            num_steps=int(num_steps),
+        )
+    stream.synchronize()
+    cur_stream.wait_stream(stream)
+    capture_ms = (time.perf_counter() - capture_start) * 1000.0
+
+    key = (
+        str(device),
+        int(num_steps),
+        tuple(noise.shape),
+        str(noise.dtype),
+        str(noise.device),
+        _tensor_meta_signature(observation),
+    )
+    return NativeFullLoopGraphEntry(
+        key=key,
+        graph=graph,
+        static_observation=static_observation,
+        static_noise=static_noise,
+        static_output=static_output,
+        capture_ms=float(capture_ms),
+        num_steps=int(num_steps),
     )
 

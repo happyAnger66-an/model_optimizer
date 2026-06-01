@@ -378,6 +378,7 @@ class ArgsConfig:
     等价于设置环境变量 ``PI05_ADARMS_PRECOMPUTE=1``。"""
 
     native_use_cuda_graph: bool = True
+    native_full_loop_graph: bool = False
     native_graph_warmup: int = 3
     native_compile_expert: bool = False
     native_enable_expert: bool = True
@@ -524,6 +525,7 @@ def main(args: ArgsConfig):
                     "enable_expert": bool(args.native_enable_expert),
                     "enable_denoise": bool(args.native_enable_denoise),
                     "use_cuda_graph": bool(args.native_use_cuda_graph),
+                    "full_loop_graph": bool(args.native_full_loop_graph),
                     "graph_warmup": int(args.native_graph_warmup),
                     "compile_expert": bool(args.native_compile_expert),
                     "perf": bool(args.perf),

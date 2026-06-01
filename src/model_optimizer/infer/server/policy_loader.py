@@ -152,6 +152,7 @@ def _mount_native(policy: Any, config: ServerConfig, on_progress: ProgressCallba
         "enable_expert": bool(enable_expert),
         "enable_denoise": bool(enable_denoise),
         "use_cuda_graph": bool(getattr(config.native, "use_cuda_graph", True)),
+        "full_loop_graph": bool(getattr(config.native, "full_loop_graph", False)),
         "graph_warmup": int(getattr(config.native, "graph_warmup", 3)),
         "compile_expert": bool(getattr(config.native, "compile_expert", False)),
         "perf": bool(getattr(config.native, "perf", True)),

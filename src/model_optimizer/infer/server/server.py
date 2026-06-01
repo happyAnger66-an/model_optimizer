@@ -423,6 +423,7 @@ class InferServer:
                     "expert": resolved.get("expert"),
                     "denoise": resolved.get("denoise"),
                     "use_cuda_graph": cfg.native.use_cuda_graph,
+                    "full_loop_graph": cfg.native.full_loop_graph,
                     "graph_warmup": cfg.native.graph_warmup,
                     "compile_expert": cfg.native.compile_expert,
                     "quant_spec_path": cfg.native.quant_spec_path,

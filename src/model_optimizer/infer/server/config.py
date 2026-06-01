@@ -90,6 +90,7 @@ class NativeConfig:
     """Native decoder 运行时配置（Phase A）。"""
 
     use_cuda_graph: bool = True
+    full_loop_graph: bool = False
     graph_warmup: int = 3
     compile_expert: bool = False
     perf: bool = True

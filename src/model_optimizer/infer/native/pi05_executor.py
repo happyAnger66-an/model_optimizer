@@ -10,7 +10,7 @@ import torch
 
 from ..executor import Executor
 from ...models.pi05.model_pi05 import Pi05Model
-from .decoder_runner import NativeDenoiseLoopRunner
+from .decoder_runner import NativeDenoiseLoopRunner, NativeDenoiseLoopRunnerV2
 from .quant_runtime import NativeQuantRuntime
 
 logger = logging.getLogger(__name__)
@@ -39,9 +39,11 @@ class Pi05NativeExecutor(Executor):
         self.precision = precision
         self.config = config
         self._denoise_runner: NativeDenoiseLoopRunner | None = None
+        self._denoise_runner_v2: NativeDenoiseLoopRunnerV2 | None = None
         self._quant_runtime: NativeQuantRuntime | None = None
         self._orig_denoise = None
         self._orig_expert_forward = None
+        self._orig_sample_actions = None
         try:
             setattr(self.policy, "_native_executor", self)
         except Exception:
@@ -58,6 +60,7 @@ class Pi05NativeExecutor(Executor):
         graph_warmup = int(_cfg_get(config, "graph_warmup", 3) or 3)
         compile_expert = bool(_cfg_get(config, "compile_expert", False))
         perf = bool(_cfg_get(config, "perf", True))
+        full_loop_graph = bool(_cfg_get(config, "full_loop_graph", False))
         quant_spec_path = str(_cfg_get(config, "quant_spec_path", "") or "").strip()
         recalib_enable = bool(_cfg_get(config, "recalib_enable", False))
         recalib_max_samples = int(_cfg_get(config, "recalib_max_samples", 0) or 0)
@@ -89,6 +92,17 @@ class Pi05NativeExecutor(Executor):
                 use_cuda_graph,
                 graph_warmup,
             )
+            if full_loop_graph:
+                self._install_full_loop_runtime(
+                    use_cuda_graph=use_cuda_graph,
+                    graph_warmup=graph_warmup,
+                    perf=perf,
+                )
+                logger.info(
+                    "[native-v2] full-loop graph enabled (cuda_graph=%s warmup=%s)",
+                    use_cuda_graph,
+                    graph_warmup,
+                )
 
         self._sync_policy_sample_actions_ref()
         atexit.register(self._dump_summary_atexit)
@@ -150,6 +164,50 @@ class Pi05NativeExecutor(Executor):
             denoise_step_native, self.pi05_model
         )
 
+    def _install_full_loop_runtime(
+        self,
+        *,
+        use_cuda_graph: bool,
+        graph_warmup: int,
+        perf: bool,
+    ) -> None:
+        self._orig_sample_actions = self.pi05_model.sample_actions
+        self._denoise_runner_v2 = NativeDenoiseLoopRunnerV2(
+            self._orig_sample_actions,
+            use_cuda_graph=use_cuda_graph,
+            graph_warmup=graph_warmup,
+            default_num_steps=10,
+            perf=perf,
+        )
+
+        def sample_actions_native_full_loop(
+            self_m,
+            device,
+            observation,
+            noise=None,
+            num_steps=10,
+        ):
+            assert self._denoise_runner_v2 is not None
+            if noise is None:
+                # full-loop graph 路径要求显式 noise；无 noise 时回退原始实现，保持行为兼容。
+                return self._orig_sample_actions(
+                    device,
+                    observation,
+                    noise=noise,
+                    num_steps=num_steps,
+                )
+            return self._denoise_runner_v2.run(
+                device=device,
+                observation=observation,
+                noise=noise,
+                num_steps=num_steps,
+            )
+
+        self.pi05_model.sample_actions = types.MethodType(
+            sample_actions_native_full_loop,
+            self.pi05_model,
+        )
+
     def _sync_policy_sample_actions_ref(self) -> None:
         pol = self.policy
         if hasattr(pol, "_sample_actions"):
@@ -159,6 +217,8 @@ class Pi05NativeExecutor(Executor):
         try:
             if self._denoise_runner is not None:
                 logger.info("%s", self._denoise_runner.dump_summary())
+            if self._denoise_runner_v2 is not None:
+                logger.info("%s", self._denoise_runner_v2.dump_summary())
             if self._quant_runtime is not None:
                 logger.info("%s", self._quant_runtime.dump_summary())
         except Exception as exc:
