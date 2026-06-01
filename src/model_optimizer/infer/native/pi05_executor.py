@@ -189,13 +189,34 @@ class Pi05NativeExecutor(Executor):
         ):
             assert self._denoise_runner_v2 is not None
             if noise is None:
-                # full-loop graph 路径要求显式 noise；无 noise 时回退原始实现，保持行为兼容。
-                return self._orig_sample_actions(
-                    device,
-                    observation,
-                    noise=noise,
-                    num_steps=num_steps,
-                )
+                # 与原始 sample_actions 行为对齐：当 noise=None 时按动作形状采样噪声。
+                # 这样默认推理路径也可命中 full-loop graph。
+                try:
+                    bsize = int(observation.state.shape[0])
+                    cfg = getattr(self_m, "config", None)
+                    action_horizon = int(
+                        getattr(cfg, "action_horizon", getattr(self_m, "action_horizon"))
+                    )
+                    action_dim = int(
+                        getattr(cfg, "action_dim", getattr(self_m, "action_dim"))
+                    )
+                    if not hasattr(self_m, "sample_noise"):
+                        raise AttributeError("model has no sample_noise")
+                    noise = self_m.sample_noise(
+                        (bsize, action_horizon, action_dim),
+                        device,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[native-v2] failed to synthesize noise for full-loop graph, fallback original sample_actions: %s",
+                        exc,
+                    )
+                    return self._orig_sample_actions(
+                        device,
+                        observation,
+                        noise=None,
+                        num_steps=num_steps,
+                    )
             return self._denoise_runner_v2.run(
                 device=device,
                 observation=observation,

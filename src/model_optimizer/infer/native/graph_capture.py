@@ -9,6 +9,14 @@ from typing import Any
 import torch
 
 
+def _safe_setattr(obj: Any, name: str, value: Any) -> None:
+    try:
+        setattr(obj, name, value)
+    except Exception:
+        # 对 frozen dataclass 等不可变对象，回退到 object.__setattr__。
+        object.__setattr__(obj, name, value)
+
+
 def _tensor_meta_signature(x: Any) -> tuple[Any, ...]:
     """Build a stable signature for nested tensor containers."""
     if torch.is_tensor(x):
@@ -20,6 +28,11 @@ def _tensor_meta_signature(x: Any) -> tuple[Any, ...]:
         return ("D", tuple(items))
     if isinstance(x, (list, tuple)):
         return ("L", tuple(_tensor_meta_signature(v) for v in x))
+    if dataclasses.is_dataclass(x):
+        items = []
+        for f in sorted(dataclasses.fields(x), key=lambda ff: ff.name):
+            items.append((f.name, _tensor_meta_signature(getattr(x, f.name))))
+        return ("DC", type(x).__name__, tuple(items))
     if hasattr(x, "__dict__"):
         items = []
         for k in sorted(vars(x).keys()):
@@ -39,10 +52,15 @@ def _clone_tensor_tree(x: Any) -> Any:
         return [_clone_tensor_tree(v) for v in x]
     if isinstance(x, tuple):
         return tuple(_clone_tensor_tree(v) for v in x)
+    if dataclasses.is_dataclass(x):
+        out = copy.copy(x)
+        for f in dataclasses.fields(x):
+            _safe_setattr(out, f.name, _clone_tensor_tree(getattr(x, f.name)))
+        return out
     if hasattr(x, "__dict__"):
         out = copy.copy(x)
         for k, v in vars(x).items():
-            setattr(out, k, _clone_tensor_tree(v))
+            _safe_setattr(out, k, _clone_tensor_tree(v))
         return out
     return x
 
@@ -62,6 +80,10 @@ def _copy_tensor_tree_inplace(dst: Any, src: Any) -> None:
     if isinstance(dst, tuple) and isinstance(src, tuple):
         for d, s in zip(dst, src, strict=True):
             _copy_tensor_tree_inplace(d, s)
+        return
+    if dataclasses.is_dataclass(dst) and dataclasses.is_dataclass(src):
+        for f in dataclasses.fields(dst):
+            _copy_tensor_tree_inplace(getattr(dst, f.name), getattr(src, f.name))
         return
     if hasattr(dst, "__dict__") and hasattr(src, "__dict__"):
         for k in vars(dst).keys():
