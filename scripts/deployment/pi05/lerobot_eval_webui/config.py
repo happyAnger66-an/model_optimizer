@@ -156,6 +156,10 @@ class Args:
     native_flashrt_calibrate: bool = False
     """首次推理跑校准导出 act scales 到 native_flashrt_act_scales_path。"""
 
+    native_flashrt_calib_samples: int = 8
+    """标定累计样本数：跨 N 个 observation（KV/noise 各异）对激活 scale 取 max；
+    且每个样本内对 10 个扩散步取 max。增大可提升 FP8 标定鲁棒性（减少饱和/掉点）。"""
+
     perf_profile_chunk: bool = True
     """打印 chunk 级分解耗时（数据读取/重排/推理/后处理/总计），用于定位 e2e 与引擎时间差。"""
 

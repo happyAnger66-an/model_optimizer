@@ -43,6 +43,7 @@ native_flashrt_fmha_so: ""                              # 可选 CUTLASS FMHA（
 native_flashrt_use_fp8: true                    # true=静态 FP8 布局；false=fp16 baseline（精度对照/调试用）
 native_flashrt_act_scales_path: "/tmp/quantize/pi05/flashrt_decoder_act_scales.json"  # 激活量化 scale JSON（离线量化导出/加载路径）
 native_flashrt_calibrate: false                 # 首跑导出 act scales 时设 true；导出后改回 false 即自动加载上面的文件
+native_flashrt_calib_samples: 8                  # 标定累计样本数：跨 N 个 observation + 每样本跨 10 步，对激活 scale 取 max（提升 FP8 鲁棒性）
 
 # —— 性能 profile（chunk 级分解 + 各阶段/引擎耗时） ——
 perf_profile_chunk: true                        # 打印 chunk 级分解耗时（数据读取/重排/推理/后处理/总计）

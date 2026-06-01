@@ -247,11 +247,18 @@ def _decoder_forward_fp16(ctx, fvk, bufs, weights, dims, stream=0, *, attn=None)
 # Calibration（离线量化：纯指针，框架无关）
 # ══════════════════════════════════════════════════════════════════
 
-def decoder_forward_calibrate(ctx, fvk_mod, bufs, weights, dims, calib_scales_ptr, stream=0):
+def decoder_forward_calibrate(
+    ctx, fvk_mod, bufs, weights, dims, calib_scales_ptr, stream=0, *, per_step_scales_ptr=0
+):
     """校准 decoder FP8 激活 scale（离线量化能力）。
 
     每个量化点两遍：1) FP16 kernel → GPU 端测 amax；2) 用该 scale 跑 FP8 kernel。
-    结果写入 ``calib_scales_ptr``（layers*4 float32）。
+    结果写入 ``calib_scales_ptr``（layers*4 float32，**最后一步 step 的 scale**，与 FlashRT 原版一致）。
+
+    跨步 max-merge（改进项，不改 in-loop FP8 forward）：传 ``per_step_scales_ptr``
+    （``steps*layers*4`` float32 设备 buffer）时，每个扩散步结束把当步 ``calib_buf`` 落盘到
+    ``per_step_scales_ptr + s*layers*4``，由调用方在 driver/torch 侧对 step 轴取 max，
+    得到"整 10 步最大激活"的 scale（FP8 不易饱和）。
     """
     S = dims['S']; D = dims['D']; H = dims['H']
     NH = dims['NH']; HD = dims['HD']
@@ -377,6 +384,10 @@ def decoder_forward_calibrate(ctx, fvk_mod, bufs, weights, dims, calib_scales_pt
         fvk_mod.adarms_fp16(x, fs_ptr, xn, gate_buf, S, D, stream)
         fvk_mod.gmm_fp16(ctx, xn, aow, noise, S, 32, D, 1.0, stream)
         fvk_mod.add_bias_fp16(noise, aob, S, 32, stream)
+
+        # 跨步 max-merge（改进项）：落盘当步 layers*4 scale，供 driver 端对 step 轴取 max。
+        if per_step_scales_ptr:
+            gpu_copy(per_step_scales_ptr + s * layers * 4 * 4, calib_buf, layers * 4 * 4, stream)
 
     gpu_copy(calib_scales_ptr, calib_buf, layers * 4 * 4, stream)
     gpu_sync(stream)

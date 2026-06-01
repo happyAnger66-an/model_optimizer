@@ -157,14 +157,30 @@ class FlashRtDecoderBackend:
         return self._loop.run(noise)
 
     # ── 离线量化 ───────────────────────────────────────────────────
-    def calibrate(self, past_keys: torch.Tensor, past_values: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
-        """跑校准前向，把 act scales 写入 ``self._act_scales`` 并返回。"""
-        if self._loop is None:
-            self.setup_prompt(int(past_keys.shape[-2]))
+    def reset_act_scales(self) -> None:
+        """清零累计的 act scales（多样本标定前调用一次）。"""
+        self._act_scales.zero_()
+
+    def accumulate_calibration(
+        self, past_keys: torch.Tensor, past_values: torch.Tensor, noise: torch.Tensor
+    ) -> torch.Tensor:
+        """累计一个样本的标定：跨 10 步取 max 的 scale 再与 ``self._act_scales`` 跨样本取 max。
+
+        多样本/多 prompt 调用本方法即可（KV/noise 每次不同），最后用累计的 ``self._act_scales``。
+        """
+        self.setup_prompt(int(past_keys.shape[-2]))
         assert self._loop is not None
         self._loop.set_prefix_kv(past_keys, past_values)
-        self._loop.calibrate(noise, self._act_scales)
+        sample_scales = self._loop.calibrate(noise)  # [layers*4] 跨步 max
+        torch.maximum(
+            self._act_scales, sample_scales.to(self._act_scales.device), out=self._act_scales
+        )
         return self._act_scales
+
+    def calibrate(self, past_keys: torch.Tensor, past_values: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
+        """单样本标定（reset + accumulate），向后兼容入口。"""
+        self.reset_act_scales()
+        return self.accumulate_calibration(past_keys, past_values, noise)
 
     def save_act_scales(self, path: str) -> None:
         scales = self._act_scales.detach().cpu().tolist()

@@ -509,6 +509,7 @@ def load_infer_bundle(
                 flashrt_use_fp8=bool(getattr(args, "native_flashrt_use_fp8", True)),
                 flashrt_act_scales_path=str(getattr(args, "native_flashrt_act_scales_path", "") or ""),
                 flashrt_calibrate=bool(getattr(args, "native_flashrt_calibrate", False)),
+                flashrt_calib_samples=int(getattr(args, "native_flashrt_calib_samples", 8)),
             )
             _p("native", "Native 阶段覆盖已生效")
         print(colored("[infer] TensorRT 引擎已就绪", "cyan"), flush=True)
@@ -535,6 +536,7 @@ def load_infer_bundle(
             flashrt_use_fp8=bool(getattr(args, "native_flashrt_use_fp8", True)),
             flashrt_act_scales_path=str(getattr(args, "native_flashrt_act_scales_path", "") or ""),
             flashrt_calibrate=bool(getattr(args, "native_flashrt_calibrate", False)),
+            flashrt_calib_samples=int(getattr(args, "native_flashrt_calib_samples", 8)),
         )
         print(colored("[infer] Native decoder 已就绪", "cyan"), flush=True)
         _p("native", "Native decoder 已就绪")

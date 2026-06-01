@@ -228,17 +228,30 @@ class Pi05ThorDecoderLoop:
         )
         return self._bufs.noise
 
-    def calibrate(self, noise: torch.Tensor, out_scales: torch.Tensor) -> None:
-        """离线量化：跑校准前向，把 act scales 写入 ``out_scales``（``[layers*4]`` f32）。"""
+    def calibrate(self, noise: torch.Tensor) -> torch.Tensor:
+        """离线量化：跑一次校准前向，返回**跨 10 步取 max** 的 act scales（``[layers*4]`` f32）。
+
+        通过 ``per_step_scales_ptr`` 让 pipeline 落盘每步 scale，再在 torch 侧对 step 轴取 max
+        （而非 FlashRT 原版只留最后一步），降低 FP8 激活饱和风险。
+        """
         self._bufs.noise.copy_(noise.to(_FP16).reshape(self._bufs.noise.shape))
         ptr_bufs = self._bufs.as_ptr_dict()
         ptr_weights = self._weights.as_dict(ptr_bufs["Kc"], ptr_bufs["Vc"])
+        steps = int(self._dims["steps"])
+        layers = int(self._dims["layers"])
+        device = self._bufs.device
+        per_step = torch.zeros(steps, layers * 4, dtype=torch.float32, device=device)
+        last_step = torch.zeros(layers * 4, dtype=torch.float32, device=device)
         _pipeline.decoder_forward_calibrate(
             self._ctx,
             self._fvk,
             ptr_bufs,
             ptr_weights,
             self._dims,
-            out_scales.reshape(-1).data_ptr(),
+            last_step.reshape(-1).data_ptr(),
             self._stream,
+            per_step_scales_ptr=per_step.reshape(-1).data_ptr(),
         )
+        # step 轴取 max（0 值步——理论上每步都写——用 last_step 兜底）
+        cross_step = per_step.amax(dim=0)
+        return torch.maximum(cross_step, last_step)

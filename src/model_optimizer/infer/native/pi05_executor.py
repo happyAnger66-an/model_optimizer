@@ -50,6 +50,7 @@ class Pi05NativeExecutor(Executor):
         self._orig_sample_actions = None
         self._flashrt_backend = None
         self._flashrt_calibrated = False
+        self._flashrt_calib_count = 0
         try:
             setattr(self.policy, "_native_executor", self)
         except Exception:
@@ -74,6 +75,7 @@ class Pi05NativeExecutor(Executor):
         flashrt_use_fp8 = bool(_cfg_get(config, "flashrt_use_fp8", True))
         flashrt_act_scales_path = str(_cfg_get(config, "flashrt_act_scales_path", "") or "").strip()
         flashrt_calibrate = bool(_cfg_get(config, "flashrt_calibrate", False))
+        flashrt_calib_samples = int(_cfg_get(config, "flashrt_calib_samples", 8) or 8)
         quant_spec_path = str(_cfg_get(config, "quant_spec_path", "") or "").strip()
         recalib_enable = bool(_cfg_get(config, "recalib_enable", False))
         recalib_max_samples = int(_cfg_get(config, "recalib_max_samples", 0) or 0)
@@ -101,6 +103,7 @@ class Pi05NativeExecutor(Executor):
                 use_fp8=flashrt_use_fp8,
                 act_scales_path=flashrt_act_scales_path,
                 calibrate=flashrt_calibrate,
+                calib_samples=flashrt_calib_samples,
                 perf=perf,
             )
             logger.info(
@@ -451,6 +454,7 @@ class Pi05NativeExecutor(Executor):
         use_fp8: bool,
         act_scales_path: str,
         calibrate: bool,
+        calib_samples: int,
         perf: bool,
     ) -> None:
         """在 ``sample_actions`` 整循环层用仓内 FlashRT decoder 替代 denoise loop。
@@ -461,8 +465,10 @@ class Pi05NativeExecutor(Executor):
         """
         self._flashrt_backend = None
         self._flashrt_calibrated = False
+        self._flashrt_calib_count = 0
         self._orig_sample_actions = self.pi05_model.sample_actions
         m = self.pi05_model
+        calib_samples = max(int(calib_samples), 1)
 
         def _build_backend(enc_seq: int):
             from .flashrt_decoder import FlashRtDecoderBackend, state_dict_getter
@@ -536,10 +542,20 @@ class Pi05NativeExecutor(Executor):
 
                 noise_2d = noise.reshape(-1, noise.shape[-1])
                 if calibrate and not self._flashrt_calibrated:
-                    backend.calibrate(past_keys, past_values, noise_2d)
-                    self._flashrt_calibrated = True
-                    if act_scales_path:
-                        backend.save_act_scales(act_scales_path)
+                    # 多样本标定：跨 N 个 observation（KV/noise 各异）累计取 max。
+                    if self._flashrt_calib_count == 0:
+                        backend.reset_act_scales()
+                    backend.accumulate_calibration(past_keys, past_values, noise_2d)
+                    self._flashrt_calib_count += 1
+                    logger.info(
+                        "[native-flashrt] calibrate sample %d/%d",
+                        self._flashrt_calib_count,
+                        calib_samples,
+                    )
+                    if self._flashrt_calib_count >= calib_samples:
+                        self._flashrt_calibrated = True
+                        if act_scales_path:
+                            backend.save_act_scales(act_scales_path)
 
                 action = backend.run(past_keys, past_values, noise_2d)
                 return action.reshape(noise.shape).to(dtype=torch.float32)
