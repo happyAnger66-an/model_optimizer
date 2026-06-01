@@ -111,6 +111,7 @@ class InferServer:
         policy = result["policy"]
         policy_trt = result["policy_trt"]
         policy_ptq = result["policy_ptq"]
+        policy_flashrt = result.get("policy_flashrt")
         train_cfg = result["train_cfg"]
 
         # 2. 加载数据集
@@ -155,7 +156,10 @@ class InferServer:
             self._start_calib_collectors(policy, on_progress)
 
         # 4. 构建推理后端
-        self._backend = self._create_backend(policy, policy_trt, policy_ptq)
+        self._backend = self._create_backend(
+            policy, policy_trt, policy_ptq, policy_flashrt
+        )
+        self._maybe_flashrt_calibrate(on_progress)
 
         # 5. 构建 meta
         self._meta = self._build_meta(data_config)
@@ -295,7 +299,11 @@ class InferServer:
     # ── private ──
 
     def _create_backend(
-        self, policy: Any, policy_trt: Any | None, policy_ptq: Any | None
+        self,
+        policy: Any,
+        policy_trt: Any | None,
+        policy_ptq: Any | None,
+        policy_flashrt: Any | None,
     ) -> InferBackend:
         mode = self._config.mode
         if mode == "pytorch":
@@ -306,10 +314,20 @@ class InferServer:
             from .backends.native import SingleNativeBackend
 
             return SingleNativeBackend(policy)
+        elif mode == "flashrt":
+            from .backends.flashrt import SingleFlashRtBackend
+
+            if policy_flashrt is None:
+                raise RuntimeError("flashrt mode requires policy_flashrt")
+            return SingleFlashRtBackend(policy_flashrt)
         elif mode == "tensorrt":
             from .backends.tensorrt import SingleTensorRTBackend
 
             return SingleTensorRTBackend(policy)
+        elif mode == "onnxrt":
+            from .backends.onnxrt import SingleOnnxRTBackend
+
+            return SingleOnnxRTBackend(policy)
         elif mode == "pt_trt_compare":
             from .backends.pt_trt_compare import PtTrtCompareBackend
 
@@ -322,6 +340,12 @@ class InferServer:
             if policy_ptq is None:
                 raise RuntimeError("pt_ptq_compare requires policy_ptq")
             return PtPtqCompareBackend(policy, policy_ptq)
+        elif mode == "pt_flashrt_compare":
+            from .backends.pt_flashrt_compare import PtFlashRtCompareBackend
+
+            if policy_flashrt is None:
+                raise RuntimeError("pt_flashrt_compare requires policy_flashrt")
+            return PtFlashRtCompareBackend(policy, policy_flashrt)
         elif mode == "ptq_trt_compare":
             from .backends.ptq_trt_compare import PtqTrtCompareBackend
 
@@ -330,6 +354,40 @@ class InferServer:
             return PtqTrtCompareBackend(policy, policy_trt)
         else:
             raise ValueError(f"Unknown mode: {mode!r}")
+
+    def _maybe_flashrt_calibrate(self, on_progress: ProgressCallback) -> None:
+        cfg = self._config
+        if cfg.mode not in ("flashrt", "pt_flashrt_compare"):
+            return
+        if self._backend is None:
+            return
+        policy_flashrt = self._policies.get("policy_flashrt")
+        if policy_flashrt is None or not hasattr(policy_flashrt, "calibrate"):
+            return
+        n = int(getattr(cfg.flashrt.calib, "n", 0))
+        if n <= 1:
+            return
+        from ._dataset_helpers import tree_to_numpy
+
+        obs_list: list[dict[str, Any]] = []
+        upper = min(self._start_index + n, self._n)
+        for i in range(self._start_index, upper):
+            raw = tree_to_numpy(self._dataset[i])
+            packed = self._repack_fn(dict(raw))
+            obs = {k: v for k, v in packed.items() if k != "actions"}
+            obs_list.append(obs)
+        if not obs_list:
+            return
+        on_progress(
+            "flashrt_calib",
+            f"FlashRT 预校准：samples={len(obs_list)} percentile={cfg.flashrt.calib.percentile}",
+        )
+        policy_flashrt.calibrate(
+            obs_list,
+            percentile=float(cfg.flashrt.calib.percentile),
+            max_samples=len(obs_list),
+        )
+        on_progress("flashrt_calib", "FlashRT 预校准完成")
 
     def _start_calib_collectors(self, policy: Any, on_progress: ProgressCallback) -> None:
         try:
@@ -375,6 +433,8 @@ class InferServer:
 
         if mode == "pt_trt_compare":
             backend = "pytorch+tensorrt"
+        elif mode == "pt_flashrt_compare":
+            backend = "pytorch+flashrt"
         elif mode == "pt_ptq_compare":
             backend = "pytorch+ptq"
         elif mode == "ptq_trt_compare":
@@ -405,6 +465,10 @@ class InferServer:
             meta["pred1_name"] = "PTQ"
             meta["pred2_name"] = "TRT"
             meta["pair_name"] = "PTQ-TRT"
+        elif mode == "pt_flashrt_compare":
+            meta["pred1_name"] = "PT"
+            meta["pred2_name"] = "FlashRT"
+            meta["pair_name"] = "PT-FlashRT"
 
         if mode in ("tensorrt", "pt_trt_compare", "ptq_trt_compare"):
             meta["tensorrt"] = {
@@ -437,6 +501,21 @@ class InferServer:
                 "quant_cfg": cfg.ptq.quant_cfg,
                 "calib_dir": cfg.ptq.calib_dir,
                 "parts": list(cfg.ptq.parts),
+            }
+
+        if mode in ("flashrt", "pt_flashrt_compare") or "flashrt" in cfg.resolve_stages().values():
+            meta["flashrt"] = {
+                "checkpoint_dir": cfg.flashrt.checkpoint_dir,
+                "num_views": cfg.flashrt.num_views,
+                "use_cuda_graph": cfg.flashrt.use_cuda_graph,
+                "autotune": cfg.flashrt.autotune,
+                "use_fp8": cfg.flashrt.use_fp8,
+                "calib": {
+                    "n": cfg.flashrt.calib.n,
+                    "percentile": cfg.flashrt.calib.percentile,
+                    "recalibrate_with_real_data": cfg.flashrt.calib.recalibrate_with_real_data,
+                },
+                "resolved_stages": cfg.resolve_stages(),
             }
 
         return meta

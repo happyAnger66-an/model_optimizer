@@ -425,8 +425,86 @@ lerobot_eval_webui_server.py  →  lerobot_eval_webui.main()
 
 ---
 
-## 8. 修订记录
+## 8. 仓内 FlashRT decoder（native denoise 替换 + 离线量化）
+
+把 FlashRT 的 Pi0.5 Thor **decoder（AdaRMSNorm action expert，静态 FP8）实现搬进
+`model_optimizer`**（不 import `flash_rt` 包），在 `sample_actions` 整循环层用其 10 步扩散
+循环替换 PyTorch denoise loop；**vit/llm 仍可走 TensorRT**。实现见
+`src/model_optimizer/infer/native/flashrt_decoder/`，设计/移植进展见
+[`docs/optimizer/ddup/native_decoder_implementation_todo.md`](../../docs/optimizer/ddup/native_decoder_implementation_todo.md) §8。
+
+### 8.1 前置：在 Thor 上构建 kernel
+
+FlashRT 的 CUDA 算子（FP8 GEMM / AdaRMS / FMHA）需在 **Thor(SM110)** 上构建出 `.so`，
+本仓库按**路径装载**这些产物（不重写 CUDA、不 import `flash_rt` python 包）：
+
+```bash
+# 见脚本内注释，核心是 cmake 构建 flash_rt_kernels（可选 fmha_fp16_strided）
+bash scripts/deployment/pi05/build_flashrt_kernels.sh
+
+# 装载路径（二选一）：配置项 native_flashrt_build_dir，或环境变量
+export MO_FLASHRT_BUILD_DIR=/workspace/flash_rt/build
+export MO_FLASHRT_FMHA_SO=$MO_FLASHRT_BUILD_DIR/libfmha_fp16_strided.so   # 可选
+```
+
+### 8.2 配置项（`native_flashrt_*`，叠加在 tensorrt 上）
+
+| 参数 | 默认 | 作用 |
+|---|---|---|
+| `native_overlay_on_tensorrt` | `false` | 在 TRT 上叠加 native（保 vit/llm=TRT，仅覆盖 denoise） |
+| `native_enable_denoise` | `true` | 启用 native denoise 覆盖 |
+| `native_flashrt_decoder` | `false` | **用仓内 FlashRT decoder 整循环替代 denoise loop** |
+| `native_flashrt_build_dir` | `""` | `flash_rt_kernels*.so` 所在目录（不设则用环境变量） |
+| `native_flashrt_fmha_so` | `""` | 可选 `libfmha_fp16_strided.so` 路径 |
+| `native_flashrt_use_fp8` | `true` | 走静态 FP8 布局；`false` 走 fp16 baseline |
+| `native_flashrt_act_scales_path` | `""` | 激活量化 scale 的 JSON（离线量化导出/加载） |
+| `native_flashrt_calibrate` | `false` | 首跑跑校准并把 act scales 导出到上面的路径 |
+
+示例配置：[`config/webui_configs/tensorrt_flashrt_denoise.yaml`](../../config/webui_configs/tensorrt_flashrt_denoise.yaml)
+
+```bash
+cd scripts/deployment/pi05
+python lerobot_eval_webui_server.py \
+  --webui-config ../../config/webui_configs/tensorrt_flashrt_denoise.yaml
+```
+
+### 8.3 离线量化（act scales）
+
+1. 首跑导出：把配置里 `native_flashrt_calibrate: true`、`native_flashrt_act_scales_path` 设输出路径，
+   跑一次推理即在该路径写出 `flashrt_decoder_act_scales.json`（`[layers*4]` 激活 scale）。
+2. 正式推理：把 `native_flashrt_calibrate` 改回 `false`，启动时自动 `load_act_scales` 加载该文件。
+
+### 8.4 冒烟 / 数值对比工具 `flashrt_decoder_smoke.py`
+
+两种模式：
+
+```bash
+# (1) repack 模式：无需 kernel/数据/GPU，验证权重 repack + 预计算的元素数/形状是否与
+#     pipeline.decoder_forward 的 GEMM 步进一致（上 Thor 前自检最大风险点）
+python scripts/deployment/pi05/flashrt_decoder_smoke.py \
+  --model-path /srcs/openpi/pytorch_pi05_libero/ --config pi05_libero --mode repack
+
+# (2) compare 模式：Thor 上构建 kernel 后，端到端对比仓内 FlashRT decoder 与 PyTorch
+#     原始 sample_actions 的 raw action chunk（max_abs_diff / 相对误差 / cosine）
+python scripts/deployment/pi05/flashrt_decoder_smoke.py \
+  --model-path /srcs/openpi/pytorch_pi05_libero/ --config pi05_libero \
+  --mode compare --build-dir /workspace/flash_rt/build
+```
+
+- `compare` 用同一条 libero 示例 + 同一块 noise 跑两条路径，验证 §8.2 文档里的 **KV/RoPE 一致性**；
+- 若 kernel `.so` 未找到，FlashRT 路径会**安全回退**原始 denoise，工具会报错提示检查 `--build-dir`。
+
+### 8.5 已知验证点（上 Thor 必看）
+
+- **KV 契约**：TRT llm 产出 bf16 stacked KV，仓内 decoder 期望 fp16 slab；适配器
+  `fill_prefix_kv_from_trt` 只做 dtype/布局转换，**RoPE 是否已施加于 K** 须在 Thor 上验证一致。
+- **`Sa = action_horizon`** 的假设、以及 FP8 激活 scale 的精度对齐，建议先用 `compare` 模式确认。
+
+---
+
+## 9. 修订记录
 
 | 日期 | 说明 |
 |---|---|
 | 2026-05-30 | 初版：基于 `lerobot_eval_webui/config.py` 整理全部 CLI 大类与小类 |
+| 2026-06-01 | 新增 §8 仓内 FlashRT decoder（native denoise 替换 + 离线量化 + 冒烟/对比工具） |

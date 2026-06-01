@@ -503,6 +503,12 @@ def load_infer_bundle(
                 recalib_enable=bool(getattr(args, "native_recalib_enable", False)),
                 recalib_max_samples=int(getattr(args, "native_recalib_max_samples", 0)),
                 recalib_percentile=float(getattr(args, "native_recalib_percentile", 99.9)),
+                flashrt_decoder=bool(getattr(args, "native_flashrt_decoder", False)),
+                flashrt_build_dir=str(getattr(args, "native_flashrt_build_dir", "") or ""),
+                flashrt_fmha_so=str(getattr(args, "native_flashrt_fmha_so", "") or ""),
+                flashrt_use_fp8=bool(getattr(args, "native_flashrt_use_fp8", True)),
+                flashrt_act_scales_path=str(getattr(args, "native_flashrt_act_scales_path", "") or ""),
+                flashrt_calibrate=bool(getattr(args, "native_flashrt_calibrate", False)),
             )
             _p("native", "Native 阶段覆盖已生效")
         print(colored("[infer] TensorRT 引擎已就绪", "cyan"), flush=True)
@@ -523,6 +529,12 @@ def load_infer_bundle(
             recalib_enable=bool(getattr(args, "native_recalib_enable", False)),
             recalib_max_samples=int(getattr(args, "native_recalib_max_samples", 0)),
             recalib_percentile=float(getattr(args, "native_recalib_percentile", 99.9)),
+            flashrt_decoder=bool(getattr(args, "native_flashrt_decoder", False)),
+            flashrt_build_dir=str(getattr(args, "native_flashrt_build_dir", "") or ""),
+            flashrt_fmha_so=str(getattr(args, "native_flashrt_fmha_so", "") or ""),
+            flashrt_use_fp8=bool(getattr(args, "native_flashrt_use_fp8", True)),
+            flashrt_act_scales_path=str(getattr(args, "native_flashrt_act_scales_path", "") or ""),
+            flashrt_calibrate=bool(getattr(args, "native_flashrt_calibrate", False)),
         )
         print(colored("[infer] Native decoder 已就绪", "cyan"), flush=True)
         _p("native", "Native decoder 已就绪")
@@ -740,6 +752,9 @@ def load_infer_bundle(
             "recalib_enable": bool(getattr(args, "native_recalib_enable", False)),
             "recalib_max_samples": int(getattr(args, "native_recalib_max_samples", 0)),
             "recalib_percentile": float(getattr(args, "native_recalib_percentile", 99.9)),
+            "flashrt_decoder": bool(getattr(args, "native_flashrt_decoder", False)),
+            "flashrt_use_fp8": bool(getattr(args, "native_flashrt_use_fp8", True)),
+            "flashrt_calibrate": bool(getattr(args, "native_flashrt_calibrate", False)),
         }
     elif (
         args.inference_mode == "tensorrt"
@@ -757,6 +772,9 @@ def load_infer_bundle(
             "recalib_enable": bool(getattr(args, "native_recalib_enable", False)),
             "recalib_max_samples": int(getattr(args, "native_recalib_max_samples", 0)),
             "recalib_percentile": float(getattr(args, "native_recalib_percentile", 99.9)),
+            "flashrt_decoder": bool(getattr(args, "native_flashrt_decoder", False)),
+            "flashrt_use_fp8": bool(getattr(args, "native_flashrt_use_fp8", True)),
+            "flashrt_calibrate": bool(getattr(args, "native_flashrt_calibrate", False)),
         }
 
     trt_ort_polygraphy_report: dict[str, Any] | None = None

@@ -137,6 +137,25 @@ class Args:
     native_recalib_max_samples: int = 0
     native_recalib_percentile: float = 99.9
 
+    native_flashrt_decoder: bool = False
+    """native 模式用仓内 FlashRT decoder（整 10 步循环 + 静态 FP8）替代 denoise loop。
+    需在 Thor 上构建 flash_rt_kernels.so（见 scripts/deployment/pi05/build_flashrt_kernels.sh）。"""
+
+    native_flashrt_build_dir: str = ""
+    """flash_rt_kernels*.so / libfmha_fp16_strided.so 所在构建目录（不设则用环境变量）。"""
+
+    native_flashrt_fmha_so: str = ""
+    """可选：CUTLASS FMHA (libfmha_fp16_strided.so) 路径。"""
+
+    native_flashrt_use_fp8: bool = True
+    """FlashRT decoder 是否走静态 FP8 布局；False 走 fp16 baseline。"""
+
+    native_flashrt_act_scales_path: str = ""
+    """FlashRT decoder 激活量化 scale 的 JSON 路径（离线量化导出/加载）。"""
+
+    native_flashrt_calibrate: bool = False
+    """首次推理跑校准导出 act scales 到 native_flashrt_act_scales_path。"""
+
     perf_profile_chunk: bool = True
     """打印 chunk 级分解耗时（数据读取/重排/推理/后处理/总计），用于定位 e2e 与引擎时间差。"""
 

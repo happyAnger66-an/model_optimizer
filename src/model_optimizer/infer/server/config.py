@@ -80,6 +80,10 @@ class FlashRtConfig:
     """safetensors 权重源；为空时回退到 tensorrt.engine_path 所在目录。"""
     num_views: int = 2
     use_cuda_graph: bool = True
+    autotune: int = 3
+    """FlashRT graph autotune 轮数（0=关闭）。"""
+    use_fp8: bool = True
+    """FlashRT 前端是否启用 FP8 路径。"""
     lib_dir: str = ""
     """libfmha_*.so 搜索目录（为空则用 flash_rt 默认）。"""
     calib: FlashRtCalibConfig = field(default_factory=FlashRtCalibConfig)

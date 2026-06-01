@@ -6,6 +6,8 @@ import copy
 import importlib.util
 import json
 import logging
+import os
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -51,37 +53,39 @@ def _load_pytorch_policy(config: ServerConfig, on_progress: ProgressCallback):
     return policy, train_cfg
 
 
-def _guard_flashrt_scope(config: ServerConfig) -> None:
-    """P1 仅实现 ``stages.vit=flashrt``（FlashRT SigLIP + TRT 其余）。
+def _build_flashrt_policy(config: ServerConfig, on_progress: ProgressCallback) -> Any:
+    """构建 FlashRT policy adapter（完整前端推理路径）。"""
+    from model_optimizer.infer.flash.policy_adapter import FlashRtPolicyAdapter
 
-    其余 FlashRT 路径（整体 ``mode=flashrt``、对比模式、expert/denoise 等阶段走 flashrt）
-    属于 P2/P3，未实现时明确报错而非静默退回，避免误导。详见
-    docs/optimizer/ddup/flashrt_backend_design.md §7。
-    """
-    if config.mode in ("flashrt", "pt_flashrt_compare"):
-        raise NotImplementedError(
-            f"mode={config.mode!r} 尚未实现（P2/P3）。当前可用：mode='tensorrt' + "
-            "stages.vit='flashrt' 的混合后端。"
+    ckpt = config.flashrt.checkpoint_dir or str(
+        Path(config.tensorrt.engine_path).expanduser().resolve().parent
+    )
+    lib_dir = str(getattr(config.flashrt, "lib_dir", "") or "").strip()
+    if lib_dir:
+        p = str(Path(lib_dir).expanduser().resolve())
+        old_ld = os.environ.get("LD_LIBRARY_PATH", "")
+        if p not in old_ld.split(":"):
+            os.environ["LD_LIBRARY_PATH"] = f"{p}:{old_ld}" if old_ld else p
+        if p not in sys.path:
+            sys.path.insert(0, p)
+        on_progress("flashrt", f"已注入 flashrt.lib_dir={p}")
+    on_progress("flashrt", f"加载 FlashRT 前端（ckpt={ckpt}）…")
+    try:
+        policy_flashrt = FlashRtPolicyAdapter(
+            checkpoint_dir=str(Path(ckpt).expanduser().resolve()),
+            num_views=int(config.flashrt.num_views),
+            use_cuda_graph=bool(config.flashrt.use_cuda_graph),
+            autotune=int(getattr(config.flashrt, "autotune", 3)),
+            use_fp8=bool(getattr(config.flashrt, "use_fp8", True)),
+            recalibrate_with_real_data=bool(
+                getattr(config.flashrt.calib, "recalibrate_with_real_data", False)
+            ),
         )
-
-    resolved = config.resolve_stages()
-    unsupported = {
-        s: b for s, b in resolved.items() if b == "flashrt" and s != "vit"
-    }
-    if unsupported:
-        raise NotImplementedError(
-            f"FlashRT 后端目前仅支持 vit 阶段（P1）；以下阶段属于 P2/P3：{unsupported}。"
-        )
-    # vit=flashrt 仅在已挂载 TRT 引擎的路径下生效（_mount_tensorrt_engines 内接入）。
-    if resolved.get("vit") == "flashrt" and config.mode not in (
-        "tensorrt",
-        "pt_trt_compare",
-        "ptq_trt_compare",
-    ):
-        raise NotImplementedError(
-            "stages.vit='flashrt' 目前需配合 mode='tensorrt'（其余阶段走 TRT）；"
-            f"当前 mode={config.mode!r} 暂不支持。"
-        )
+    except Exception as exc:
+        logger.error("FlashRT init failed: %s", exc)
+        raise
+    on_progress("flashrt", "FlashRT 前端已就绪")
+    return policy_flashrt
 
 
 def _mount_tensorrt_engines(policy: Any, config: ServerConfig, on_progress: ProgressCallback) -> None:
@@ -328,7 +332,9 @@ def load_policy_for_serve(
     if on_progress is None:
         on_progress = _noop_progress
 
-    _guard_flashrt_scope(config)
+    if config.mode == "flashrt":
+        # serve 的 flashrt 直连模式不依赖 openpi policy。
+        return _build_flashrt_policy(config, on_progress)
 
     from openpi.policies import policy_config
     from openpi.training import config as _config
@@ -383,16 +389,29 @@ def load_policies(
     if on_progress is None:
         on_progress = _noop_progress
 
-    _guard_flashrt_scope(config)
-
-    from openpi.policies import policy_config
+    mode = config.mode
     from openpi.training import config as _config
+    if mode == "flashrt":
+        on_progress("config", "读取训练配置 …")
+        train_cfg = _config.get_config(config.config_name)
+        policy = None
+    else:
+        policy, train_cfg = _load_pytorch_policy(config, on_progress)
+        from openpi.policies import policy_config
 
-    policy, train_cfg = _load_pytorch_policy(config, on_progress)
     policy_trt = None
     policy_ptq = None
+    policy_flashrt = None
 
-    mode = config.mode
+    if mode == "flashrt":
+        policy_flashrt = _build_flashrt_policy(config, on_progress)
+        return {
+            "policy": policy,
+            "policy_trt": policy_trt,
+            "policy_ptq": policy_ptq,
+            "policy_flashrt": policy_flashrt,
+            "train_cfg": train_cfg,
+        }
 
     if mode == "tensorrt":
         _mount_tensorrt_engines(policy, config, on_progress)
@@ -448,10 +467,14 @@ def load_policies(
         _mount_tensorrt_engines(policy_trt, config, on_progress)
         _mount_native(policy_trt, config, on_progress)
         on_progress("policy_trt", "PTQ + TensorRT 双路就绪")
+    elif mode == "pt_flashrt_compare":
+        # 可选实验路径：仅在显式 mode=pt_flashrt_compare 时加载 flash_rt 前端。
+        policy_flashrt = _build_flashrt_policy(config, on_progress)
 
     return {
         "policy": policy,
         "policy_trt": policy_trt,
         "policy_ptq": policy_ptq,
+        "policy_flashrt": policy_flashrt,
         "train_cfg": train_cfg,
     }

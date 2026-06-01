@@ -19,6 +19,12 @@ def load_native_runtime(
     recalib_enable: bool = False,
     recalib_max_samples: int = 0,
     recalib_percentile: float = 99.9,
+    flashrt_decoder: bool = False,
+    flashrt_build_dir: str = "",
+    flashrt_fmha_so: str = "",
+    flashrt_use_fp8: bool = True,
+    flashrt_act_scales_path: str = "",
+    flashrt_calibrate: bool = False,
 ) -> None:
     import addict
     import torch
@@ -45,6 +51,12 @@ def load_native_runtime(
         "recalib_enable": bool(recalib_enable),
         "recalib_max_samples": int(recalib_max_samples),
         "recalib_percentile": float(recalib_percentile),
+        "flashrt_decoder": bool(flashrt_decoder),
+        "flashrt_build_dir": str(flashrt_build_dir or ""),
+        "flashrt_fmha_so": str(flashrt_fmha_so or ""),
+        "flashrt_use_fp8": bool(flashrt_use_fp8),
+        "flashrt_act_scales_path": str(flashrt_act_scales_path or ""),
+        "flashrt_calibrate": bool(flashrt_calibrate),
     }
     executor.load_model(addict.Dict(cfg))
 

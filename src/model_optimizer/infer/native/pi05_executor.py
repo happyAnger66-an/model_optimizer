@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from ..executor import Executor
 from ...models.pi05.model_pi05 import Pi05Model
 from .decoder_runner import NativeDenoiseLoopRunner, NativeDenoiseLoopRunnerV2
+from .denoise_backend import NativeDenoiseBackend
 from .quant_runtime import NativeQuantRuntime
 
 logger = logging.getLogger(__name__)
@@ -42,10 +43,13 @@ class Pi05NativeExecutor(Executor):
         self.config = config
         self._denoise_runner: NativeDenoiseLoopRunner | None = None
         self._denoise_runner_v2: NativeDenoiseLoopRunnerV2 | None = None
+        self._denoise_backend: NativeDenoiseBackend | None = None
         self._quant_runtime: NativeQuantRuntime | None = None
         self._orig_denoise = None
         self._orig_expert_forward = None
         self._orig_sample_actions = None
+        self._flashrt_backend = None
+        self._flashrt_calibrated = False
         try:
             setattr(self.policy, "_native_executor", self)
         except Exception:
@@ -63,6 +67,13 @@ class Pi05NativeExecutor(Executor):
         compile_expert = bool(_cfg_get(config, "compile_expert", False))
         perf = bool(_cfg_get(config, "perf", True))
         full_loop_graph = bool(_cfg_get(config, "full_loop_graph", False))
+        # FlashRT 仓内移植 decoder（整循环替代 denoise loop）
+        flashrt_decoder = bool(_cfg_get(config, "flashrt_decoder", False))
+        flashrt_build_dir = str(_cfg_get(config, "flashrt_build_dir", "") or "").strip() or None
+        flashrt_fmha_so = str(_cfg_get(config, "flashrt_fmha_so", "") or "").strip() or None
+        flashrt_use_fp8 = bool(_cfg_get(config, "flashrt_use_fp8", True))
+        flashrt_act_scales_path = str(_cfg_get(config, "flashrt_act_scales_path", "") or "").strip()
+        flashrt_calibrate = bool(_cfg_get(config, "flashrt_calibrate", False))
         quant_spec_path = str(_cfg_get(config, "quant_spec_path", "") or "").strip()
         recalib_enable = bool(_cfg_get(config, "recalib_enable", False))
         recalib_max_samples = int(_cfg_get(config, "recalib_max_samples", 0) or 0)
@@ -83,7 +94,22 @@ class Pi05NativeExecutor(Executor):
             self._install_expert_runtime(compile_expert=compile_expert)
             logger.info("[native] expert stage enabled (compile=%s)", compile_expert)
 
-        if enable_denoise:
+        if enable_denoise and flashrt_decoder:
+            self._install_flashrt_loop_runtime(
+                build_dir=flashrt_build_dir,
+                fmha_so=flashrt_fmha_so,
+                use_fp8=flashrt_use_fp8,
+                act_scales_path=flashrt_act_scales_path,
+                calibrate=flashrt_calibrate,
+                perf=perf,
+            )
+            logger.info(
+                "[native-flashrt] decoder full-loop enabled (fp8=%s build_dir=%s calibrate=%s)",
+                flashrt_use_fp8,
+                flashrt_build_dir,
+                flashrt_calibrate,
+            )
+        elif enable_denoise:
             if full_loop_graph:
                 # full-loop 模式下，避免安装单步 denoise runner（含额外包装逻辑），
                 # 直接对原始 denoise_step 循环做 graph capture/replay，降低 capture 冲突风险。
@@ -124,6 +150,18 @@ class Pi05NativeExecutor(Executor):
         except Exception as exc:
             logger.warning("[native] expert torch.compile failed, keep eager: %s", exc)
 
+    @staticmethod
+    def _stack_past_key_values(past_key_values: Any) -> tuple[torch.Tensor, torch.Tensor]:
+        """``DynamicCache`` / ``list[(k,v)]`` → 堆叠 ``[num_layers, ...]``（与 TRT 一致）。"""
+        if hasattr(past_key_values, "key_cache") and hasattr(past_key_values, "value_cache"):
+            keys = list(past_key_values.key_cache)
+            vals = list(past_key_values.value_cache)
+        else:
+            n = len(past_key_values)
+            keys = [past_key_values[i][0] for i in range(n)]
+            vals = [past_key_values[i][1] for i in range(n)]
+        return torch.cat(keys, dim=0), torch.cat(vals, dim=0)
+
     def _install_denoise_runtime(
         self,
         *,
@@ -131,13 +169,18 @@ class Pi05NativeExecutor(Executor):
         graph_warmup: int,
         perf: bool,
     ) -> None:
+        # denoise 阶段后端：与 TRT denoise engine 接口对齐（堆叠 KV），可与 vit/llm=TRT 自由组合。
         self._orig_denoise = self.pi05_model.denoise_step
-        self._denoise_runner = NativeDenoiseLoopRunner(
+        self._denoise_backend = NativeDenoiseBackend(
             self._orig_denoise,
             use_cuda_graph=use_cuda_graph,
             graph_warmup=graph_warmup,
             perf=perf,
+            quant_runtime=self._quant_runtime,
         )
+
+        backend = self._denoise_backend
+        stack_kv = self._stack_past_key_values
 
         def denoise_step_native(
             self_m,
@@ -147,23 +190,9 @@ class Pi05NativeExecutor(Executor):
             x_t,
             timestep,
         ):
-            assert self._denoise_runner is not None
-            if self._quant_runtime is not None:
-                self._quant_runtime.observe_sample(
-                    {
-                        "prefix_pad_masks": prefix_pad_masks,
-                        "x_t": x_t,
-                        "timestep": timestep,
-                    }
-                )
-                prefix_pad_masks, x_t, timestep = self._quant_runtime.apply_quantized_inputs(
-                    prefix_pad_masks=prefix_pad_masks,
-                    x_t=x_t,
-                    timestep=timestep,
-                )
-            return self._denoise_runner.run(
-                state, prefix_pad_masks, past_key_values, x_t, timestep
-            )
+            del state  # pi05 embed_suffix 不使用 state（与 TRT denoise_step_trt 的 ``del state`` 一致）
+            past_keys, past_values = stack_kv(past_key_values)
+            return backend(prefix_pad_masks, past_keys, past_values, x_t, timestep)
 
         self.pi05_model.denoise_step = types.MethodType(
             denoise_step_native, self.pi05_model
@@ -414,6 +443,117 @@ class Pi05NativeExecutor(Executor):
             self.pi05_model,
         )
 
+    def _install_flashrt_loop_runtime(
+        self,
+        *,
+        build_dir: str | None,
+        fmha_so: str | None,
+        use_fp8: bool,
+        act_scales_path: str,
+        calibrate: bool,
+        perf: bool,
+    ) -> None:
+        """在 ``sample_actions`` 整循环层用仓内 FlashRT decoder 替代 denoise loop。
+
+        - prefix（vit+llm）维持原路径（可与 TRT 组合），产出 prefix KV；
+        - decoder 整 10 步循环交给 :class:`FlashRtDecoderBackend`（FP8 静态 + 离线量化）；
+        - 任意失败安全回退到原始 ``sample_actions``。
+        """
+        self._flashrt_backend = None
+        self._flashrt_calibrated = False
+        self._orig_sample_actions = self.pi05_model.sample_actions
+        m = self.pi05_model
+
+        def _build_backend(enc_seq: int):
+            from .flashrt_decoder import FlashRtDecoderBackend, state_dict_getter
+
+            sd = dict(m.state_dict())
+            getter = state_dict_getter(sd)
+            Da = int(m.action_in_proj.out_features)
+            layers = m.paligemma_with_expert.gemma_expert.model.layers
+            Ha = int(layers[0].mlp.gate_proj.out_features)
+            num_layers = len(layers)
+            Sa = int(m.config.action_horizon)
+            backend = FlashRtDecoderBackend(
+                getter,
+                Sa=Sa,
+                Da=Da,
+                Ha=Ha,
+                num_layers=num_layers,
+                num_q_heads=8,
+                steps=10,
+                use_fp8=use_fp8,
+                build_dir=build_dir,
+                fmha_so=fmha_so,
+            )
+            backend.setup_prompt(enc_seq)
+            if act_scales_path and not calibrate:
+                try:
+                    backend.load_act_scales(act_scales_path)
+                except FileNotFoundError:
+                    logger.warning(
+                        "[native-flashrt] act scales not found (%s)，用全 0（首跑可加 flashrt_calibrate=true 导出）",
+                        act_scales_path,
+                    )
+            return backend
+
+        def sample_actions_flashrt(self_m, device, observation, noise=None, num_steps=10):
+            try:
+                images, img_masks, lang_tokens, lang_masks, state = self_m._preprocess_observation(
+                    observation, train=False
+                )
+                prefix_embs, prefix_pad_masks, prefix_att_masks = self_m.embed_prefix(
+                    images, img_masks, lang_tokens, lang_masks
+                )
+                prefix_cumsum = torch.cumsum(prefix_att_masks, dim=1)
+                prefix_att_2d_masks = prefix_cumsum[:, None, :] <= prefix_cumsum[:, :, None]
+                prefix_pad_2d_masks = prefix_pad_masks[:, None, :] * prefix_pad_masks[:, :, None]
+                prefix_att_2d_masks = prefix_att_2d_masks & prefix_pad_2d_masks
+                prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+                prefix_att_2d_masks_4d = self_m._prepare_attention_masks_4d(prefix_att_2d_masks)
+                self_m.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
+                _, past_key_values = self_m.paligemma_with_expert.forward(
+                    attention_mask=prefix_att_2d_masks_4d,
+                    position_ids=prefix_position_ids,
+                    past_key_values=None,
+                    inputs_embeds=[prefix_embs, None],
+                    use_cache=True,
+                )
+                past_keys, past_values = self._stack_past_key_values(past_key_values)
+                enc_seq = int(past_keys.shape[-2])
+
+                if noise is None:
+                    bsize = int(prefix_pad_masks.shape[0])
+                    noise = self_m.sample_noise(
+                        (bsize, int(self_m.config.action_horizon), int(m.action_in_proj.in_features)),
+                        device,
+                    )
+
+                if self._flashrt_backend is None:
+                    self._flashrt_backend = _build_backend(enc_seq)
+                backend = self._flashrt_backend
+                backend.setup_prompt(enc_seq)
+
+                noise_2d = noise.reshape(-1, noise.shape[-1])
+                if calibrate and not self._flashrt_calibrated:
+                    backend.calibrate(past_keys, past_values, noise_2d)
+                    self._flashrt_calibrated = True
+                    if act_scales_path:
+                        backend.save_act_scales(act_scales_path)
+
+                action = backend.run(past_keys, past_values, noise_2d)
+                return action.reshape(noise.shape).to(dtype=torch.float32)
+            except Exception as exc:
+                logger.warning(
+                    "[native-flashrt] full-loop failed, fallback original sample_actions: %s",
+                    exc,
+                )
+                return self._orig_sample_actions(
+                    device, observation, noise=noise, num_steps=num_steps
+                )
+
+        self.pi05_model.sample_actions = types.MethodType(sample_actions_flashrt, self.pi05_model)
+
     def _sync_policy_sample_actions_ref(self) -> None:
         pol = self.policy
         if hasattr(pol, "_sample_actions"):
@@ -421,11 +561,13 @@ class Pi05NativeExecutor(Executor):
 
     def _dump_summary_atexit(self) -> None:
         try:
+            if self._denoise_backend is not None:
+                logger.info("%s", self._denoise_backend.dump_summary())
             if self._denoise_runner is not None:
                 logger.info("%s", self._denoise_runner.dump_summary())
             if self._denoise_runner_v2 is not None:
                 logger.info("%s", self._denoise_runner_v2.dump_summary())
-            if self._quant_runtime is not None:
+            if self._quant_runtime is not None and self._denoise_backend is None:
                 logger.info("%s", self._quant_runtime.dump_summary())
         except Exception as exc:
             logger.warning("[native] dump summary failed: %s", exc)

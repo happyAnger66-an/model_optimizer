@@ -218,4 +218,133 @@
 | 日期 | 变更 | 人员 |
 |---|---|---|
 | 2026-05-31 | 初版：实施分析 + 文件清单 + TODO |  |
+| 2026-06-01 | 新增 §7：DenoiseBackend 接口抽象 + 与 TRT engine 对齐 + flash_rt 降级可选 |  |
+
+---
+
+## 7. 架构抽象：DenoiseBackend（与 TRT denoise engine 接口对齐）
+
+### 7.1 设计约定（再次确认）
+
+- **不依赖 `flash_rt` 库**：把 FlashRT 的 denoise *运行时设计*（静态 buffer、AdaRMS modulation
+  预计算、整步 Graph replay、静态 FP8 scale）迁移进 `model_optimizer` 自实现，计算图复用本仓库
+  `Pi05DenoiseStep` / expert 前向。
+- `flash_rt` 直连前端（`infer/flash/policy_adapter.py`、`backends/flashrt.py`、
+  `backends/pt_flashrt_compare.py`）**降级为可选实验路径**，仅在显式 `mode=flashrt` /
+  `mode=pt_flashrt_compare` 时加载；**不再**由 stages 矩阵自动接管整条流水线。
+
+### 7.2 阶段后端矩阵（其它阶段可继续用 TensorRT）
+
+pi05 的 5 个阶段（`vit / embed_prefix / llm / expert / denoise`）可各自独立选后端。
+典型组合（即本次目标）：
+
+| 阶段 | 后端 | 入口 |
+|---|---|---|
+| vit / embed_prefix / llm | tensorrt | `_mount_tensorrt_engines`（webui: `load_tensorrt_engines`） |
+| expert / denoise | native | `_mount_native`（webui: `native_overlay_on_tensorrt`） |
+
+- server 路径：`mode=tensorrt` + `stages.denoise=native` → 先挂 TRT 引擎，再用
+  `_mount_native` 覆盖 `denoise_step`（native 后挂，胜出）。
+- webui 路径：`tensorrt_native_denoise.yaml`（`inference_mode=tensorrt` +
+  `native_overlay_on_tensorrt=true` + `native_enable_denoise=true`）。
+
+### 7.3 统一接口（核心）
+
+`DenoiseBackend` 规范调用接口**与 TRT denoise engine 完全一致**，使 TRT/native 在 `denoise_step`
+hook 处可互换：
+
+```
+backend(prefix_pad_masks, past_keys, past_values, x_t, timestep) -> v_t
+```
+
+- `past_keys/past_values` 为堆叠张量 `[num_layers, batch, prefix_len, head_dim]`，与
+  `Pi05TensorRTExecutor._stack_past_key_value_tensors` 一致。
+- 实现：`infer/native/denoise_backend.py`
+  - `DenoiseBackend`（ABC）：`__call__` + `calibrate` + `dump_summary`
+  - `NativeDenoiseBackend`：包装 `NativeDenoiseLoopRunner`（eager + 可选 Graph）+
+    `NativeQuantRuntime`（静态 scale + 可选在线重标定）；内部把堆叠 KV 还原为 `DynamicCache`
+    复用原生 `denoise_step` 计算。
+- `Pi05NativeExecutor.denoise_step_native` hook 把模型给的 `DynamicCache` 堆叠成 TRT 风格张量后
+  调用 backend，从而 native 与 TRT 在该 hook 处真正等价、可由配置切换。
+
+### 7.4 降 launch 开销的机制（分层、可插拔）
+
+> 约定：不依赖 flash_rt、不强制 torch cuda graph。机制做成可插拔层，按收益逐步替换：
+
+1. L0（已就位）：eager 复用 `Pi05DenoiseStep`，接口对齐 TRT。
+2. L1：`NativeDenoiseLoopRunner` 整步/整循环 Graph replay（按 signature 缓存、可全局降级 eager）。
+3. L2：热点算子用自研融合 kernel（`kernelSrc` Triton/CuTe）替换，逐项 A/B（T3）。
+
+### 7.5 量化校准（数据驱动，仓内闭环）
+
+- 离线：`quantization/native_decoder/` 用真实数据采样统计 → `NativeDecoderQuantSpec`（JSON）。
+- 在线：`NativeQuantRuntime` 加载 spec 给输入做静态 fake-quant；可选用真实样本做轻量重标定
+  （EMA 更新 active amax），影响后续推理 scale。
+
+---
+
+## 8. FlashRT decoder 直接移植（不 import flash_rt 包）
+
+> 决策：denoise 不再走 graph-replay 试验路线，**直接把 FlashRT 的 Pi0.5 Thor decoder 实现
+> 搬进 `model_optimizer`**，并支持离线量化。源码读取自 `third_party/FlashRT` /
+> `~/codes/FlashRT`。
+
+### 8.1 已落地（vendored 叶子，纯指针编排，编译通过）
+
+`src/model_optimizer/infer/native/flashrt_decoder/`：
+
+| 文件 | 对应 FlashRT 源 | 说明 |
+|---|---|---|
+| `pipeline.py` | `models/pi05/pipeline_thor.py` | `decoder_forward` / `_decoder_forward_fp16` / `decoder_forward_calibrate` 逐字移植，`fvk` 注入 |
+| `cuda_helpers.py` | `hardware/thor/shared_primitives.py`（GPU 指针工具）| ctypes + libcudart，无 flash_rt 依赖 |
+| `kernels.py` | `flash_rt.flash_rt_kernels`（.so）| 按 `.so` 路径 `importlib` 加载，**不 import flash_rt 包** |
+| `driver.py` | `frontends/torch/pi05_thor.py`（AE 驱动）| `build_decoder_dims` + `DecoderBuffers` + `DecoderWeights` + `fill_prefix_kv_from_trt`（方案B KV 适配器）+ `Pi05ThorDecoderLoop`（整循环） |
+| `weights.py` | `_pi05_thor_spec.build_spec` + `executors/torch_weights.py` + `core/thor_frontend_utils.py` | **权重 repack（已落地）**：`interleave_qk`/`quant_fp8` + 每层 `dec_{qkv,o,gu,d}_flat` FP8 + `_ae_w_scales` + 单例 `ain/aow/aob`（烘 -1/steps）|
+| `precompute.py` | `pi05_thor.py` set_prompt 段 | **AdaRMS 预计算（已落地）**：`build_dec_rope`（suffix RoPE 表）+ `precompute_adarms_styles`（sa/sf/fs）|
+| `backend.py` | （装配层，新增）| `FlashRtDecoderBackend`：repack+预计算+driver+离线量化 scale 导出/加载，`setup_prompt/run/calibrate/save_act_scales/load_act_scales` |
+
+### 8.2 两个硬事实（决定整体工作量）
+
+1. **kernel 不可仓内重写**：FlashRT 算子（`fp8_gemm_descale_fp16` / `fused_adarms_fp8_static_fp16`
+   / `attention_qkv_fp16` …）由其 `csrc`（≈27MB / 700+ 文件，含 CUTLASS FMHA、FP8/FP4 GEMM、
+   megakernel）在 **Thor(SM110)** 上 cmake 构建为 `flash_rt_kernels*.so`（+ `libfmha_fp16_strided.so`）。
+   本仓库**复用其编译产物**（按路径加载），不重写 CUDA，也不 import flash_rt python 包。
+   - 构建：`cmake --build build -j --target flash_rt_kernels`
+   - 装载：`MO_FLASHRT_BUILD_DIR` / `MO_FLASHRT_KERNELS_SO` / `MO_FLASHRT_FMHA_SO`
+
+2. **KV-cache 契约不一致**：FlashRT decoder 读取的 prefix KV（`Kc/Vc`）是其 **encoder 用
+   `qkv_split_rope_kvcache_fp16` 写入的 FlashRT 私有 FP8/RoPE/offset 布局**。
+   TRT 的 llm 引擎产出的是 bf16 stacked KV，布局/精度/RoPE 约定都不同。
+   → 「vit/llm=TRT + denoise=FlashRT」并非干净 drop-in，必须二选一：
+   - **(A) 同时 vendored FlashRT encoder**：prefix（siglip+llm）也走 FlashRT，KV 自洽；
+     此时 vit/llm **不再是 TRT**（与 §7.2 矩阵冲突）。
+   - **(B) 写 KV 适配器**：把 TRT bf16 KV 转成 FlashRT decoder 期望的布局/scale 后喂入；
+     保留 vit/llm=TRT，但需要在 Thor 上验证数值一致性（RoPE 是否已应用、KV 量化点等）。
+
+### 8.3 移植闭环进展
+
+- [x] **权重 repack** → `weights.py`：每层 `dec_{qkv,o,gu,d}_flat` FP8 + `_ae_w_scales`（q→o→gu→d/层）+
+  单例 `ain/aow/aob`。与 `pipeline.decoder_forward` 的 GEMM K/N 步进逐一核对一致。
+- [x] **AdaRMS 预计算 + RoPE 表** → `precompute.py`：`sa/sf/fs`（`[steps,layers,S,3D]` 展平）+ `dec_rope`。
+- [x] **驱动 / dims / buffers** → `driver.py`：`build_decoder_dims` + `DecoderBuffers` + `DecoderWeights`。
+- [x] **装配 + 离线量化** → `backend.py`：`FlashRtDecoderBackend`（`calibrate` 导 act scales，启动 `load_act_scales`）。
+- [x] **接入 `sample_actions`** → `pi05_executor.py::_install_flashrt_loop_runtime`：prefix（vit/llm=TRT）→ prefix KV
+  →（方案B 适配）→ `Pi05ThorDecoderLoop.run` 整 10 步替代 denoise loop；失败安全回退原 `sample_actions`。
+- [x] 配置接入：`native_flashrt_*`（config.py/native_backend.py/bundle.py）+ 示例 `config/webui_configs/tensorrt_flashrt_denoise.yaml`。
+- [ ] **Thor 上端到端验证**：kernel `.so` 构建后跑通；重点验证 §8.2 的 RoPE 约定 / KV 数值一致性 + 精度对齐。
+- [ ] 方案 (A) 可选：vendored encoder（若放弃 vit/llm=TRT、追求 KV 完全自洽）。
+
+> 用法：`native_flashrt_decoder: true` + `native_flashrt_build_dir` 指向 Thor 构建目录。
+> 首跑离线量化：`native_flashrt_calibrate: true` + `native_flashrt_act_scales_path`，导出后改回 `false` 自动加载。
+
+### 8.4 构建/装载约定（Thor）
+
+```bash
+# 1) 在 FlashRT 源码树构建 kernel 扩展（Thor sm_110a）
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j --target flash_rt_kernels
+# 2) 指给 model_optimizer
+export MO_FLASHRT_BUILD_DIR=/home/zhangxa/codes/FlashRT/build
+export MO_FLASHRT_FMHA_SO=$MO_FLASHRT_BUILD_DIR/libfmha_fp16_strided.so
+```
 
