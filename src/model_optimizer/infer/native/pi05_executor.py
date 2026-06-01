@@ -185,11 +185,18 @@ class Pi05NativeExecutor(Executor):
             num_steps=10,
         ):
             """仅 denoise num_steps 循环（capture-safe for-loop）。"""
+            probe = observation.get("__capture_probe") if isinstance(observation, dict) else None
+
+            def _set_probe(stage: str) -> None:
+                if isinstance(probe, dict):
+                    probe["stage"] = stage
+
             state = observation["state"]
             prefix_pad_masks = observation["prefix_pad_masks"]
             past_key_values = observation["past_key_values"]
             bsize = int(prefix_pad_masks.shape[0])
 
+            _set_probe("loop_setup")
             n_steps = max(int(num_steps), 1)
             dt = torch.tensor(-1.0 / float(n_steps), dtype=torch.float32, device=device)
             timesteps = torch.linspace(
@@ -201,6 +208,7 @@ class Pi05NativeExecutor(Executor):
             )
             x_t = noise
             for s in range(n_steps):
+                _set_probe(f"denoise_step_{s}_before")
                 expanded_time = timesteps[s].expand(bsize)
                 assert self._orig_denoise is not None
                 v_t = self._orig_denoise(
@@ -210,7 +218,9 @@ class Pi05NativeExecutor(Executor):
                     x_t,
                     expanded_time,
                 )
+                _set_probe(f"denoise_step_{s}_after")
                 x_t = x_t + dt * v_t
+            _set_probe("loop_done")
             return x_t
 
         self._denoise_runner_v2 = NativeDenoiseLoopRunnerV2(
@@ -288,6 +298,7 @@ class Pi05NativeExecutor(Executor):
                 "state": state,
                 "prefix_pad_masks": prefix_pad_masks,
                 "past_key_values": past_key_values,
+                "__capture_probe": {"stage": "prepared_inputs"},
             }
             return self._denoise_runner_v2.run(
                 device=device,

@@ -91,6 +91,14 @@ def _copy_tensor_tree_inplace(dst: Any, src: Any) -> None:
         return
 
 
+def _read_capture_probe_stage(observation: Any) -> str:
+    if isinstance(observation, dict):
+        probe = observation.get("__capture_probe")
+        if isinstance(probe, dict):
+            return str(probe.get("stage", "unknown"))
+    return "unknown"
+
+
 def _is_dynamic_cache_like(past_key_values: Any) -> bool:
     return hasattr(past_key_values, "key_cache") and hasattr(past_key_values, "value_cache")
 
@@ -330,12 +338,18 @@ def build_graph_entry_for_sample_actions(
 
     for _ in range(max(int(warmup), 0)):
         with torch.cuda.stream(stream):
-            out = raw_sample_actions(
-                device,
-                static_observation,
-                noise=static_noise,
-                num_steps=int(num_steps),
-            )
+            try:
+                out = raw_sample_actions(
+                    device,
+                    static_observation,
+                    noise=static_noise,
+                    num_steps=int(num_steps),
+                )
+            except Exception as exc:
+                stage = _read_capture_probe_stage(static_observation)
+                raise RuntimeError(
+                    f"sample_actions warmup failed at stage={stage}: {exc}"
+                ) from exc
             if not torch.is_tensor(out):
                 raise TypeError(
                     f"sample_actions output must be Tensor, got {type(out).__name__}"
@@ -344,14 +358,20 @@ def build_graph_entry_for_sample_actions(
 
     graph = torch.cuda.CUDAGraph()
     capture_start = time.perf_counter()
-    with torch.cuda.graph(graph, stream=stream, capture_error_mode="thread_local"):
-        static_output = raw_sample_actions(
-            device,
-            static_observation,
-            noise=static_noise,
-            num_steps=int(num_steps),
-        )
-    stream.synchronize()
+    try:
+        with torch.cuda.graph(graph, stream=stream, capture_error_mode="thread_local"):
+            static_output = raw_sample_actions(
+                device,
+                static_observation,
+                noise=static_noise,
+                num_steps=int(num_steps),
+            )
+        stream.synchronize()
+    except Exception as exc:
+        stage = _read_capture_probe_stage(static_observation)
+        raise RuntimeError(
+            f"sample_actions capture failed at stage={stage}: {exc}"
+        ) from exc
     cur_stream.wait_stream(stream)
     capture_ms = (time.perf_counter() - capture_start) * 1000.0
 
