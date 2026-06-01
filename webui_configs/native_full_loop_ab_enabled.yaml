@@ -1,0 +1,34 @@
+checkpoint: /srcs/openpi/pytorch_pi05_libero/
+config: pi05_libero
+inference_mode: native
+precision: bf16
+
+# Dataset/eval range
+num_samples: 300
+start_index: 0
+
+# WebSocket server
+host: 0.0.0.0
+port: 8765
+path: /ws
+
+# Native runtime (experiment: full-loop single replay)
+native_use_cuda_graph: true
+native_full_loop_graph: true
+native_graph_warmup: 3
+native_enable_expert: true
+native_enable_denoise: true
+native_compile_expert: false
+
+# Stable A/B comparison
+noise: fixed
+noise_seed: 0
+
+# Perf outputs (chunk summary: mean/p50/p90/p99)
+perf_profile_chunk: true
+perf_profile_warmup_chunks: 10
+perf_profile_print_interval: 20
+perf_profile_top_n: 3
+
+# Keep GPU telemetry for UI
+gpu_stats_interval_sec: 1.0
