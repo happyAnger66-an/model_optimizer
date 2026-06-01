@@ -177,8 +177,37 @@ class Pi05NativeExecutor(Executor):
         perf: bool,
     ) -> None:
         self._orig_sample_actions = self.pi05_model.sample_actions
+
+        def denoise_loop_capture_safe(
+            device,
+            observation,
+            noise=None,
+            num_steps=10,
+        ):
+            """仅 denoise num_steps 循环（capture-safe for-loop）。"""
+            state = observation["state"]
+            prefix_pad_masks = observation["prefix_pad_masks"]
+            past_key_values = observation["past_key_values"]
+            bsize = int(prefix_pad_masks.shape[0])
+
+            n_steps = max(int(num_steps), 1)
+            dt = torch.tensor(-1.0 / float(n_steps), dtype=torch.float32, device=device)
+            x_t = noise
+            for s in range(n_steps):
+                t_scalar = 1.0 - (float(s) / float(n_steps))
+                expanded_time = torch.full((bsize,), t_scalar, dtype=torch.float32, device=device)
+                v_t = self.pi05_model.denoise_step(
+                    state,
+                    prefix_pad_masks,
+                    past_key_values,
+                    x_t,
+                    expanded_time,
+                )
+                x_t = x_t + dt * v_t
+            return x_t
+
         self._denoise_runner_v2 = NativeDenoiseLoopRunnerV2(
-            self._orig_sample_actions,
+            denoise_loop_capture_safe,
             use_cuda_graph=use_cuda_graph,
             graph_warmup=graph_warmup,
             default_num_steps=10,
@@ -193,9 +222,8 @@ class Pi05NativeExecutor(Executor):
             num_steps=10,
         ):
             assert self._denoise_runner_v2 is not None
+            # 保持与原始 sample_actions 一致：未显式传 noise 时在此处采样。
             if noise is None:
-                # 与原始 sample_actions 行为对齐：当 noise=None 时按动作形状采样噪声。
-                # 这样默认推理路径也可命中 full-loop graph。
                 try:
                     bsize = int(observation.state.shape[0])
                     cfg = getattr(self_m, "config", None)
@@ -222,9 +250,41 @@ class Pi05NativeExecutor(Executor):
                         noise=None,
                         num_steps=num_steps,
                     )
+
+            # 目标边界：仅 denoise loop capture。
+            # preprocess + prefix kv cache 维持 eager（与 FlashRT “整段 denoise loop 单次 replay” 目标一致）。
+            images, img_masks, lang_tokens, lang_masks, state = self_m._preprocess_observation(
+                observation,
+                train=False,
+            )
+            prefix_embs, prefix_pad_masks, prefix_att_masks = self_m.embed_prefix(
+                images,
+                img_masks,
+                lang_tokens,
+                lang_masks,
+            )
+            prefix_cumsum = torch.cumsum(prefix_att_masks, dim=1)
+            prefix_att_2d_masks = prefix_cumsum[:, None, :] <= prefix_cumsum[:, :, None]
+            prefix_pad_2d_masks = prefix_pad_masks[:, None, :] * prefix_pad_masks[:, :, None]
+            prefix_att_2d_masks = prefix_att_2d_masks & prefix_pad_2d_masks
+            prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+            prefix_att_2d_masks_4d = self_m._prepare_attention_masks_4d(prefix_att_2d_masks)
+            self_m.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
+            _, past_key_values = self_m.paligemma_with_expert.forward(
+                attention_mask=prefix_att_2d_masks_4d,
+                position_ids=prefix_position_ids,
+                past_key_values=None,
+                inputs_embeds=[prefix_embs, None],
+                use_cache=True,
+            )
+            denoise_inputs = {
+                "state": state,
+                "prefix_pad_masks": prefix_pad_masks,
+                "past_key_values": past_key_values,
+            }
             return self._denoise_runner_v2.run(
                 device=device,
-                observation=observation,
+                observation=denoise_inputs,
                 noise=noise,
                 num_steps=num_steps,
             )
