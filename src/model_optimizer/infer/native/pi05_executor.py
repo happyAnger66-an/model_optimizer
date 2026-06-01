@@ -194,32 +194,27 @@ class Pi05NativeExecutor(Executor):
             state = observation["state"]
             prefix_pad_masks = observation["prefix_pad_masks"]
             past_key_values = observation["past_key_values"]
+            time_buf = observation["time_buf"]
             bsize = int(prefix_pad_masks.shape[0])
 
             _set_probe("loop_setup")
             n_steps = max(int(num_steps), 1)
-            dt = torch.tensor(-1.0 / float(n_steps), dtype=torch.float32, device=device)
-            timesteps = torch.linspace(
-                1.0,
-                1.0 / float(n_steps),
-                steps=n_steps,
-                dtype=torch.float32,
-                device=device,
-            )
+            dt = -1.0 / float(n_steps)
             x_t = noise
             for s in range(n_steps):
                 _set_probe(f"denoise_step_{s}_before")
-                expanded_time = timesteps[s].expand(bsize)
+                t_scalar = 1.0 - (float(s) / float(n_steps))
+                time_buf.fill_(t_scalar)
                 assert self._orig_denoise is not None
                 v_t = self._orig_denoise(
                     state,
                     prefix_pad_masks,
                     past_key_values,
                     x_t,
-                    expanded_time,
+                    time_buf,
                 )
                 _set_probe(f"denoise_step_{s}_after")
-                x_t = x_t + dt * v_t
+                x_t = x_t + v_t * dt
             _set_probe("loop_done")
             return x_t
 
@@ -298,6 +293,11 @@ class Pi05NativeExecutor(Executor):
                 "state": state,
                 "prefix_pad_masks": prefix_pad_masks,
                 "past_key_values": past_key_values,
+                "time_buf": torch.empty(
+                    (int(prefix_pad_masks.shape[0]),),
+                    dtype=torch.float32,
+                    device=device,
+                ),
                 "__capture_probe": {"stage": "prepared_inputs"},
             }
             return self._denoise_runner_v2.run(
