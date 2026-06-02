@@ -23,6 +23,7 @@ from __future__ import annotations
 import glob
 import importlib.util
 import os
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -73,12 +74,26 @@ def load_kernels(build_dir: str | None = None, *, fmha_so: str | None = None) ->
         return _KERNELS_CACHE
 
     so_path = _find_kernel_so(build_dir)
-    # 用唯一模块名按路径加载扩展，避免与任何 flash_rt 包命名冲突。
-    spec = importlib.util.spec_from_file_location("mo_flash_rt_kernels", so_path)
+    # C 扩展的初始化符号在编译期固定为 ``PyInit_<模块名最后一段>``；FlashRT 的扩展按
+    # ``flash_rt.flash_rt_kernels`` 编译，导出 ``PyInit_flash_rt_kernels``。因此按 ``.so``
+    # 文件名词干（首个 ``.`` 之前，如 ``flash_rt_kernels.cpython-310-...-gnu.so`` →
+    # ``flash_rt_kernels``）作为模块名加载，使 CPython 能匹配到 init 符号。
+    # 注意：这只在 ``sys.modules`` 注册顶层名 ``flash_rt_kernels``，**不会** import
+    # ``flash_rt`` python 包（其子模块名为 ``flash_rt.flash_rt_kernels``，不冲突）。
+    mod_name = Path(so_path).name.split(".", 1)[0] or "flash_rt_kernels"
+    spec = importlib.util.spec_from_file_location(mod_name, so_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"无法从 {so_path} 创建扩展模块 spec")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    # 单相初始化的扩展可能在 init 期间自引用，需先登记到 sys.modules 再 exec。
+    sys.modules.setdefault(mod_name, mod)
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        # 加载失败时回收占位，避免污染后续 import。
+        if sys.modules.get(mod_name) is mod:
+            del sys.modules[mod_name]
+        raise
 
     fmha = fmha_so or os.environ.get("MO_FLASHRT_FMHA_SO", "").strip()
     if fmha and Path(fmha).is_file() and hasattr(mod, "load_fmha_strided_library"):
