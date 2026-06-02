@@ -22,12 +22,44 @@ from __future__ import annotations
 
 import glob
 import importlib.util
+import logging
 import os
 import sys
 from pathlib import Path
 from types import ModuleType
 
+logger = logging.getLogger(__name__)
+
 _KERNELS_CACHE: ModuleType | None = None
+_KERNELS_SO_STEM = "flash_rt_kernels"
+_FMHA_SO_NAME = "libfmha_fp16_strided.so"
+
+
+def _is_kernels_so(path: str) -> bool:
+    """True 若 ``path`` 为 pybind 扩展 ``flash_rt_kernels*.so``（非 libfmha）。"""
+    return Path(path).name.split(".", 1)[0].startswith(_KERNELS_SO_STEM)
+
+
+def _find_fmha_so(build_dir: str | None, explicit: str | None) -> str | None:
+    """解析 ``libfmha_fp16_strided.so``（dlopen，非 Python 模块）。"""
+    if explicit and Path(explicit).is_file():
+        return str(Path(explicit).resolve())
+    env_fmha = os.environ.get("MO_FLASHRT_FMHA_SO", "").strip()
+    if env_fmha and Path(env_fmha).is_file():
+        return str(Path(env_fmha).resolve())
+    search_dirs = [
+        os.environ.get("MO_FLASHRT_BUILD_DIR", "").strip(),
+        build_dir or "",
+    ]
+    for d in search_dirs:
+        if not d:
+            continue
+        base = Path(d).expanduser()
+        for pattern in (_FMHA_SO_NAME, f"**/{_FMHA_SO_NAME}"):
+            for hit in sorted(glob.glob(str(base / pattern), recursive="**" in pattern)):
+                if Path(hit).is_file():
+                    return str(Path(hit).resolve())
+    return None
 
 
 def _find_kernel_so(build_dir: str | None) -> str:
@@ -46,9 +78,23 @@ def _find_kernel_so(build_dir: str | None) -> str:
         candidates.extend(
             sorted(glob.glob(str(Path(d).expanduser() / "**" / "flash_rt_kernels*.so"), recursive=True))
         )
+    wrong_fmha: list[str] = []
     for c in candidates:
-        if c and Path(c).is_file():
-            return str(Path(c).resolve())
+        if not c or not Path(c).is_file():
+            continue
+        resolved = str(Path(c).resolve())
+        if _is_kernels_so(resolved):
+            return resolved
+        if Path(resolved).name.startswith("libfmha"):
+            wrong_fmha.append(resolved)
+    if wrong_fmha:
+        raise FileNotFoundError(
+            "MO_FLASHRT_KERNELS_SO 指向了 libfmha_fp16_strided.so，它不是 Python 扩展。\n"
+            "请改为：\n"
+            "  export MO_FLASHRT_KERNELS_SO=/path/to/flash_rt_kernels.cpython-*.so\n"
+            "  export MO_FLASHRT_FMHA_SO=/path/to/libfmha_fp16_strided.so   # 可选，仅 SigLIP\n"
+            f"  (错误路径: {wrong_fmha[0]})"
+        )
     raise FileNotFoundError(
         "未找到 flash_rt_kernels*.so。请在 Thor 上构建后通过 MO_FLASHRT_KERNELS_SO "
         "或 MO_FLASHRT_BUILD_DIR 指定，例如：\n"
@@ -95,9 +141,16 @@ def load_kernels(build_dir: str | None = None, *, fmha_so: str | None = None) ->
             del sys.modules[mod_name]
         raise
 
-    fmha = fmha_so or os.environ.get("MO_FLASHRT_FMHA_SO", "").strip()
-    if fmha and Path(fmha).is_file() and hasattr(mod, "load_fmha_strided_library"):
-        mod.load_fmha_strided_library(str(Path(fmha).resolve()))
+    fmha = _find_fmha_so(build_dir, fmha_so)
+    if fmha and hasattr(mod, "load_fmha_strided_library"):
+        ret = mod.load_fmha_strided_library(fmha)
+        if ret != 0:
+            logger.warning(
+                "[flashrt-kernels] load_fmha_strided_library failed (%s), ret=%s; "
+                "decoder attention 仍可用 fvk 内置路径",
+                fmha,
+                ret,
+            )
 
     _KERNELS_CACHE = mod
     return mod
