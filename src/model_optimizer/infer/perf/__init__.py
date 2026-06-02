@@ -7,6 +7,7 @@ from .stage_perf import (
     KEY_POLICY_PREPROCESS,
     KEY_SAMPLE_ACTIONS,
     StagePerfCollector,
+    _lines_from_perf_holder,
     format_collector_from_policy,
     format_perf_from_bundle,
     install_infer_stage_perf,
@@ -30,4 +31,5 @@ __all__ = [
     "stage_perf_from_policy",
     "wrap_policy_infer_with_stage_perf",
     "wrap_sample_actions_with_stage_perf",
+    "_lines_from_perf_holder",
 ]

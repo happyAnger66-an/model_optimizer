@@ -148,6 +148,33 @@ def _hook_ms(name: str) -> list[float]:
     return list(vals) if vals else []
 
 
+def _perf_lines_from_holder(obj: Any) -> list[str]:
+    """从挂载了 stage_perf 的对象取汇总行，仅用公开 API（兼容旧版 perf 包无私有符号）。"""
+    if obj is None:
+        return []
+    # 优先用 perf 包的私有实现（若存在），否则回退到对象自身方法。
+    try:
+        from model_optimizer.infer.perf.stage_perf import _lines_from_perf_holder
+
+        return list(_lines_from_perf_holder(obj))
+    except (ImportError, AttributeError):
+        pass
+    fn = getattr(obj, "format_perf_summary_lines", None)
+    if callable(fn):
+        try:
+            return list(fn())
+        except Exception:
+            return []
+    sp = getattr(obj, "_stage_perf", None) or getattr(obj, "stage_perf", None)
+    fmt = getattr(sp, "format_summary_lines", None) if sp is not None else None
+    if callable(fmt):
+        try:
+            return list(fmt())
+        except Exception:
+            return []
+    return []
+
+
 def _stage_perf_ms(policy: Any, key: str) -> list[float]:
     try:
         from model_optimizer.infer.perf import stage_perf_from_policy
@@ -421,9 +448,7 @@ def dump_perf_final_summary(bundle: dict[str, Any] | None) -> None:
             perf_lines.extend(format_collector_from_policy(policy_trt))
         native_ex = bundle.get("native_executor") if bundle else None
         if native_ex is not None:
-            from model_optimizer.infer.perf import _lines_from_perf_holder
-
-            perf_lines.extend(_lines_from_perf_holder(native_ex))
+            perf_lines.extend(_perf_lines_from_holder(native_ex))
         if perf_lines:
             for line in perf_lines:
                 print(colored(line, "yellow"))
