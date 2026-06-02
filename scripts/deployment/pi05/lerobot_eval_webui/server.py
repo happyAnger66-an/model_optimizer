@@ -7,6 +7,7 @@ import json
 import logging
 import threading
 import uuid
+from pathlib import Path
 from typing import Any
 
 import janus
@@ -64,6 +65,9 @@ async def run_server(args: Args) -> None:
     broadcaster = WebsocketBroadcaster(history_size=args.history_size)
     meta_ready: dict[str, Any] = {"msg": None}
     infer_paused = threading.Event()
+    client_connected = threading.Event()
+    if not bool(getattr(args, "wait_for_client", False)):
+        client_connected.set()
 
     qmax = int(args.outbound_queue_maxsize)
     outbound_queue: janus.Queue[Any] = janus.Queue(qmax if qmax > 0 else 0)
@@ -75,6 +79,12 @@ async def run_server(args: Args) -> None:
             await ws.close(code=1008, reason="invalid path")
             return
         await broadcaster.register(ws)
+        if not client_connected.is_set():
+            client_connected.set()
+            print(
+                colored("[main] 已有 WebSocket 客户端连接，开始（或继续）chunk 推理", "green"),
+                flush=True,
+            )
         try:
             if meta_ready["msg"] is None:
                 await ws.send(LOADING_META_MSG)
@@ -159,6 +169,23 @@ async def run_server(args: Args) -> None:
         ),
         flush=True,
     )
+    client_dir = Path(__file__).resolve().parent.parent / "webui_client"
+    print(
+        colored(
+            f"浏览器请用 HTTP 打开静态页（勿 file://）：cd {client_dir} && "
+            f"python -m http.server 8080  →  http://127.0.0.1:8080/",
+            "green",
+        ),
+        flush=True,
+    )
+    if bool(getattr(args, "wait_for_client", False)):
+        print(
+            colored(
+                "[main] wait_for_client=true：加载完成后将等待 WebSocket 连接再开始推理",
+                "yellow",
+            ),
+            flush=True,
+        )
 
     async with _server.serve(
         handler,
@@ -178,6 +205,7 @@ async def run_server(args: Args) -> None:
                 "run_id": run_id,
                 "meta_ready": meta_ready,
                 "infer_paused": infer_paused,
+                "client_connected": client_connected,
                 "bridge": bridge,
             },
             daemon=True,

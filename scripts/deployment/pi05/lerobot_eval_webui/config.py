@@ -224,8 +224,14 @@ class Args:
     outbound_queue_maxsize: int = 0
     """推理线程 → WebSocket 的 Janus 队列容量。``0`` 表示无界；正整数时在下游阻塞时反压推理线程。"""
 
-    history_size: int = 0
-    """缓存最近 N 条消息，新 client 连接后先回放（0 表示不缓存）。"""
+    history_size: int = 4096
+    """缓存最近 N 条出站 JSON（meta/step/done 等），晚连的浏览器可回放；0 表示不缓存。"""
+
+    wait_for_client: bool = False
+    """为 True 时：bundle 加载并广播 meta 后，阻塞到首个 WebSocket 客户端连接再开始 chunk 推理。
+
+    避免推理线程在无人订阅时跑完全程（``history_size=0`` 时浏览器会一片空白）。静态页仍需用
+    ``python -m http.server`` 等方式打开 ``webui_client/``，勿用 ``file://``。"""
 
     calib_save_path: Path | None = None
     """Pi0.5 校准数据输出目录（与 ``standalone_inference_script.py --calib-save-path`` 相同）。

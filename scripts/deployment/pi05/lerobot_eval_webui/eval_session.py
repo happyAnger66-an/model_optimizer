@@ -23,6 +23,7 @@ def run_infer_worker(
     run_id: str,
     meta_ready: dict[str, Any],
     infer_paused: threading.Event,
+    client_connected: threading.Event,
     bridge: SyncOutboundPort,
 ) -> None:
     """在专用线程中运行：加载、逐 chunk 推理、投递 JSON；结束时 ``bridge.sync_close()``。"""
@@ -48,6 +49,17 @@ def run_infer_worker(
         meta_ready["msg"] = meta_msg
         print(colored("[infer] 加载完成，向主循环投递 meta …", "cyan"), flush=True)
         bridge.sync_emit(meta_msg)
+
+        if bool(getattr(args, "wait_for_client", False)):
+            print(
+                colored(
+                    "[infer] wait_for_client：meta 已推送，等待浏览器 WebSocket 连接后再开始推理…",
+                    "yellow",
+                ),
+                flush=True,
+            )
+            client_connected.wait()
+            print(colored("[infer] 已检测到客户端，开始 chunk 推理", "green"), flush=True)
 
         start_index = bundle["start_index"]
         end = bundle["end"]

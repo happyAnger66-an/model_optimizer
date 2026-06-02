@@ -28,6 +28,8 @@ _chunk_prof: dict[str, Any] = {
     "load_ms": [],
     "repack_ms": [],
     "predict_ms": [],
+    "infer_ms_pt": [],
+    "infer_ms_second": [],
     "post_ms": [],
     "total_ms": [],
 }
@@ -102,6 +104,60 @@ def _stats_line_ms(values: list[float]) -> str:
     )
 
 
+def _dump_policy_time_results(model: Any, *, tag: str) -> None:
+    tr = getattr(model, "time_results", None) if model is not None else None
+    if not isinstance(tr, dict):
+        return
+    for key, label in (
+        ("suffix", "suffix"),
+        ("action", "action"),
+        ("vit", "embed_prefix"),
+        ("lang_emb", "lang_emb"),
+        ("llm", "llm"),
+    ):
+        vals = tr.get(key, None)
+        if vals:
+            ms_vals = [float(x) * 1000.0 for x in vals]
+            print(
+                colored(
+                    f"[summary:model:{tag}] {label:<11} {_stats_line_ms(ms_vals)}",
+                    "yellow",
+                )
+            )
+
+
+def _dump_trt_engine_summary(policy: Any, *, tag: str) -> None:
+    ex = getattr(policy, "_trt_executor", None) if policy is not None else None
+    engs = getattr(ex, "_trt_engines", None) if ex is not None else None
+    if not isinstance(engs, dict) or not engs:
+        return
+    for name in sorted(engs.keys()):
+        eng = engs[name]
+        tr_e = getattr(eng, "time_results", None)
+        if not isinstance(tr_e, dict):
+            continue
+        total_s = tr_e.get("total", [])
+        if not total_s:
+            continue
+        total_ms_vals = [float(x) * 1000.0 for x in total_s]
+        print(
+            colored(
+                f"[summary:engine:{tag}] {name}.total   {_stats_line_ms(total_ms_vals)}",
+                "yellow",
+            )
+        )
+        for k in ("prepare", "execute", "post"):
+            vv = tr_e.get(k, [])
+            if vv:
+                ms_vals = [float(x) * 1000.0 for x in vv]
+                print(
+                    colored(
+                        f"[summary:engine:{tag}] {name}.{k:<7} {_stats_line_ms(ms_vals)}",
+                        "yellow",
+                    )
+                )
+
+
 def dump_perf_final_summary(bundle: dict[str, Any] | None) -> None:
     """推理结束时输出一次最终性能汇总。"""
     if not bundle:
@@ -111,10 +167,19 @@ def dump_perf_final_summary(bundle: dict[str, Any] | None) -> None:
         return
 
     policy = bundle.get("policy")
+    policy_trt = bundle.get("policy_trt")
     model = _policy_torch_model(policy) if policy is not None else None
-    tr = getattr(model, "time_results", None) if model is not None else None
+    model_trt = _policy_torch_model(policy_trt) if policy_trt is not None else None
 
     print(colored("========== FINAL PERF SUMMARY ==========", "yellow"))
+    if policy_trt is not None:
+        print(
+            colored(
+                "[summary] compare_mode：下列 [summary:model:pt] 为第一路 PyTorch；"
+                "[summary:model:trt] / [summary:engine:trt] 为第二路 TensorRT。",
+                "yellow",
+            )
+        )
     if _chunk_prof["total_ms"]:
         print(colored(f"[summary] e2e/chunk   {_stats_line_ms(_chunk_prof['total_ms'])}", "yellow"))
         if _chunk_prof["predict_ms"]:
@@ -140,39 +205,28 @@ def dump_perf_final_summary(bundle: dict[str, Any] | None) -> None:
         py_overhead_ms = max(total_ms - pred_ms, 0.0)
         print(colored(f"[summary] data_processing ~= {data_ms:.2f} ms", "yellow"))
         print(colored(f"[summary] python_overhead ~= {py_overhead_ms:.2f} ms ({(py_overhead_ms/total_ms*100.0) if total_ms > 0 else 0.0:.1f}%)", "yellow"))
+        if _chunk_prof.get("infer_ms_pt"):
+            print(
+                colored(
+                    f"[summary] infer_ms_pt    {_stats_line_ms(_chunk_prof['infer_ms_pt'])}",
+                    "yellow",
+                )
+            )
+        if _chunk_prof.get("infer_ms_second"):
+            print(
+                colored(
+                    f"[summary] infer_ms_trt   {_stats_line_ms(_chunk_prof['infer_ms_second'])}",
+                    "yellow",
+                )
+            )
 
-    if isinstance(tr, dict):
-        for key, label in (
-            ("suffix", "suffix"),
-            ("action", "action"),
-            ("vit", "embed_prefix"),
-            ("lang_emb", "lang_emb"),
-            ("llm", "llm"),
-        ):
-            vals = tr.get(key, None)
-            if vals:
-                ms_vals = [float(x) * 1000.0 for x in vals]
-                print(colored(f"[summary:model] {label:<11} {_stats_line_ms(ms_vals)}", "yellow"))
-
-    # engine 级汇总（prepare/execute/post/total）
-    ex = getattr(policy, "_trt_executor", None) if policy is not None else None
-    engs = getattr(ex, "_trt_engines", None) if ex is not None else None
-    if isinstance(engs, dict) and engs:
-        for name in sorted(engs.keys()):
-            eng = engs[name]
-            tr_e = getattr(eng, "time_results", None)
-            if not isinstance(tr_e, dict):
-                continue
-            total_s = tr_e.get("total", [])
-            if not total_s:
-                continue
-            total_ms_vals = [float(x) * 1000.0 for x in total_s]
-            print(colored(f"[summary:engine] {name}.total   {_stats_line_ms(total_ms_vals)}", "yellow"))
-            for k in ("prepare", "execute", "post"):
-                vv = tr_e.get(k, [])
-                if vv:
-                    ms_vals = [float(x) * 1000.0 for x in vv]
-                    print(colored(f"[summary:engine] {name}.{k:<7} {_stats_line_ms(ms_vals)}", "yellow"))
+    if policy_trt is not None:
+        _dump_policy_time_results(model, tag="pt")
+        _dump_policy_time_results(model_trt, tag="trt")
+        _dump_trt_engine_summary(policy_trt, tag="trt")
+    else:
+        _dump_policy_time_results(model, tag="pt")
+        _dump_trt_engine_summary(policy, tag="pt")
 
     # Policy / engine 分阶段（policy.preprocess、sample_actions、denoise.total 等）
     try:
@@ -602,6 +656,10 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
             _chunk_prof["load_ms"].append(float(load_ms))
             _chunk_prof["repack_ms"].append(float(repack_ms))
             _chunk_prof["predict_ms"].append(float(predict_ms))
+            if infer_ms_pt is not None:
+                _chunk_prof["infer_ms_pt"].append(float(infer_ms_pt))
+            if infer_ms_second is not None:
+                _chunk_prof["infer_ms_second"].append(float(infer_ms_second))
             _chunk_prof["post_ms"].append(float(post_ms))
             _chunk_prof["total_ms"].append(float(total_ms))
         _maybe_print_chunk_profile(args, idx)

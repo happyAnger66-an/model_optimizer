@@ -14,11 +14,16 @@ vit_batch_views: true
 # 部分 vit.engine 输出少乘 sqrt(hidden_size)，开启后与 PyTorch 对齐（等价 PI05_TRT_VIT_SCALE_FIX=1）
 trt_vit_scale_fix: true
 
+# 双路 PT vs TRT 对比；仅看单路全 TRT 性能时请改为 false
 compare_mode: true
 engine_path: /tmp/build/pi05/opt
 vit_engine: vit.engine
 llm_engine: llm_fp8.engine
-#enoise_engine: denoise_st_fp8.engine
+#denoise_engine: denoise_st_fp8.engine
+
+# WebUI：须用 http 打开 webui_client（勿 file://）；首个 WS 连接后再开始推理
+wait_for_client: true
+history_size: 4096
 
 # —— TRT engine 运行开关 ——
 # perf：>100 次后打印各 engine 的耗时统计；cuda_graph：捕获/回放降低 launch 开销（输入 shape 稳定时安全）。
