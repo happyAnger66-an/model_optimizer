@@ -17,7 +17,7 @@ trt_vit_scale_fix: true
 # 双路 PT vs TRT 对比；仅看单路全 TRT 性能时请改为 false
 compare_mode: true
 engine_path: /tmp/build/pi05/opt
-vit_engine: vit.engine
+vit_engine: vit_fp8_batch.engine
 llm_engine: llm_fp8.engine
 #denoise_engine: denoise_st_fp8.engine
 
@@ -40,7 +40,7 @@ trt_enable_stage_profile: true
 trt_stage_profile_warmup: 10
 trt_enable_hook_profile: true
 
-num_samples: 200
+num_samples: 500
 start_index: 0
 noise: fixed
 noise_seed: 0

@@ -66,18 +66,48 @@ def run_infer_worker(
         min_step_period = (1.0 / args.max_fps) if args.max_fps and args.max_fps > 0 else 0.0
         last_send_t = 0.0
 
+        print(
+            colored(
+                f"[infer] 进入 chunk 循环：start={start_index} end={end} "
+                f"action_horizon={bundle.get('action_horizon')} "
+                f"clients={'有' if client_connected.is_set() else '无'}（开始推理首个 chunk，"
+                f"compare/cuda_graph 首段可能较慢）…",
+                "cyan",
+            ),
+            flush=True,
+        )
+        _emitted_steps = 0
+        _first_step_done = False
         for idx in range(start_index, end):
             while infer_paused.is_set():
                 time.sleep(0.05)
+            _chunk_t0 = time.monotonic()
             msgs = process_infer_chunk(bundle, idx)
+            if msgs:
+                if not _first_step_done:
+                    print(
+                        colored(
+                            f"[infer] 首个 step 产出 idx={idx} "
+                            f"(首段耗时 {(time.monotonic() - _chunk_t0):.1f}s, n={len(msgs)})，开始推送浏览器",
+                            "green",
+                        ),
+                        flush=True,
+                    )
+                    _first_step_done = True
             for msg in msgs:
                 bridge.sync_emit(msg)
+                _emitted_steps += 1
                 if min_step_period > 0:
                     now = time.monotonic()
                     dt = now - last_send_t
                     if dt < min_step_period:
                         time.sleep(min_step_period - dt)
                     last_send_t = time.monotonic()
+            if _emitted_steps and _emitted_steps % 50 == 0:
+                print(
+                    colored(f"[infer] 已累计推送 {_emitted_steps} 个 step（至 idx={idx}）", "cyan"),
+                    flush=True,
+                )
 
         done_msg = event_to_json(
             {
