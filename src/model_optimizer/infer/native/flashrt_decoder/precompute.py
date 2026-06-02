@@ -33,8 +33,15 @@ def build_dec_rope(
 ) -> torch.Tensor:
     """构建 decoder suffix 的 RoPE 表 ``[Sa, head_dim]``（交错 cos/sin）。
 
-    与 FlashRT 一致：``inv_freq = 1/base**(arange(0,HD,2)/HD)``，位置取 [enc_seq, enc_seq+Sa)，
-    输出 256 维为 ``[cos0,sin0,cos1,sin1,...]`` 交错布局。
+    为 denoise action suffix 预计算 RoPE 查找表，供 ``qkv_split_rope_kvcache_fp16`` 在写 suffix KV
+    时对 Q/K 施加位置编码；位置从全局下标 ``enc_seq`` 起（prefix 已由 vit/llm 占满前 ``enc_seq`` 个 token）。
+
+    详见：``docs/optimizer/flashrt/dec_rope.md``
+
+    要点：
+      - ``inv_freq = 1/base**(arange(0,HD,2)/HD)``，切片 ``[enc_seq, enc_seq+Sa)``
+      - 输出布局：``[cos0,sin0,cos1,sin1,...]``（与 FlashRT ``pi05_thor.py`` 一致）
+      - 由 ``FlashRtDecoderBackend.setup_prompt(enc_seq)`` 调用；``enc_seq`` 变化须重建
     """
     inv_freq = 1.0 / (rope_base ** (torch.arange(0, head_dim, 2, dtype=torch.float32, device=device) / head_dim))
     pos = torch.arange(max_pos, device=device)[:, None].float()
