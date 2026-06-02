@@ -173,6 +173,16 @@ def dump_perf_final_summary(bundle: dict[str, Any] | None) -> None:
                 if vv:
                     ms_vals = [float(x) * 1000.0 for x in vv]
                     print(colored(f"[summary:engine] {name}.{k:<7} {_stats_line_ms(ms_vals)}", "yellow"))
+
+    # native / FlashRT 分阶段（denoise.total、denoise.step.N 等；见 infer.perf.StagePerfCollector）
+    try:
+        from model_optimizer.infer.perf import format_collector_from_policy
+
+        for line in format_collector_from_policy(policy):
+            print(colored(line, "yellow"))
+    except ImportError:
+        pass
+
     print(colored("========================================", "yellow"))
 
 

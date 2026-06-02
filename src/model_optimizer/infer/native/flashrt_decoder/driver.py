@@ -14,11 +14,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from . import pipeline as _pipeline
+
+if TYPE_CHECKING:
+    from model_optimizer.infer.perf import StagePerfCollector
 
 _FP16 = torch.float16
 
@@ -196,6 +199,7 @@ class Pi05ThorDecoderLoop:
         *,
         use_fp8: bool = True,
         stream: int = 0,
+        stage_perf: StagePerfCollector | None = None,
     ) -> None:
         self._ctx = ctx
         self._fvk = fvk
@@ -204,6 +208,7 @@ class Pi05ThorDecoderLoop:
         self._dims = dims
         self._use_fp8 = bool(use_fp8)
         self._stream = int(stream)
+        self._stage_perf = stage_perf
 
     def set_prefix_kv(self, past_keys: torch.Tensor, past_values: torch.Tensor) -> None:
         fill_prefix_kv_from_trt(
@@ -225,6 +230,7 @@ class Pi05ThorDecoderLoop:
             self._dims,
             self._stream,
             use_fp8=self._use_fp8,
+            perf=self._stage_perf,
         )
         return self._bufs.noise
 

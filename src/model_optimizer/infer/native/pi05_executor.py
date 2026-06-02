@@ -3,6 +3,7 @@ from __future__ import annotations
 import atexit
 import logging
 import math
+import time
 import types
 from collections.abc import Mapping
 from typing import Any
@@ -11,6 +12,7 @@ import torch
 import torch.nn.functional as F
 
 from ..executor import Executor
+from ..perf import StagePerfCollector
 from ...models.pi05.model_pi05 import Pi05Model
 from .decoder_runner import NativeDenoiseLoopRunner, NativeDenoiseLoopRunnerV2
 from .denoise_backend import NativeDenoiseBackend
@@ -51,8 +53,11 @@ class Pi05NativeExecutor(Executor):
         self._flashrt_backend = None
         self._flashrt_calibrated = False
         self._flashrt_calib_count = 0
+        # 分阶段耗时（见 ``model_optimizer.infer.perf.StagePerfCollector``）。
+        self._stage_perf = StagePerfCollector(enabled=False)
         try:
             setattr(self.policy, "_native_executor", self)
+            setattr(self.policy, "_stage_perf", self._stage_perf)
         except Exception:
             pass
 
@@ -96,6 +101,7 @@ class Pi05NativeExecutor(Executor):
             self._install_expert_runtime(compile_expert=compile_expert)
             logger.info("[native] expert stage enabled (compile=%s)", compile_expert)
 
+        self._stage_perf.enabled = bool(perf)
         if enable_denoise and flashrt_decoder:
             self._install_flashrt_loop_runtime(
                 build_dir=flashrt_build_dir,
@@ -104,7 +110,7 @@ class Pi05NativeExecutor(Executor):
                 act_scales_path=flashrt_act_scales_path,
                 calibrate=flashrt_calibrate,
                 calib_samples=flashrt_calib_samples,
-                perf=perf,
+                perf=self._stage_perf.enabled,
             )
             logger.info(
                 "[native-flashrt] decoder full-loop enabled (fp8=%s build_dir=%s calibrate=%s)",
@@ -469,6 +475,7 @@ class Pi05NativeExecutor(Executor):
         self._orig_sample_actions = self.pi05_model.sample_actions
         m = self.pi05_model
         calib_samples = max(int(calib_samples), 1)
+        stage_perf = self._stage_perf
 
         def _build_backend(enc_seq: int):
             from .flashrt_decoder import FlashRtDecoderBackend, state_dict_getter
@@ -491,6 +498,7 @@ class Pi05NativeExecutor(Executor):
                 use_fp8=use_fp8,
                 build_dir=build_dir,
                 fmha_so=fmha_so,
+                stage_perf=stage_perf,
             )
             backend.setup_prompt(enc_seq)
             if use_fp8 and act_scales_path and not calibrate:
@@ -508,9 +516,11 @@ class Pi05NativeExecutor(Executor):
                 images, img_masks, lang_tokens, lang_masks, state = self_m._preprocess_observation(
                     observation, train=False
                 )
-                prefix_embs, prefix_pad_masks, prefix_att_masks = self_m.embed_prefix(
-                    images, img_masks, lang_tokens, lang_masks
-                )
+                with stage_perf.timed("embed_prefix"):
+                    prefix_embs, prefix_pad_masks, prefix_att_masks = self_m.embed_prefix(
+                        images, img_masks, lang_tokens, lang_masks
+                    )
+
                 prefix_cumsum = torch.cumsum(prefix_att_masks, dim=1)
                 prefix_att_2d_masks = prefix_cumsum[:, None, :] <= prefix_cumsum[:, :, None]
                 prefix_pad_2d_masks = prefix_pad_masks[:, None, :] * prefix_pad_masks[:, :, None]
@@ -518,13 +528,14 @@ class Pi05NativeExecutor(Executor):
                 prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
                 prefix_att_2d_masks_4d = self_m._prepare_attention_masks_4d(prefix_att_2d_masks)
                 self_m.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
-                _, past_key_values = self_m.paligemma_with_expert.forward(
-                    attention_mask=prefix_att_2d_masks_4d,
-                    position_ids=prefix_position_ids,
-                    past_key_values=None,
-                    inputs_embeds=[prefix_embs, None],
-                    use_cache=True,
-                )
+                with stage_perf.timed("prefix_llm"):
+                    _, past_key_values = self_m.paligemma_with_expert.forward(
+                        attention_mask=prefix_att_2d_masks_4d,
+                        position_ids=prefix_position_ids,
+                        past_key_values=None,
+                        inputs_embeds=[prefix_embs, None],
+                        use_cache=True,
+                    )
                 past_keys, past_values = self._stack_past_key_values(past_key_values)
                 enc_seq = int(past_keys.shape[-2])
 
@@ -535,10 +546,11 @@ class Pi05NativeExecutor(Executor):
                         device,
                     )
 
-                if self._flashrt_backend is None:
-                    self._flashrt_backend = _build_backend(enc_seq)
-                backend = self._flashrt_backend
-                backend.setup_prompt(enc_seq)
+                with stage_perf.timed("flashrt.setup"):
+                    if self._flashrt_backend is None:
+                        self._flashrt_backend = _build_backend(enc_seq)
+                    backend = self._flashrt_backend
+                    backend.setup_prompt(enc_seq)
 
                 noise_2d = noise.reshape(-1, noise.shape[-1])
                 # fp16 模式无需激活标定（act scales 不被读取）；仅 FP8 模式标定。
@@ -546,7 +558,8 @@ class Pi05NativeExecutor(Executor):
                     # 多样本标定：跨 N 个 observation（KV/noise 各异）累计取 max。
                     if self._flashrt_calib_count == 0:
                         backend.reset_act_scales()
-                    backend.accumulate_calibration(past_keys, past_values, noise_2d)
+                    with stage_perf.timed("denoise.calibrate"):
+                        backend.accumulate_calibration(past_keys, past_values, noise_2d)
                     self._flashrt_calib_count += 1
                     logger.info(
                         "[native-flashrt] calibrate sample %d/%d",
@@ -558,7 +571,8 @@ class Pi05NativeExecutor(Executor):
                         if act_scales_path:
                             backend.save_act_scales(act_scales_path)
 
-                action = backend.run(past_keys, past_values, noise_2d)
+                with stage_perf.timed("denoise.total"):
+                    action = backend.run(past_keys, past_values, noise_2d)
                 return action.reshape(noise.shape).to(dtype=torch.float32)
             except Exception as exc:
                 logger.warning(
@@ -576,8 +590,19 @@ class Pi05NativeExecutor(Executor):
         if hasattr(pol, "_sample_actions"):
             pol._sample_actions = self.pi05_model.sample_actions
 
+    def format_perf_summary_lines(self) -> list[str]:
+        """返回 native 阶段耗时行（委托 :class:`StagePerfCollector`）。"""
+        return self._stage_perf.format_summary_lines()
+
+    @property
+    def stage_perf(self) -> StagePerfCollector:
+        return self._stage_perf
+
     def _dump_summary_atexit(self) -> None:
         try:
+            if self._stage_perf.enabled:
+                for line in self.format_perf_summary_lines():
+                    logger.info("%s", line)
             if self._denoise_backend is not None:
                 logger.info("%s", self._denoise_backend.dump_summary())
             if self._denoise_runner is not None:
