@@ -12,7 +12,7 @@ import torch
 import torch.nn.functional as F
 
 from ..executor import Executor
-from ..perf import StagePerfCollector, wrap_sample_actions_with_stage_perf
+from ..perf import StagePerfCollector, install_infer_stage_perf
 from ...models.pi05.model_pi05 import Pi05Model
 from .decoder_runner import NativeDenoiseLoopRunner, NativeDenoiseLoopRunnerV2
 from .denoise_backend import NativeDenoiseBackend
@@ -157,11 +157,12 @@ class Pi05NativeExecutor(Executor):
         atexit.register(self._dump_summary_atexit)
 
     def _install_sample_actions_stage_timer(self, config: Any) -> None:
-        """最外层统计整段 ``sample_actions``（须在 FlashRT/TRT 等替换之后）。"""
+        """``Policy.infer`` + ``sample_actions`` 分阶段计时（须在 FlashRT/TRT 等替换之后）。"""
         if not self._stage_perf.enabled:
             return
         warmup = int(_cfg_get(config, "sample_actions_warmup_skips", 10) or 10)
-        wrap_sample_actions_with_stage_perf(
+        install_infer_stage_perf(
+            self.policy,
             self.pi05_model,
             self._stage_perf,
             warmup_skips=warmup,

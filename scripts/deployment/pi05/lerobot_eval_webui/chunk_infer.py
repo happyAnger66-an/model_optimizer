@@ -174,15 +174,44 @@ def dump_perf_final_summary(bundle: dict[str, Any] | None) -> None:
                     ms_vals = [float(x) * 1000.0 for x in vv]
                     print(colored(f"[summary:engine] {name}.{k:<7} {_stats_line_ms(ms_vals)}", "yellow"))
 
-    # native / FlashRT 分阶段（denoise.total、denoise.step.N 等）
+    # Policy / engine 分阶段（policy.preprocess、sample_actions、denoise.total 等）
     try:
-        from model_optimizer.infer.perf import format_perf_from_bundle
+        from model_optimizer.infer.perf import (
+            KEY_POLICY_ALIGN,
+            KEY_POLICY_INFER,
+            format_perf_from_bundle,
+            stage_perf_from_policy,
+        )
 
         perf_lines = format_perf_from_bundle(bundle)
         if perf_lines:
             for line in perf_lines:
                 print(colored(line, "yellow"))
-        else:
+        sp = stage_perf_from_policy(policy) if policy is not None else None
+        if sp is not None and _chunk_prof.get("predict_ms"):
+            pred_mean = float(
+                np.mean(np.asarray(_chunk_prof["predict_ms"], dtype=np.float64))
+            )
+
+            def _mean_key(key: str) -> float:
+                vals = sp.values_for_key(key)
+                if not vals:
+                    return 0.0
+                return float(np.mean(np.asarray(vals, dtype=np.float64)))
+
+            infer_mean = _mean_key(KEY_POLICY_INFER)
+            align_mean = _mean_key(KEY_POLICY_ALIGN)
+            if infer_mean > 0.0:
+                gap = pred_mean - infer_mean - align_mean
+                print(
+                    colored(
+                        f"[summary] predict_reconcile  predict_ms={pred_mean:.2f} "
+                        f"≈ policy.infer({infer_mean:.2f}) + policy.align({align_mean:.2f}) "
+                        f"+ gap({gap:.2f})",
+                        "yellow",
+                    )
+                )
+        if not perf_lines:
             native_ex = bundle.get("native_executor") if bundle else None
             meta_native = {}
             if args is not None:

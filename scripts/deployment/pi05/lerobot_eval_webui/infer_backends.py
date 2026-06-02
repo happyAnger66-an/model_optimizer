@@ -11,6 +11,24 @@ import numpy as np
 
 from .action_align import align_action_dim
 
+try:
+    from model_optimizer.infer.perf import stage_perf_from_policy
+except ImportError:
+    stage_perf_from_policy = None  # type: ignore[assignment,misc]
+
+
+def _align_action_dim_with_perf(
+    policy: Any | None,
+    pred: np.ndarray,
+    gt: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``align_action_dim``；若 policy 挂载了 :class:`StagePerfCollector` 则记入 ``policy.align``。"""
+    sp = stage_perf_from_policy(policy) if stage_perf_from_policy is not None else None
+    if sp is None:
+        return align_action_dim(pred, gt)
+    with sp.timed("policy.align"):
+        return align_action_dim(pred, gt)
+
 
 @dataclass
 class PredictionPack:
@@ -58,7 +76,7 @@ class SingleTorchBackend(InferBackend):
         out = policy.infer(obs, noise=flow_noise)
         infer_ms_pt = (time.monotonic() - t0) * 1000.0
         pred = np.asarray(out["actions"])
-        pred_a, gt_a = align_action_dim(pred, gt)
+        pred_a, gt_a = _align_action_dim_with_perf(policy, pred, gt)
         return PredictionPack(
             pred_h=pred_a[:action_horizon],
             gt_h=gt_a[:action_horizon],
@@ -92,8 +110,8 @@ class PtTrtCompareBackend(InferBackend):
         infer_ms_second = (time.monotonic() - t0) * 1000.0
         pred_pt = np.asarray(out_pt["actions"])
         pred_trt_raw = np.asarray(out_trt["actions"])
-        pred_a_pt, gt_a = align_action_dim(pred_pt, gt)
-        pred_a_trt, _ = align_action_dim(pred_trt_raw, gt)
+        pred_a_pt, gt_a = _align_action_dim_with_perf(policy, pred_pt, gt)
+        pred_a_trt, _ = _align_action_dim_with_perf(policy_trt, pred_trt_raw, gt)
         vit_pack: dict[str, Any] | None = None
         # Optional: chunk-level ViT output compare (PyTorch get_image_features vs TRT engine).
         fetch_pt = getattr(policy, "_webui_fetch_vit_io_pt", None)
@@ -252,8 +270,8 @@ class PtPtqCompareBackend(InferBackend):
         infer_ms_second = (time.monotonic() - t0) * 1000.0
         pred_pt = np.asarray(out_pt["actions"])
         pred_ptq_raw = np.asarray(out_ptq["actions"])
-        pred_a_pt, gt_a = align_action_dim(pred_pt, gt)
-        pred_a_ptq, _ = align_action_dim(pred_ptq_raw, gt)
+        pred_a_pt, gt_a = _align_action_dim_with_perf(policy, pred_pt, gt)
+        pred_a_ptq, _ = _align_action_dim_with_perf(policy_ptq, pred_ptq_raw, gt)
         return PredictionPack(
             pred_h=pred_a_pt[:action_horizon],
             gt_h=gt_a[:action_horizon],
@@ -292,8 +310,8 @@ class TrtOrtCompareBackend(InferBackend):
         infer_ms_second = (time.monotonic() - t0) * 1000.0
         pred_trt = np.asarray(out_trt["actions"])
         pred_ort_raw = np.asarray(out_ort["actions"])
-        pred_a_trt, gt_a = align_action_dim(pred_trt, gt)
-        pred_a_ort, _ = align_action_dim(pred_ort_raw, gt)
+        pred_a_trt, gt_a = _align_action_dim_with_perf(policy, pred_trt, gt)
+        pred_a_ort, _ = _align_action_dim_with_perf(policy_trt, pred_ort_raw, gt)
         return PredictionPack(
             pred_h=pred_a_trt[:action_horizon],
             gt_h=gt_a[:action_horizon],

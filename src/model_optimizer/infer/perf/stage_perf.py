@@ -2,6 +2,10 @@
 
 Key 约定（点分路径，便于分组打印）::
 
+    policy.infer          # 整段 ``Policy.infer`` wall time（≈ predict_ms − policy.align）
+    policy.preprocess     # 拷贝 + input_transform + H2D + Observation.from_dict + noise
+    policy.postprocess    # actions D2H + output_transform
+    policy.align          # webui ``align_action_dim``（在 backend.predict 内）
     sample_actions        # 整段 ``PI0Pytorch.sample_actions`` wall time（模型纯推理）
     embed_prefix          # 单次 sample 的 embed_prefix wall time
     prefix_llm            # prefix KV 前向
@@ -30,9 +34,18 @@ from typing import Any
 
 import numpy as np
 
-# 默认打印顺序：先整段 sample_actions，再子阶段，再 denoise 聚合/逐步展开。
+# 默认打印顺序：Policy 外壳 → 模型整段 → 子阶段 → denoise。
+KEY_POLICY_INFER = "policy.infer"
+KEY_POLICY_PREPROCESS = "policy.preprocess"
+KEY_POLICY_POSTPROCESS = "policy.postprocess"
+KEY_POLICY_ALIGN = "policy.align"
 KEY_SAMPLE_ACTIONS = "sample_actions"
+_POLICY_SUMMARY_PREFIX = "[summary:policy]"
 _DEFAULT_SUMMARY_ORDER: tuple[str, ...] = (
+    KEY_POLICY_INFER,
+    KEY_POLICY_PREPROCESS,
+    KEY_POLICY_POSTPROCESS,
+    KEY_POLICY_ALIGN,
     KEY_SAMPLE_ACTIONS,
     "embed_prefix",
     "prefix_llm",
@@ -95,6 +108,126 @@ def wrap_sample_actions_with_stage_perf(
     model.sample_actions = types.MethodType(_sa, model)
     model._mopt_sample_actions_stage_wrapped = True
     model._mopt_sample_actions_stage_inner = _orig
+
+
+def wrap_policy_infer_with_stage_perf(
+    policy: Any,
+    collector: StagePerfCollector,
+    *,
+    warmup_skips: int = 0,
+) -> None:
+    """在 ``Policy.infer`` 最外层打补丁，拆分 preprocess / sample_actions / postprocess（不改 openpi）。
+
+    仅对 ``_is_pytorch_model=True`` 走显式分 phase；JAX 策略回退原始 ``infer`` 并只记 ``policy.infer`` 总时长。
+    逻辑与 ``openpi.policies.policy.Policy.infer`` 保持同步（PyTorch 路径）。
+    """
+    if not callable(getattr(policy, "infer", None)):
+        return
+    if getattr(policy, "_mopt_policy_infer_stage_wrapped", False):
+        inner = getattr(policy, "_mopt_policy_infer_stage_inner", None)
+        if inner is not None:
+            policy.infer = inner
+    _orig_infer = policy.infer
+    skips = max(0, int(warmup_skips))
+    state = {"invocation": 0}
+
+    def _infer(self, obs: dict, *, noise=None):
+        state["invocation"] += 1
+        record = collector.enabled and state["invocation"] > skips
+        if not record:
+            return _orig_infer(obs, noise=noise)
+
+        import jax
+        import numpy as np
+        import torch
+        from openpi.models import model as _openpi_model
+
+        t_infer0 = time.perf_counter()
+        try:
+            if not getattr(self, "_is_pytorch_model", False):
+                out = _orig_infer(obs, noise=noise)
+                return out
+
+            t_pre0 = time.perf_counter()
+            inputs = jax.tree.map(lambda x: x, obs)
+            inputs = self._input_transform(inputs)
+            inputs = jax.tree.map(
+                lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...],
+                inputs,
+            )
+            sample_device = self._pytorch_device
+            sample_kwargs = dict(self._sample_kwargs)
+            if noise is not None:
+                noise_t = torch.from_numpy(noise).to(self._pytorch_device)
+                if noise_t.ndim == 2:
+                    noise_t = noise_t[None, ...]
+                sample_kwargs["noise"] = noise_t
+
+            observation = _openpi_model.Observation.from_dict(inputs)
+            collector.record(
+                KEY_POLICY_PREPROCESS,
+                (time.perf_counter() - t_pre0) * 1000.0,
+            )
+
+            t_sa0 = time.perf_counter()
+            outputs = {
+                "state": inputs["state"],
+                "actions": self._sample_actions(
+                    sample_device, observation, **sample_kwargs
+                ),
+            }
+            sa_ms = (time.perf_counter() - t_sa0) * 1000.0
+
+            t_post0 = time.perf_counter()
+            outputs = jax.tree.map(
+                lambda x: np.asarray(x[0, ...].detach().cpu()),
+                outputs,
+            )
+            outputs = self._output_transform(outputs)
+            collector.record(
+                KEY_POLICY_POSTPROCESS,
+                (time.perf_counter() - t_post0) * 1000.0,
+            )
+
+            outputs["policy_timing"] = {"infer_ms": sa_ms}
+            return outputs
+        finally:
+            collector.record(
+                KEY_POLICY_INFER,
+                (time.perf_counter() - t_infer0) * 1000.0,
+            )
+
+    policy.infer = types.MethodType(_infer, policy)
+    policy._mopt_policy_infer_stage_wrapped = True
+    policy._mopt_policy_infer_stage_inner = _orig_infer
+
+
+def install_infer_stage_perf(
+    policy: Any,
+    model: Any,
+    collector: StagePerfCollector,
+    *,
+    warmup_skips: int = 0,
+) -> None:
+    """安装 ``Policy.infer`` 与 ``model.sample_actions`` 分阶段计时（须在 TRT/FlashRT 替换之后）。"""
+    if not collector.enabled:
+        return
+    wrap_policy_infer_with_stage_perf(policy, collector, warmup_skips=warmup_skips)
+    wrap_sample_actions_with_stage_perf(model, collector, warmup_skips=warmup_skips)
+
+
+def stage_perf_from_policy(policy: Any) -> StagePerfCollector | None:
+    """返回 policy 上已挂载且启用的 :class:`StagePerfCollector`，否则 ``None``。"""
+    sp = getattr(policy, "_stage_perf", None)
+    if isinstance(sp, StagePerfCollector) and sp.enabled:
+        return sp
+    return None
+
+
+def _summary_prefix_for_key(key: str, engine_prefix: str) -> str:
+    if key.startswith("policy."):
+        return _POLICY_SUMMARY_PREFIX
+    return engine_prefix
 
 
 def _step_index(key: str) -> int:
@@ -193,7 +326,8 @@ class StagePerfCollector:
                 continue
             # 打印名：denoise.total → denoise.total；denoise.step.3 → denoise.step.3
             label = key if key != "denoise.step" else "denoise.step"
-            lines.append(f"{tag} {label:<16} {perf_line_ms(vals)}")
+            row_tag = _summary_prefix_for_key(key, tag)
+            lines.append(f"{row_tag} {label:<16} {perf_line_ms(vals)}")
         return lines
 
     def merge_from(self, other: StagePerfCollector | None) -> None:
