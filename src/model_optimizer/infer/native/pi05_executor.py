@@ -58,8 +58,10 @@ class Pi05NativeExecutor(Executor):
         try:
             setattr(self.policy, "_native_executor", self)
             setattr(self.policy, "_stage_perf", self._stage_perf)
-        except Exception:
-            pass
+            setattr(self.pi05_model, "_stage_perf", self._stage_perf)
+            setattr(self.pi05_model, "_native_executor", self)
+        except Exception as exc:
+            logger.warning("[native] failed to attach perf hooks on policy/model: %s", exc)
 
     def load_model(self, config=None):
         if config is None:
@@ -145,6 +147,12 @@ class Pi05NativeExecutor(Executor):
                 )
 
         self._sync_policy_sample_actions_ref()
+        if enable_denoise and flashrt_decoder:
+            logger.info(
+                "[native-flashrt] perf=%s sample_actions=%s",
+                self._stage_perf.enabled,
+                getattr(self.pi05_model.sample_actions, "__name__", type(self.pi05_model.sample_actions)),
+            )
         atexit.register(self._dump_summary_atexit)
 
     def _install_expert_runtime(self, *, compile_expert: bool) -> None:

@@ -69,6 +69,8 @@ def load_infer_bundle(
         if on_progress is not None:
             on_progress(stage, msg)
 
+    native_executor = None
+
     modes = [
         bool(args.compare_mode),
         bool(args.ptq_compare),
@@ -488,9 +490,10 @@ def load_infer_bundle(
             denoise_adarms_precompute=bool(getattr(args, "denoise_adarms_precompute", False)),
         )
         # 在 tensorrt 模式上叠加 native（用于只替换 denoise/expert 等阶段）。
+        native_executor = None
         if bool(getattr(args, "native_overlay_on_tensorrt", False)):
             _p("native", "在 TensorRT 上叠加 Native decoder（阶段覆盖）…")
-            load_native_runtime(
+            native_executor = load_native_runtime(
                 policy,
                 precision=args.precision,
                 use_cuda_graph=bool(getattr(args, "native_use_cuda_graph", True)),
@@ -511,13 +514,17 @@ def load_infer_bundle(
                 flashrt_calibrate=bool(getattr(args, "native_flashrt_calibrate", False)),
                 flashrt_calib_samples=int(getattr(args, "native_flashrt_calib_samples", 8)),
             )
+            try:
+                setattr(policy, "_native_executor", native_executor)
+            except Exception:
+                pass
             _p("native", "Native 阶段覆盖已生效")
         print(colored("[infer] TensorRT 引擎已就绪", "cyan"), flush=True)
         _p("tensorrt", "TensorRT 引擎已就绪")
     elif not getattr(args, "trt_ort_compare", False) and args.inference_mode == "native":
         print(colored("[infer] 加载 Native decoder 运行时 ...", "cyan"), flush=True)
         _p("native", "加载 Native decoder（expert/denoise）…")
-        load_native_runtime(
+        native_executor = load_native_runtime(
             policy,
             precision=args.precision,
             use_cuda_graph=bool(getattr(args, "native_use_cuda_graph", True)),
@@ -538,6 +545,10 @@ def load_infer_bundle(
             flashrt_calibrate=bool(getattr(args, "native_flashrt_calibrate", False)),
             flashrt_calib_samples=int(getattr(args, "native_flashrt_calib_samples", 8)),
         )
+        try:
+            setattr(policy, "_native_executor", native_executor)
+        except Exception:
+            pass
         print(colored("[infer] Native decoder 已就绪", "cyan"), flush=True)
         _p("native", "Native decoder 已就绪")
     elif not getattr(args, "trt_ort_compare", False) and args.inference_mode == "onnxrt":
@@ -804,6 +815,7 @@ def load_infer_bundle(
         "dataset": dataset,
         "repack_fn": repack_fn,
         "policy": policy,
+        "native_executor": native_executor,
         "policy_trt": policy_trt,
         "policy_ptq": policy_ptq,
         "n": n,

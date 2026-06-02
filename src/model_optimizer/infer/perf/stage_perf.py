@@ -171,17 +171,53 @@ class StagePerfCollector:
         return c
 
 
+def _lines_from_perf_holder(obj: Any) -> list[str]:
+    if obj is None:
+        return []
+    if isinstance(obj, StagePerfCollector):
+        return obj.format_summary_lines()
+    fn = getattr(obj, "format_perf_summary_lines", None)
+    if callable(fn):
+        return fn()
+    sp = getattr(obj, "stage_perf", None)
+    if sp is not None and sp is not obj:
+        return _lines_from_perf_holder(sp)
+    return []
+
+
 def format_collector_from_policy(policy: Any) -> list[str]:
-    """从 ``policy._native_executor`` 或 ``policy._stage_perf`` 取汇总行（webui 复用）。"""
+    """从 policy / model / native_executor 上挂载的 :class:`StagePerfCollector` 取汇总行。"""
     if policy is None:
         return []
-    for attr in ("_stage_perf", "_native_executor"):
-        obj = getattr(policy, attr, None)
-        if obj is None:
+    seen: set[int] = set()
+    candidates: list[Any] = [policy]
+    model = getattr(policy, "_model", None)
+    if model is not None:
+        candidates.append(model)
+    native_ex = getattr(policy, "_native_executor", None)
+    if native_ex is not None:
+        candidates.append(native_ex)
+    for obj in candidates:
+        oid = id(obj)
+        if oid in seen:
             continue
-        if isinstance(obj, StagePerfCollector):
-            return obj.format_summary_lines()
-        fn = getattr(obj, "format_perf_summary_lines", None)
-        if callable(fn):
-            return fn()
+        seen.add(oid)
+        for attr in ("_stage_perf", "stage_perf"):
+            lines = _lines_from_perf_holder(getattr(obj, attr, None))
+            if lines:
+                return lines
+        lines = _lines_from_perf_holder(obj)
+        if lines:
+            return lines
     return []
+
+
+def format_perf_from_bundle(bundle: dict[str, Any] | None) -> list[str]:
+    """webui bundle 汇总：优先 ``bundle['native_executor']``，再回退 policy。"""
+    if not bundle:
+        return []
+    native_ex = bundle.get("native_executor")
+    lines = _lines_from_perf_holder(native_ex)
+    if lines:
+        return lines
+    return format_collector_from_policy(bundle.get("policy"))

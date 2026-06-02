@@ -174,14 +174,37 @@ def dump_perf_final_summary(bundle: dict[str, Any] | None) -> None:
                     ms_vals = [float(x) * 1000.0 for x in vv]
                     print(colored(f"[summary:engine] {name}.{k:<7} {_stats_line_ms(ms_vals)}", "yellow"))
 
-    # native / FlashRT 分阶段（denoise.total、denoise.step.N 等；见 infer.perf.StagePerfCollector）
+    # native / FlashRT 分阶段（denoise.total、denoise.step.N 等）
     try:
-        from model_optimizer.infer.perf import format_collector_from_policy
+        from model_optimizer.infer.perf import format_perf_from_bundle
 
-        for line in format_collector_from_policy(policy):
-            print(colored(line, "yellow"))
-    except ImportError:
-        pass
+        perf_lines = format_perf_from_bundle(bundle)
+        if perf_lines:
+            for line in perf_lines:
+                print(colored(line, "yellow"))
+        else:
+            native_ex = bundle.get("native_executor") if bundle else None
+            meta_native = {}
+            if args is not None:
+                meta_native = {
+                    "overlay": bool(getattr(args, "native_overlay_on_tensorrt", False)),
+                    "flashrt": bool(getattr(args, "native_flashrt_decoder", False)),
+                    "denoise": bool(getattr(args, "native_enable_denoise", True)),
+                }
+            if meta_native.get("flashrt") or (
+                meta_native.get("overlay") and meta_native.get("denoise")
+            ):
+                enabled = getattr(native_ex, "_stage_perf", None) if native_ex else None
+                en = getattr(enabled, "enabled", None) if enabled is not None else None
+                logging.warning(
+                    "[summary] native/FlashRT perf 无样本（enabled=%s, native_executor=%s）。"
+                    " 若 denoise 已走 FlashRT，请确认已部署含 infer.perf 的 model_optimizer 且"
+                    " load_native_runtime 在 TRT 之后执行。",
+                    en,
+                    native_ex is not None,
+                )
+    except ImportError as exc:
+        logging.warning("[summary] model_optimizer.infer.perf 不可用: %s", exc)
 
     print(colored("========================================", "yellow"))
 
