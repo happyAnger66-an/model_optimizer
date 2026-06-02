@@ -35,6 +35,13 @@ from .native_backend import load_native_runtime
 from .tensorrt_backend import load_tensorrt_engines
 
 
+def _trt_vit_scale_fix_kw(args: Args) -> bool | None:
+    """YAML ``trt_vit_scale_fix: true`` 时显式开启；默认 ``False`` 时不写入 cfg，仍可读环境变量。"""
+    if bool(getattr(args, "trt_vit_scale_fix", False)):
+        return True
+    return None
+
+
 def _trt_trt_second_engine_filenames(args: Args) -> dict[str, str]:
     """第二路引擎文件名：``trt_trt_second_*`` 非空优先，否则回退到主路 ``*_engine``。"""
 
@@ -140,6 +147,7 @@ def load_infer_bundle(
             expert_engine=args.expert_engine,
             denoise_engine=args.denoise_engine,
             embed_prefix_engine=args.embed_prefix_engine,
+            trt_vit_scale_fix=_trt_vit_scale_fix_kw(args),
         )
         print(colored("[infer] trt_trt_compare：加载第二路 TensorRT …", "cyan"), flush=True)
         _p("policy_trt_target", "trt_trt：创建第二套 policy 并挂载第二路 TensorRT …")
@@ -158,6 +166,7 @@ def load_infer_bundle(
             expert_engine=sec_names["expert_engine"],
             denoise_engine=sec_names["denoise_engine"],
             embed_prefix_engine=sec_names["embed_prefix_engine"],
+            trt_vit_scale_fix=_trt_vit_scale_fix_kw(args),
         )
         print(colored("[infer] trt_trt_compare：双 TensorRT 策略已就绪", "cyan"), flush=True)
         _p("policy_trt_target", "第二路 TensorRT 已挂载（双 TRT 就绪）")
@@ -192,6 +201,7 @@ def load_infer_bundle(
             expert_engine=args.expert_engine,
             denoise_engine=args.denoise_engine,
             embed_prefix_engine=args.embed_prefix_engine,
+            trt_vit_scale_fix=_trt_vit_scale_fix_kw(args),
         )
         print(colored("[infer] trt_ort_compare：加载 ONNX Runtime 第二路 …", "cyan"), flush=True)
         _p("policy_ort_second", "trt_ort：创建第二套 policy 并挂载 ONNX Runtime …")
@@ -261,6 +271,7 @@ def load_infer_bundle(
             expert_engine=args.expert_engine,
             denoise_engine=args.denoise_engine,
             embed_prefix_engine=args.embed_prefix_engine,
+            trt_vit_scale_fix=_trt_vit_scale_fix_kw(args),
         )
         print(colored("[infer] compare_mode：PyTorch + TensorRT 双策略已就绪", "cyan"), flush=True)
         _p("policy_trt", "TensorRT 引擎已挂载（compare 双路就绪）")
@@ -430,6 +441,7 @@ def load_infer_bundle(
             expert_engine=args.expert_engine,
             denoise_engine=args.denoise_engine,
             embed_prefix_engine=args.embed_prefix_engine,
+            trt_vit_scale_fix=_trt_vit_scale_fix_kw(args),
         )
         _p("policy_trt", "TensorRT 引擎已挂载（PTQ vs TRT 双路就绪）")
     elif getattr(args, "ort_compare", False):
@@ -488,6 +500,7 @@ def load_infer_bundle(
             trt_cuda_graph=bool(getattr(args, "trt_cuda_graph", False)),
             trt_cuda_graph_warmup=int(getattr(args, "trt_cuda_graph_warmup", 3)),
             denoise_adarms_precompute=bool(getattr(args, "denoise_adarms_precompute", False)),
+            trt_vit_scale_fix=_trt_vit_scale_fix_kw(args),
         )
         # 在 tensorrt 模式上叠加 native（用于只替换 denoise/expert 等阶段）。
         native_executor = None

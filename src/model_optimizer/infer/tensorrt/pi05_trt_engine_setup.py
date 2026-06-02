@@ -185,7 +185,8 @@ def sanitize_additive_attention_mask_for_trt(
     return attention_mask.clamp(min=float(neg_cap))
 
 
-def vit_scale_fix_enabled() -> bool:
+def vit_scale_fix_enabled_from_env() -> bool:
+    """兼容旧部署：``PI05_TRT_VIT_SCALE_FIX=1`` / ``true`` 等。"""
     return os.environ.get("PI05_TRT_VIT_SCALE_FIX", "").strip().lower() in (
         "1",
         "true",
@@ -193,6 +194,18 @@ def vit_scale_fix_enabled() -> bool:
         "y",
         "on",
     )
+
+
+def resolve_trt_vit_scale_fix(config: Any | None) -> bool:
+    """是否对 TRT ViT 输出乘 ``sqrt(hidden_size)``（与 HF ``get_image_features`` 对齐）。
+
+    优先级：config 显式设置 ``trt_vit_scale_fix`` > 环境变量 ``PI05_TRT_VIT_SCALE_FIX``。
+    """
+    if config is not None:
+        raw = cfg_get(config, "trt_vit_scale_fix", None)
+        if raw is not None:
+            return bool(raw)
+    return vit_scale_fix_enabled_from_env()
 
 
 def apply_vit_hidden_scale(out: torch.Tensor, hidden_size: int) -> torch.Tensor:
@@ -210,6 +223,7 @@ class Pi05TrtEngineInstaller:
         self._engines: dict[str, Engine] = executor._trt_engines
         self._opts = TrtRuntimeOptions.from_config(self._config)
         self._engine_root = str(self._config.engine_path)
+        self._vit_scale_fix = resolve_trt_vit_scale_fix(self._config)
 
     @property
     def opts(self) -> TrtRuntimeOptions:
@@ -244,6 +258,14 @@ class Pi05TrtEngineInstaller:
 
     def install_vit(self, engine_name: str) -> None:
         print(colored(f"replace vision_tower with {engine_name}", "green"))
+        if self._vit_scale_fix:
+            print(
+                colored(
+                    "vit: TRT output scale fix enabled (×sqrt(hidden_size), trt_vit_scale_fix / "
+                    "PI05_TRT_VIT_SCALE_FIX)",
+                    "green",
+                )
+            )
 
         def vit_return_wrap(output: dict[str, torch.Tensor]) -> torch.Tensor:
             return output["image_features"]
@@ -256,7 +278,7 @@ class Pi05TrtEngineInstaller:
 
         def get_image_features(pixel_values: torch.Tensor) -> torch.Tensor:
             out = vit_engine(pixel_values)
-            if vit_scale_fix_enabled():
+            if self._vit_scale_fix:
                 try:
                     h = int(paligemma.config.text_config.hidden_size)
                 except Exception:

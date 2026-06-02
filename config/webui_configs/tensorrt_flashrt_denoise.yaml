@@ -17,6 +17,7 @@ inference_mode: tensorrt                        # 单路后端：此处用 tenso
 device: cuda:0                                  # 推理设备
 precision: bf16                                 # PyTorch 侧推理精度（TRT 路由引擎自身精度决定）
 vit_batch_views: true                           # ViT 多视角 batching（须配套用 batch 版 vit engine）
+trt_vit_scale_fix: true                        # TRT ViT 补乘 sqrt(hidden_size)，修复 vit.engine 精度偏低
 
 # —— TensorRT 引擎路径（vit/llm 仍走 TRT） ——
 engine_path: /tmp/build/pi05/opt                # TRT 引擎根目录（含各子图 .engine）

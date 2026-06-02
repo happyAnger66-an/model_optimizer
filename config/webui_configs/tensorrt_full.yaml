@@ -11,6 +11,8 @@ device: cuda:0
 precision: bf16
 denoise_adarms_precompute: true
 vit_batch_views: true
+# 部分 vit.engine 输出少乘 sqrt(hidden_size)，开启后与 PyTorch 对齐（等价 PI05_TRT_VIT_SCALE_FIX=1）
+trt_vit_scale_fix: true
 
 compare_mode: true
 engine_path: /tmp/build/pi05/opt

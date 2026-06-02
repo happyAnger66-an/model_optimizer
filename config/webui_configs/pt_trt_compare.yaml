@@ -13,6 +13,7 @@ precision: bf16
 
 compare_mode: true
 vit_pt_trt_compare: true
+trt_vit_scale_fix: true
 
 engine_path: /tmp/pi05/build/quant
 vit_engine: vit_fp8.engine

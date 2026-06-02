@@ -92,6 +92,10 @@ class Args:
     """多视角 batching：把所有相机视角堆成 batch 维一次过 vit 引擎（需 vit 引擎按 vit_build_cfg
     的 batch 维 ≥ num_views 编译，且 vit.onnx 含 batch 动态轴）。与 embed_prefix_engine 互斥。"""
 
+    trt_vit_scale_fix: bool = False
+    """部分 vit.engine 输出相对 PyTorch 少乘 ``sqrt(hidden_size)``，开启后对 TRT ViT 特征补乘该因子以恢复精度。
+    等价于环境变量 ``PI05_TRT_VIT_SCALE_FIX=1``；YAML 显式设置时优先于环境变量。"""
+
     trt_perf: bool = True
     """打开 TRT engine 的逐次耗时统计（>100 次后打印各 engine 的均值/分位耗时）。"""
 
