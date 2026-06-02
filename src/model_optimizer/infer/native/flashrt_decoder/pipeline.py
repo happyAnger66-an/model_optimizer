@@ -87,11 +87,39 @@ def decoder_forward(
     act_scales = weights['act_scales']
 
     for s in range(steps):
+        # 外层循环 ≡ openpi ``PI0Pytorch.sample_actions`` 里 ``while time >= -dt/2`` 的一次迭代，
+        # 即单次 ``denoise_step(...)`` 调用（flow matching 的一个扩散步）。
         step_ctx = perf.timed(f"denoise.step.{s}") if perf is not None else nullcontext()
         with step_ctx:
-            # ── Action input: noise → x ──
+            # ── Action input projection（≡ openpi ``embed_suffix`` 里的 ``action_in_proj``）──
+            #
+            # OpenPI 对应代码（``pi0_pytorch.py``）::
+            #
+            #   def denoise_step(..., x_t, timestep):
+            #       suffix_embs, ..., adarms_cond = self.embed_suffix(state, x_t, timestep)
+            #       ...
+            #
+            #   def embed_suffix(..., noisy_actions, timestep):
+            #       action_emb = self.action_in_proj(noisy_actions)   # ← 本段 kernel 等价于此
+            #       # pi05 另有时序分支 time_mlp → adarms_cond，在 FlashRT 里不在这里算，
+            #       # 而是预计算进权重侧 ``sa/sf/fs``，由下面 C1 的 fused_adarms 消费。
+            #
+            # 张量对应关系（单 batch，S = Sa = action_horizon token 数）::
+            #
+            #   bufs['noise']  ↔  ``x_t`` / ``noisy_actions``，形状 ``[S, 32]``
+            #                     （32 = ``config.action_dim``，flow matching 当前动作噪声状态）
+            #   bufs['x']      ↔  ``action_emb`` 进入 expert 前的隐状态，形状 ``[S, D]``
+            #                     （D = action expert 隐藏维，``action_in_proj.out_features``）
+            #   weights['ain_w'] / ['ain_b']  ↔  ``self.action_in_proj.weight/bias``
+            #
+            # ``gmm_fp16(ctx, A, B, C, M, N, K, alpha, stream)``::
+            #   计算 ``C[M,N] = alpha * C + A[M,K] @ B[K,N]``（此处 alpha=0 → 覆盖写 C）。
+            #   这里 M=S, K=32, N=D： ``x = noise @ ain_w``，把动作空间 32 维抬升到 decoder 宽度 D。
             fvk.gmm_fp16(ctx, noise, ain_w, x, S, D, 32, 0.0, stream)
+            # ``add_bias_fp16``:: ``x += ain_b``，与 ``nn.Linear`` 的 bias 项一致。
             fvk.add_bias_fp16(x, ain_b, S, D, stream)
+            # 此后 ``x`` 作为第 0 层 transformer 的残差流输入，进入下面 ``for l in range(layers)``
+            # 的 C1…C7（≡ ``denoise_step`` 里 ``paligemma_with_expert.forward`` + 各层 FFN/Attn）。
 
             for l in range(layers):
                 si = (s * layers + l) * S * D3
@@ -99,10 +127,41 @@ def decoder_forward(
                 sf_ptr = sf + si * 2
 
                 # ── C1: Fused AdaRMSNorm → FP8 with static scale ──
+                #
+                # OpenPI 对应（pi05，``denoise_step`` → ``paligemma_with_expert.forward``）::
+                #
+                #   # ``embed_suffix`` 已算好 ``adarms_cond``（≡ ``time_mlp(timestep)``，形状 ``[B, Da]``）::
+                #   time_emb = silu(silu(time_mlp_in(sinusoidal_emb)) @ time_mlp_out)   # pi0_pytorch.py
+                #   adarms_cond = time_emb
+                #
+                #   # Expert 第 ``l`` 层 self-attn 前（``gemma_pytorch.py``，仅 ``i=1`` 分支）::
+                #   hidden_states, gate = layer.input_layernorm(
+                #       hidden_states, cond=adarms_cond[1])
+                #
+                #   # ``GemmaRMSNorm.forward``（``modeling_gemma.py``）::
+                #   modulation = self.dense(cond)          # Linear(Da → 3*D)
+                #   scale, shift, gate = chunk(modulation, 3)
+                #   x_norm = rmsnorm(x) * (1 + scale) + shift
+                #   # 随后 ``q_proj/k_proj/v_proj(x_norm)`` → 本管线 C2 的 QKV GEMM
+                #
+                # FlashRT 把 ``dense(cond)`` 预计算进 ``sa``（``precompute.py::precompute_adarms_styles``）::
+                #   sa[s,l,:] = time_emb @ input_layernorm.dense.weight.T + bias   # 每 token 一行，长度 3*D
+                # ``sa_ptr`` 指向当前步 ``s``、层 ``l`` 的那段调制向量；kernel 内做 RMSNorm + scale/shift，
+                # 再按静态标定尺度量化到 ``xn_fp8``，并写出 ``gate`` 供 C4 的 ``gate_res_adarms`` 做 gated residual。
+                # 下游 C2 ``fp8_gemm_descale_fp16`` 见 ``docs/optimizer/flashrt/fp8_gemm_descale_fp16.md``。
+                #
+                # ``act_scale_qkv``：本层 QKV 路径的 FP8 激活标定（``l*4+0`` 槽位），OpenPI 无对应项。
                 act_scale_qkv = act_scales + (l * 4 + 0) * 4
                 fvk.fused_adarms_fp8_static_fp16(x, sa_ptr, xn_fp8, gate, S, D, act_scale_qkv, stream)
 
-                # ── C2: QKV GEMM with descale ──
+                # ── C2: QKV GEMM with descale（详见 docs/optimizer/flashrt/fp8_gemm_descale_fp16.md）──
+                #
+                # ``xn_fp8 × qw_fp8 → qkv(fp16)``：Tensor Core FP8 GEMM，epilogue 乘 ``s_act * s_w``，
+                # **直接**写 fp16 ``qkv``，不是「先输出 fp8 再反量化」。
+                # ``act_scale_qkv`` 须与 C1 相同（C1 量化激活、C2 descale 共用）。
+                #
+                # OpenPI 等价：``q_proj/k_proj/v_proj(input_layernorm 输出)`` 三次 Linear → 此处合并为
+                # 一次 ``qw`` ``[D,2560]`` GEMM（``weights.py`` repack）。
                 w_scale_qkv = w_scales + (l * 4 + 0) * 4
                 qw_ptr = qw + l * D * 2560
                 fvk.fp8_gemm_descale_fp16(xn_fp8, qw_ptr, qkv, S, 2560, D,
@@ -129,6 +188,7 @@ def decoder_forward(
                 w_scale_o = w_scales + (l * 4 + 1) * 4
                 fvk.quantize_fp8_static_fp16(attn_out, ctx_fp8, act_scale_o, S * NH * HD, stream)
                 ow_ptr = ow + l * NH * HD * D
+                # O-proj FP8 GEMM → fg(fp16)；``fp8_gemm_descale_fp16.md`` §5 槽位 k=1
                 fvk.fp8_gemm_descale_fp16(ctx_fp8, ow_ptr, fg, S, D, NH * HD,
                                           act_scale_o, w_scale_o, stream)
 
@@ -140,6 +200,7 @@ def decoder_forward(
                 # ── C5: Gate+Up merged GEMM ──
                 w_scale_gu = w_scales + (l * 4 + 2) * 4
                 gw_ptr = gw + l * D * H * 2
+                # gate+up 合并 GEMM → fg(fp16)；``fp8_gemm_descale_fp16.md`` §5 槽位 k=2
                 fvk.fp8_gemm_descale_fp16(xn_fp8, gw_ptr, fg, S, H * 2, D,
                                           act_scale_gu, w_scale_gu, stream)
 
@@ -150,6 +211,7 @@ def decoder_forward(
                 # ── C6: Down GEMM ──
                 w_scale_down = w_scales + (l * 4 + 3) * 4
                 dw_ptr = dw + l * H * D
+                # down GEMM → fg(fp16)；``fp8_gemm_descale_fp16.md`` §5 槽位 k=3
                 fvk.fp8_gemm_descale_fp16(hid_fp8, dw_ptr, fg, S, D, H,
                                           act_scale_down, w_scale_down, stream)
 

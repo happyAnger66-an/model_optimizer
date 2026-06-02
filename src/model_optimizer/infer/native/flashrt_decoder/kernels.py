@@ -2,7 +2,8 @@
 
 FlashRT 的算子（``gmm_fp16`` / ``fp8_gemm_descale_fp16`` / ``fused_adarms_fp8_static_fp16``
 / ``attention_qkv_fp16`` …）由其 ``csrc`` 在 Thor(SM110) 上 cmake 构建为一个
-``flash_rt_kernels*.so`` 扩展。该 CUDA 代码量约 27MB/700+ 文件（含 CUTLASS FMHA / FP8 GEMM），
+``flash_rt_kernels*.so`` 扩展。``fp8_gemm_descale_fp16`` 语义见
+``docs/optimizer/flashrt/fp8_gemm_descale_fp16.md``。该 CUDA 代码量约 27MB/700+ 文件（含 CUTLASS FMHA / FP8 GEMM），
 不可能在仓内重写，故本仓库**复用其编译产物**，但只按文件路径动态加载，不依赖 ``flash_rt`` 的
 任何 python 模块。
 

@@ -119,6 +119,8 @@ native_flashrt_act_scales_path: "/tmp/quantize/pi05/flashrt_decoder_act_scales.j
 | `config/webui_configs/tensorrt_flashrt_denoise.yaml` | 示例配置（含 `native_flashrt_*` 开关） |
 | `scripts/deployment/pi05/build_flashrt_kernels.sh` | Thor 上构建 FP8 kernel |
 | `scripts/deployment/pi05/flashrt_decoder_smoke.py` | repack 自检 + FP8 数值对比 |
+| [`../flashrt/fusion_design.md`](../flashrt/fusion_design.md) | 融合算子边界与四层四量化点、C1 `gate` 语义 |
+| [`../flashrt/fp8_gemm_descale_fp16.md`](../flashrt/fp8_gemm_descale_fp16.md) | `fp8_gemm_descale_fp16`：FP8×FP8 GEMM + epilogue descale → fp16 |
 
 ---
 

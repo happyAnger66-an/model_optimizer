@@ -90,7 +90,8 @@ Denoise（仓内 FlashRT decoder）
 - **何时重建**：`enc_seq` 变化（不同 prompt、不同图像/语言长度）时必须重建；同一 `enc_seq` 可复用
   `backend` 内已缓存的 `_rope` / `_loop`。
 - **与 AdaRMS 预计算**：`precompute_adarms_styles` 并行完成；RoPE 管**位置**，AdaRMS 管
-  **flow-matching 时间步调制**（`sa`/`sf`/`fs`）。
+  **flow-matching 时间步调制**（`sa`/`sf`/`fs`）。AdaRMS 与 C1/C4 融合边界见
+  [`fusion_design.md`](fusion_design.md)。
 
 ---
 
@@ -102,6 +103,8 @@ Denoise（仓内 FlashRT decoder）
 | `backend.py` | `setup_prompt` 调用并挂到 `DecoderWeights.rope` |
 | `pipeline.py` | `decoder_forward` 中 `qkv_split_rope_kvcache_fp16` |
 | `driver.py` | `fill_prefix_kv_from_trt`（prefix KV，与 suffix RoPE 分工） |
+| [`fusion_design.md`](fusion_design.md) | 融合算子选取原则、C1/C4 gate 与 OpenPI 对照 |
+| [`fp8_gemm_descale_fp16.md`](fp8_gemm_descale_fp16.md) | C2 QKV FP8 GEMM + descale → fp16 `qkv` |
 | `docs/optimizer/ddup/native_decoder_implementation_todo.md` §8.2 | KV/RoPE 契约与 Thor 验证要点 |
 
 ---

@@ -78,57 +78,123 @@ def fill_prefix_kv_from_trt(
 
 @dataclass
 class DecoderBuffers:
-    """AE decoder 的设备 buffer 持有者（保活 + 暴露 data_ptr 字典）。"""
+    """AE decoder 的设备端 buffer 持有者（生命周期保活 + 暴露 ``data_ptr`` 字典）。
 
-    Sa: int
-    Da: int
-    Ha: int
-    layers: int
-    enc_seq: int
-    HD: int = 256
-    NH: int = 8
+    作用与定位
+    ----------
+    FlashRT 的 ``decoder_forward``（见 :mod:`.pipeline`）是**纯指针接口**的 CUDA kernel
+    序列：它不分配显存，只接收一组 ``int`` 指针（``bufs`` / ``weights``）在原地读写。
+    本类负责：
+
+    1. **一次性预分配** 整个 10 步 × ``layers`` 层扩散循环所需的全部中间 buffer；
+    2. **持有 torch.Tensor 引用**（防止被 GC 回收，否则裸指针会悬空）；
+    3. 通过 :meth:`as_ptr_dict` 把这些 tensor 拍平成 ``{name: data_ptr}`` 交给 pipeline。
+
+    所有 buffer 在构造时分配、整个 session 复用（每个 chunk 不再 malloc），与 FlashRT
+    ``ae_*`` 命名一一对应，便于和原版逐字对照。
+
+    维度约定
+    --------
+    - ``Sa``      : action suffix 序列长（query 长度，diffusion 的并行 token 数）。
+    - ``Da`` (D)  : decoder 隐藏维（残差流宽度）。
+    - ``Ha`` (H)  : MLP 中间维（gate/up 投影宽度）。
+    - ``layers``  : decoder 层数（pi05 为 18）。
+    - ``enc_seq`` : prefix（vit+llm 编码）序列长；KV cache 的前缀区长度。
+    - ``HD``      : 每个注意力 head 的维度（256）。
+    - ``NH``      : query head 数（8）；KV 为**单头**（GQA/MQA，故 Kc/Vc 不带 NH 维）。
+    - ``total_keys = enc_seq + Sa`` : KV cache 总长（prefix + 本次 suffix）。
+
+    魔数说明
+    --------
+    - ``32``   : action 输入/输出维（``action_in_proj`` 入口、``action_out_proj`` 出口）。
+    - ``2560`` : 融合 QKV 投影输出宽度 = ``NH*HD + 2*HD`` = ``Q(8*256) + K(256) + V(256)``。
+    - 每层 ``4`` 个 FP8 量化点（见 ``act_scales``/``w_scales`` 的 ``l*4 + {0,1,2,3}``）：
+      QKV-in / O-in / gate-up-in / down-in。
+    """
+
+    Sa: int  # action suffix 长（query 数）
+    Da: int  # decoder 隐藏维 D
+    Ha: int  # MLP 中间维 H
+    layers: int  # decoder 层数（pi05=18）
+    enc_seq: int  # prefix 序列长（KV cache 前缀区）
+    HD: int = 256  # per-head 维度
+    NH: int = 8  # query head 数（KV 为单头）
     device: str = "cuda"
+    # 实际持有的 buffer 集合：name -> tensor。私有，统一经 as_ptr_dict() 取指针。
     _tensors: dict[str, torch.Tensor] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         Sa, Da, Ha = self.Sa, self.Da, self.Ha
         total_keys = self.enc_seq + Sa
         t = self._tensors
-        # KV cache（fp16 单 KV head；prefix+suffix）
+
+        # ── KV cache（fp16，单 KV head；布局 [layers, total_keys, HD]）──
+        # prefix 区 [:, :enc_seq, :] 由 fill_prefix_kv_from_trt 从 TRT llm 写入；
+        # suffix 区 [:, enc_seq:, :] 由 decoder C2b（qkv_split_rope_kvcache）逐层写入。
         t["Kc"] = torch.zeros(self.layers, total_keys, self.HD, dtype=_FP16, device=self.device)
         t["Vc"] = torch.zeros(self.layers, total_keys, self.HD, dtype=_FP16, device=self.device)
-        # 工作 buffer（镜像 FlashRT ae_* 命名）
+
+        # ── 主工作 buffer（镜像 FlashRT ae_* 命名）──
+        # noise: [Sa, 32] —— 既是输入噪声，也是**最终 action chunk 输出**（in/out 复用）。
+        #        入口 gmm: noise(32) → x(D)；出口 gmm: xn(D) → noise(32)，逐步 Euler 累积。
         t["noise"] = torch.zeros(Sa, 32, dtype=_FP16, device=self.device)
+        # x:  [Sa, D] 残差流 / 跨层隐藏状态（每层 gated residual 累加于此）。
         t["x"] = torch.empty(Sa, Da, dtype=_FP16, device=self.device)
+        # xn: [Sa, D] AdaRMSNorm 归一化后的激活（送入 QKV / gate-up / 最终 out-proj）。
         t["xn"] = torch.empty(Sa, Da, dtype=_FP16, device=self.device)
+        # gate: [Sa, D] AdaRMS 产出的 gate（缩放），用于 gate×residual 融合。
         t["gate"] = torch.empty(Sa, Da, dtype=_FP16, device=self.device)
+        # qkv: [Sa, 2560] 融合 QKV 投影输出（Q=NH*HD, K=HD, V=HD）；由 C2 ``fp8_gemm_descale_fp16``
+        # 直接写入 fp16（见 ``docs/optimizer/flashrt/fp8_gemm_descale_fp16.md``）。
         t["qkv"] = torch.empty(Sa, 2560, dtype=_FP16, device=self.device)
+        # logits: [Sa*NH, total_keys] 注意力打分 scratch（每个 query head 对全部 key）。
         t["logits"] = torch.empty(Sa * self.NH, total_keys, dtype=_FP16, device=self.device)
+        # attn_out: [Sa*NH, HD] 既作 Q 输入，也接注意力上下文输出（原地复用）。
         t["attn_out"] = torch.empty(Sa * self.NH, self.HD, dtype=_FP16, device=self.device)
+        # hid: [Sa, 2H] MLP 中间缓冲（FP16 路 GEGLU 输出落点）。
         t["hid"] = torch.empty(Sa, 2 * Ha, dtype=_FP16, device=self.device)
+        # fg: [Sa, 2H] 通用 GEMM 输出 scratch（O-proj / gate-up / down 输出轮流复用，2H 取最大）。
         t["fg"] = torch.empty(Sa, 2 * Ha, dtype=_FP16, device=self.device)
+
+        # ── FP8 量化中间张量（uint8 承载 e4m3）──
+        # xn_fp8:  [Sa*D]       归一化激活的 FP8 量化结果（QKV / gate-up GEMM 输入）。
         t["xn_fp8"] = torch.zeros(Sa * Da, dtype=torch.uint8, device=self.device)
+        # hid_fp8: [Sa*H]       MLP 中间激活的 FP8（down GEMM 输入）。
         t["hid_fp8"] = torch.zeros(Sa * Ha, dtype=torch.uint8, device=self.device)
+        # ctx_fp8: [Sa*NH*HD]   注意力上下文的 FP8（O-proj GEMM 输入）。
         t["ctx_fp8"] = torch.zeros(Sa * self.NH * self.HD, dtype=torch.uint8, device=self.device)
-        # 校准 scratch（离线量化用）
+
+        # ── 校准 scratch（仅离线量化 decoder_forward_calibrate 使用）──
+        # calib_buf: [layers*4] 当步每层 4 个量化点测得的 scale（float32），逐步覆盖。
         t["calib_buf"] = torch.zeros(self.layers * 4, dtype=torch.float32, device=self.device)
+        # d_scale: [1] measure_scale_gpu 的单点 amax/scale 输出。
         t["d_scale"] = torch.zeros(1, dtype=torch.float32, device=self.device)
+        # hidden_scratch: [Sa*H] 校准时 GEGLU 的 FP16 输出（用于测 amax，不污染 hid_fp8）。
         t["hidden_scratch"] = torch.empty(Sa * Ha, dtype=_FP16, device=self.device)
+        # fp8_scratch: [Sa*max(D,H)] measure_scale_gpu 的 FP8 临时区（取 D/H 较大者复用）。
         t["fp8_scratch"] = torch.zeros(Sa * max(Da, Ha), dtype=torch.uint8, device=self.device)
 
     @property
     def Kc(self) -> torch.Tensor:
+        """KV cache 的 Key slab（``[layers, total_keys, HD]`` fp16）。供 prefix 填充。"""
         return self._tensors["Kc"]
 
     @property
     def Vc(self) -> torch.Tensor:
+        """KV cache 的 Value slab（``[layers, total_keys, HD]`` fp16）。供 prefix 填充。"""
         return self._tensors["Vc"]
 
     @property
     def noise(self) -> torch.Tensor:
+        """噪声/动作 in-out buffer（``[Sa, 32]`` fp16）。``run()`` 前写入初值、结束后读结果。"""
         return self._tensors["noise"]
 
     def as_ptr_dict(self) -> dict[str, int]:
+        """把全部 buffer 拍平成 ``{name: device_ptr}``，交给 pipeline 的纯指针 kernel。
+
+        每次调用都按 ``reshape(-1).data_ptr()`` 现取；因 tensor 由本对象持有，指针在
+        本实例存活期间稳定有效。
+        """
         d = {k: v.reshape(-1).data_ptr() for k, v in self._tensors.items()}
         return d
 
