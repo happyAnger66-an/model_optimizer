@@ -51,7 +51,7 @@ perf_profile_warmup_chunks: 10                  # profile 统计前跳过的 chu
 perf_profile_print_interval: 20                 # 每 N 个 chunk 打印一次 profile
 perf_profile_top_n: 3                           # 瓶颈排名输出 Top-N
 trt_enable_stage_profile: true                  # 打印模型阶段级耗时（embed_prefix/llm/action 等）
-trt_stage_profile_warmup: 10                    # 阶段级 profile 的 warmup 次数
+trt_stage_profile_warmup: 100              # 阶段级 profile 的 warmup 次数
 trt_enable_hook_profile: true                   # 启用 forward hook 级耗时统计（更细粒度）
 
 # —— 评估区间与可复现 noise ——

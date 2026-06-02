@@ -12,7 +12,7 @@ import torch
 import torch.nn.functional as F
 
 from ..executor import Executor
-from ..perf import StagePerfCollector
+from ..perf import StagePerfCollector, wrap_sample_actions_with_stage_perf
 from ...models.pi05.model_pi05 import Pi05Model
 from .decoder_runner import NativeDenoiseLoopRunner, NativeDenoiseLoopRunnerV2
 from .denoise_backend import NativeDenoiseBackend
@@ -146,6 +146,7 @@ class Pi05NativeExecutor(Executor):
                     graph_warmup,
                 )
 
+        self._install_sample_actions_stage_timer(config)
         self._sync_policy_sample_actions_ref()
         if enable_denoise and flashrt_decoder:
             logger.info(
@@ -154,6 +155,17 @@ class Pi05NativeExecutor(Executor):
                 getattr(self.pi05_model.sample_actions, "__name__", type(self.pi05_model.sample_actions)),
             )
         atexit.register(self._dump_summary_atexit)
+
+    def _install_sample_actions_stage_timer(self, config: Any) -> None:
+        """最外层统计整段 ``sample_actions``（须在 FlashRT/TRT 等替换之后）。"""
+        if not self._stage_perf.enabled:
+            return
+        warmup = int(_cfg_get(config, "sample_actions_warmup_skips", 10) or 10)
+        wrap_sample_actions_with_stage_perf(
+            self.pi05_model,
+            self._stage_perf,
+            warmup_skips=warmup,
+        )
 
     def _install_expert_runtime(self, *, compile_expert: bool) -> None:
         expert_model = self.pi05_model.paligemma_with_expert.gemma_expert.model

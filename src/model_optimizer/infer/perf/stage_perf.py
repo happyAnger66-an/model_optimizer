@@ -2,6 +2,7 @@
 
 Key 约定（点分路径，便于分组打印）::
 
+    sample_actions        # 整段 ``PI0Pytorch.sample_actions`` wall time（模型纯推理）
     embed_prefix          # 单次 sample 的 embed_prefix wall time
     prefix_llm            # prefix KV 前向
     flashrt.setup         # 首次 backend / setup_prompt
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import re
 import time
+import types
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -28,8 +30,10 @@ from typing import Any
 
 import numpy as np
 
-# 默认打印顺序：先高层阶段，再 denoise 聚合，再逐步展开。
+# 默认打印顺序：先整段 sample_actions，再子阶段，再 denoise 聚合/逐步展开。
+KEY_SAMPLE_ACTIONS = "sample_actions"
 _DEFAULT_SUMMARY_ORDER: tuple[str, ...] = (
+    KEY_SAMPLE_ACTIONS,
     "embed_prefix",
     "prefix_llm",
     "flashrt.setup",
@@ -50,6 +54,47 @@ def perf_line_ms(values: Sequence[float]) -> str:
         f"p90={float(np.percentile(arr, 90)):.2f} "
         f"p99={float(np.percentile(arr, 99)):.2f} ms"
     )
+
+
+def wrap_sample_actions_with_stage_perf(
+    model: Any,
+    collector: StagePerfCollector,
+    *,
+    warmup_skips: int = 0,
+) -> None:
+    """在 ``model.sample_actions`` 最外层打补丁，统计整段 wall time（不修改 openpi 源码）。
+
+    须在 TRT / native / FlashRT 等所有对 ``sample_actions`` 的替换**之后**调用，并配合
+    ``Policy._sample_actions`` 刷新（见各 executor 的 ``_sync_policy_sample_actions_ref``）。
+
+    可重复调用：若已有本模块包装且中间层被整体替换（如 FlashRT），会对**当前**
+    ``sample_actions`` 重新包装，避免计时落在已失效的旧 callable 上。
+    """
+    _orig = model.sample_actions
+    if getattr(model, "_mopt_sample_actions_stage_wrapped", False):
+        inner = getattr(model, "_mopt_sample_actions_stage_inner", None)
+        # 外层实现已被替换（例如 FlashRT 覆盖）时，对新的 callable 重新包装。
+        if inner is not None and _orig is inner:
+            return
+    skips = max(0, int(warmup_skips))
+    state = {"invocation": 0}
+
+    def _sa(self, device, observation, noise=None, num_steps=10):
+        state["invocation"] += 1
+        record = collector.enabled and state["invocation"] > skips
+        t0 = time.perf_counter()
+        try:
+            return _orig(device, observation, noise=noise, num_steps=num_steps)
+        finally:
+            if record:
+                collector.record(
+                    KEY_SAMPLE_ACTIONS,
+                    (time.perf_counter() - t0) * 1000.0,
+                )
+
+    model.sample_actions = types.MethodType(_sa, model)
+    model._mopt_sample_actions_stage_wrapped = True
+    model._mopt_sample_actions_stage_inner = _orig
 
 
 def _step_index(key: str) -> int:
@@ -213,11 +258,17 @@ def format_collector_from_policy(policy: Any) -> list[str]:
 
 
 def format_perf_from_bundle(bundle: dict[str, Any] | None) -> list[str]:
-    """webui bundle 汇总：优先 ``bundle['native_executor']``，再回退 policy。"""
+    """webui bundle 汇总：优先 ``bundle['native_executor']``，再 TRT executor，再 policy。"""
     if not bundle:
         return []
     native_ex = bundle.get("native_executor")
     lines = _lines_from_perf_holder(native_ex)
     if lines:
         return lines
-    return format_collector_from_policy(bundle.get("policy"))
+    policy = bundle.get("policy")
+    if policy is not None:
+        trt_ex = getattr(policy, "_trt_executor", None)
+        lines = _lines_from_perf_holder(trt_ex)
+        if lines:
+            return lines
+    return format_collector_from_policy(policy)

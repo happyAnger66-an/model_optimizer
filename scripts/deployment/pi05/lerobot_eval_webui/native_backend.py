@@ -26,6 +26,7 @@ def load_native_runtime(
     flashrt_act_scales_path: str = "",
     flashrt_calibrate: bool = False,
     flashrt_calib_samples: int = 8,
+    sample_actions_warmup_skips: int = 0,
 ) -> Any:
     import addict
     import torch
@@ -59,6 +60,7 @@ def load_native_runtime(
         "flashrt_act_scales_path": str(flashrt_act_scales_path or ""),
         "flashrt_calibrate": bool(flashrt_calibrate),
         "flashrt_calib_samples": int(flashrt_calib_samples),
+        "sample_actions_warmup_skips": int(sample_actions_warmup_skips),
     }
     executor.load_model(addict.Dict(cfg))
     return executor

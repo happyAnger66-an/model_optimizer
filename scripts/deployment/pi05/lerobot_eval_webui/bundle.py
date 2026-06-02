@@ -513,6 +513,9 @@ def load_infer_bundle(
                 flashrt_act_scales_path=str(getattr(args, "native_flashrt_act_scales_path", "") or ""),
                 flashrt_calibrate=bool(getattr(args, "native_flashrt_calibrate", False)),
                 flashrt_calib_samples=int(getattr(args, "native_flashrt_calib_samples", 8)),
+                sample_actions_warmup_skips=int(
+                    getattr(args, "perf_profile_warmup_chunks", 10)
+                ),
             )
             try:
                 setattr(policy, "_native_executor", native_executor)
@@ -544,6 +547,7 @@ def load_infer_bundle(
             flashrt_act_scales_path=str(getattr(args, "native_flashrt_act_scales_path", "") or ""),
             flashrt_calibrate=bool(getattr(args, "native_flashrt_calibrate", False)),
             flashrt_calib_samples=int(getattr(args, "native_flashrt_calib_samples", 8)),
+            sample_actions_warmup_skips=int(getattr(args, "perf_profile_warmup_chunks", 10)),
         )
         try:
             setattr(policy, "_native_executor", native_executor)

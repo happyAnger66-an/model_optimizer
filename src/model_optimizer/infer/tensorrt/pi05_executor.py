@@ -11,6 +11,7 @@ from termcolor import colored
 import torch
 
 from ..executor import Executor
+from ..perf import StagePerfCollector, wrap_sample_actions_with_stage_perf
 from ...models.pi05.model_pi05 import Pi05Model
 from .trt_hook_timer import trt_hook_timer
 from .trt_torch import Engine
@@ -92,9 +93,12 @@ class Pi05TensorRTExecutor(Executor):
 #        self.pi05_model.to(precision)
         self.config = config
         self._trt_engines: dict[str, Engine] = {}
+        self._stage_perf = StagePerfCollector(enabled=False)
         # 暴露给上层（webui 汇总）读取 engine 级统计
         try:
             setattr(self.policy, "_trt_executor", self)
+            setattr(self.policy, "_stage_perf", self._stage_perf)
+            setattr(self.pi05_model, "_stage_perf", self._stage_perf)
         except Exception:
             pass
 
@@ -113,6 +117,7 @@ class Pi05TensorRTExecutor(Executor):
         )
 
         maybe_install_pi0_stage_profiler(self.pi05_model)
+        self._install_sample_actions_stage_timer()
         # Policy 在构造时缓存了 ``_sample_actions = model.sample_actions``（见
         # openpi ``policies/policy.py``），此后只改 ``model.sample_actions`` 不会
         # 影响 ``infer()``；不刷新则仍走 torch.compile 包装，profiler / TRT 路径均可能 hook 不到。
@@ -559,6 +564,35 @@ class Pi05TensorRTExecutor(Executor):
                 self.pi05_model.denoise_step = types.MethodType(
                     denoise_step_trt, self.pi05_model
                 )
+
+    def _install_sample_actions_stage_timer(self) -> None:
+        """整段 ``sample_actions`` wall time（与 ``StagePerfCollector`` / webui 汇总对齐）。"""
+        from .pi0_stage_profiler import env_profile_enabled, env_warmup_skips
+
+        enabled = bool(_cfg_get(self.config, "stage_perf", env_profile_enabled()))
+        self._stage_perf.enabled = enabled
+        if not enabled:
+            return
+        warmup = int(
+            _cfg_get(
+                self.config,
+                "sample_actions_warmup_skips",
+                env_warmup_skips(),
+            )
+            or 0
+        )
+        wrap_sample_actions_with_stage_perf(
+            self.pi05_model,
+            self._stage_perf,
+            warmup_skips=warmup,
+        )
+
+    def format_perf_summary_lines(self) -> list[str]:
+        return self._stage_perf.format_summary_lines()
+
+    @property
+    def stage_perf(self) -> StagePerfCollector:
+        return self._stage_perf
 
     def _sync_policy_sample_actions_ref(self) -> None:
         """让 ``Policy.infer`` 使用的 ``_sample_actions`` 与当前 ``model.sample_actions`` 一致。"""
