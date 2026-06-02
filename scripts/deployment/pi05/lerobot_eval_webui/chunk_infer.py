@@ -104,20 +104,151 @@ def _stats_line_ms(values: list[float]) -> str:
     )
 
 
+# compare / 单路汇总：统一阶段名（左）与各类数据源键（右，按优先级尝试）
+_COMPARE_STAGE_SPECS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("embed_prefix", ("embed_prefix", "trt.embed_prefix", "trt.embed_prefix_vit_batched")),
+    ("vit", ("vit", "trt.vit.get_image_features")),
+    ("llm", ("llm", "lang_emb", "prefix_llm", "trt.llm.forward")),
+    ("denoise", ("denoise", "denoise.total", "denoise_step", "suffix", "trt.denoise_step", "trt.expert.forward")),
+    ("action", ("action",)),
+)
+
+_TRT_ENGINE_STAGE_NAMES: tuple[tuple[str, str], ...] = (
+    ("embed_prefix", "embed_prefix"),
+    ("vit", "vit"),
+    ("llm", "llm"),
+    ("denoise", "denoise"),
+    ("expert", "denoise"),
+)
+
+
+def _to_ms_list(values: list[float]) -> list[float]:
+    """``time_results`` 多为秒；钩子 / stage_perf 多为毫秒。"""
+    if not values:
+        return []
+    arr = np.asarray(values, dtype=np.float64)
+    if float(np.max(arr)) < 20.0:
+        return [float(x) * 1000.0 for x in arr]
+    return [float(x) for x in arr]
+
+
+def _denoise_chunk_ms_from_profiler(model: Any, *, num_steps: int = 10) -> list[float]:
+    """将 ``denoise_step`` 逐次样本折算为单次 ``sample_actions`` 的 denoise 总耗时（ms）。"""
+    prof = getattr(model, "_pi05_stage_profiler", None) if model is not None else None
+    if prof is None:
+        return []
+    steps = getattr(prof, "latencies", {}).get("denoise_step", [])
+    if not steps:
+        return []
+    arr = np.asarray(steps, dtype=np.float64)
+    n = max(int(num_steps), 1)
+    if arr.size >= n and arr.size % n == 0:
+        return [float(x) for x in (arr.reshape(-1, n).sum(axis=1))]
+    return [float(np.mean(arr) * n)]
+
+
+def _stage_samples_ms(
+    *,
+    policy: Any | None,
+    model: Any | None,
+    stage: str,
+    keys: tuple[str, ...],
+) -> list[float]:
+    """按阶段从 stage_perf / time_results / TRT engine / hook 收集毫秒样本。"""
+    try:
+        from model_optimizer.infer.perf import stage_perf_from_policy
+    except ImportError:
+        stage_perf_from_policy = None  # type: ignore[assignment,misc]
+
+    if stage_perf_from_policy is not None and policy is not None:
+        sp = stage_perf_from_policy(policy)
+        if sp is not None:
+            for k in keys:
+                vals = sp.values_for_key(k)
+                if vals:
+                    return _to_ms_list(list(vals))
+
+    if model is not None and stage == "denoise":
+        prof_ms = _denoise_chunk_ms_from_profiler(model)
+        if prof_ms:
+            return prof_ms
+
+    tr = getattr(model, "time_results", None) if model is not None else None
+    if isinstance(tr, dict):
+        for k in keys:
+            vals = tr.get(k, None)
+            if vals:
+                return _to_ms_list(list(vals))
+
+    if policy is not None:
+        ex = getattr(policy, "_trt_executor", None)
+        engs = getattr(ex, "_trt_engines", None) if ex is not None else None
+        if isinstance(engs, dict):
+            for eng_label, eng_key in _TRT_ENGINE_STAGE_NAMES:
+                if eng_label != stage and not (stage == "denoise" and eng_key == "expert"):
+                    continue
+                eng = engs.get(eng_key)
+                if eng is None:
+                    continue
+                tr_e = getattr(eng, "time_results", None)
+                if isinstance(tr_e, dict):
+                    total_s = tr_e.get("total", [])
+                    if total_s:
+                        return _to_ms_list(list(total_s))
+
+    try:
+        from model_optimizer.infer.tensorrt.trt_hook_timer import get_trt_hook_stats_snapshot
+
+        snap = get_trt_hook_stats_snapshot()
+        for k in keys:
+            if k in snap and snap[k]:
+                return list(snap[k])
+    except ImportError:
+        pass
+
+    return []
+
+
+def _print_compare_stage_summary(
+    *,
+    policy: Any | None,
+    model: Any | None,
+    tag: str,
+) -> None:
+    """对比模式：打印一路（pt / trt）各阶段 mean/p50/p90/p99。"""
+    print(colored(f"[summary:path:{tag}] --- stage breakdown ---", "yellow"))
+    for stage, keys in _COMPARE_STAGE_SPECS:
+        ms_vals = _stage_samples_ms(policy=policy, model=model, stage=stage, keys=keys)
+        if not ms_vals:
+            print(
+                colored(
+                    f"[summary:path:{tag}] {stage:<12} n=0 (no samples)",
+                    "yellow",
+                )
+            )
+            continue
+        print(
+            colored(
+                f"[summary:path:{tag}] {stage:<12} {_stats_line_ms(ms_vals)}",
+                "yellow",
+            )
+        )
+
+
 def _dump_policy_time_results(model: Any, *, tag: str) -> None:
     tr = getattr(model, "time_results", None) if model is not None else None
     if not isinstance(tr, dict):
         return
     for key, label in (
+        ("vit", "vit"),
+        ("lang_emb", "lang_emb"),
         ("suffix", "suffix"),
         ("action", "action"),
-        ("vit", "embed_prefix"),
-        ("lang_emb", "lang_emb"),
         ("llm", "llm"),
     ):
         vals = tr.get(key, None)
         if vals:
-            ms_vals = [float(x) * 1000.0 for x in vals]
+            ms_vals = _to_ms_list(list(vals))
             print(
                 colored(
                     f"[summary:model:{tag}] {label:<11} {_stats_line_ms(ms_vals)}",
@@ -221,10 +352,20 @@ def dump_perf_final_summary(bundle: dict[str, Any] | None) -> None:
             )
 
     if policy_trt is not None:
+        _print_compare_stage_summary(policy=policy, model=model, tag="pt")
+        _print_compare_stage_summary(policy=policy_trt, model=model_trt, tag="trt")
         _dump_policy_time_results(model, tag="pt")
         _dump_policy_time_results(model_trt, tag="trt")
         _dump_trt_engine_summary(policy_trt, tag="trt")
+        try:
+            from model_optimizer.infer.tensorrt.trt_hook_timer import format_trt_hook_summary_lines
+
+            for line in format_trt_hook_summary_lines(tag="trt"):
+                print(colored(line, "yellow"))
+        except ImportError:
+            pass
     else:
+        _print_compare_stage_summary(policy=policy, model=model, tag="pt")
         _dump_policy_time_results(model, tag="pt")
         _dump_trt_engine_summary(policy, tag="pt")
 
@@ -233,11 +374,20 @@ def dump_perf_final_summary(bundle: dict[str, Any] | None) -> None:
         from model_optimizer.infer.perf import (
             KEY_POLICY_ALIGN,
             KEY_POLICY_INFER,
-            format_perf_from_bundle,
+            format_collector_from_policy,
             stage_perf_from_policy,
         )
 
-        perf_lines = format_perf_from_bundle(bundle)
+        perf_lines: list[str] = []
+        if policy is not None:
+            perf_lines.extend(format_collector_from_policy(policy))
+        if policy_trt is not None:
+            perf_lines.extend(format_collector_from_policy(policy_trt))
+        native_ex = bundle.get("native_executor") if bundle else None
+        if native_ex is not None:
+            from model_optimizer.infer.perf import _lines_from_perf_holder
+
+            perf_lines.extend(_lines_from_perf_holder(native_ex))
         if perf_lines:
             for line in perf_lines:
                 print(colored(line, "yellow"))
@@ -397,29 +547,38 @@ def process_infer_chunk(bundle: dict[str, Any], idx: int) -> list[str]:
     # 模型级逐 stage 计时只在 ``model.perf=True`` 时写入 ``time_results``（与 standalone 一致）。
     # webui 由 ``args.trt_perf`` 控制是否开启（TRT 路径下各 stage 即各 engine 调用）。
     _perf_on = bool(getattr(args, "trt_perf", False))
-    if _perf_on and _perf_model is not None and not getattr(_perf_model, "perf", False):
-        try:
-            _perf_model.perf = True
-        except Exception:
-            pass
+    if _perf_on:
+        for pol in (policy, policy_trt):
+            if pol is None:
+                continue
+            m = _policy_torch_model(pol)
+            if m is not None and not getattr(m, "perf", False):
+                try:
+                    m.perf = True
+                except Exception:
+                    pass
 
-    tr = getattr(_perf_model, "time_results", None) if (_perf_on and _perf_model is not None) else None
-    if tr:
-        for key, label in (
-            ("suffix", "suffix"),
-            ("action", "action"),
-            ("vit", "embed_prefix"),
-            ("lang_emb", "lang_emb"),
-            ("llm", "llm"),
-        ):
-            if key in tr and tr[key]:
-                print(
-                    colored(
-                        f"{label} {np.mean(tr[key])*1000:.2f} ± {np.std(tr[key])*1000:.2f} ms (shared)",
-                        "green",
-                    )
+    def _print_chunk_stages(pol: Any | None, path_tag: str) -> None:
+        if not _perf_on or pol is None:
+            return
+        m = _policy_torch_model(pol)
+        for stage, keys in _COMPARE_STAGE_SPECS:
+            ms_vals = _stage_samples_ms(policy=pol, model=m, stage=stage, keys=keys)
+            if not ms_vals:
+                continue
+            mean_ms = float(np.mean(np.asarray(ms_vals, dtype=np.float64)))
+            std_ms = float(np.std(np.asarray(ms_vals, dtype=np.float64)))
+            print(
+                colored(
+                    f"[{path_tag}] {stage} {mean_ms:.2f} ± {std_ms:.2f} ms",
+                    "green",
                 )
-    # 总耗时（本段 e2e；TRT 单后端路径下 infer_ms_pt 即该后端单次推理耗时，单位 ms）。
+            )
+
+    _print_chunk_stages(policy, "pt")
+    _print_chunk_stages(policy_trt, "trt")
+
+    # 总耗时（本段 e2e；compare 下为 PT+TRT 串行 wall time）。
     if _perf_on and infer_ms_pt:
         _e2e = float(infer_ms_pt) + (float(infer_ms_second) if infer_ms_second else 0.0)
         print(colored(f"e2e {_e2e:.2f} ms (chunk idx={idx})", "green"))

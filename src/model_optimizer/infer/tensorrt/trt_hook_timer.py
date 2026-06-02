@@ -86,6 +86,35 @@ def clear_trt_hook_stats() -> None:
         _LAT_MS.clear()
 
 
+def get_trt_hook_stats_snapshot() -> dict[str, list[float]]:
+    """返回当前累计的钩子耗时副本（毫秒），供 webui 等汇总打印。"""
+    with _LOCK:
+        return {k: list(v) for k, v in _LAT_MS.items()}
+
+
+def format_trt_hook_summary_lines(
+    *,
+    tag: str = "trt",
+    prefix: str | None = None,
+) -> list[str]:
+    """按钩子名排序，生成 ``[summary:hook:{tag}]`` 汇总行。"""
+    row_tag = prefix if prefix is not None else f"[summary:hook:{tag}]"
+    lines: list[str] = []
+    snap = get_trt_hook_stats_snapshot()
+    for name in sorted(snap.keys()):
+        arr = np.asarray(snap[name], dtype=np.float64)
+        if arr.size == 0:
+            continue
+        lines.append(
+            f"{row_tag} {name:<28} "
+            f"n={int(arr.size)} mean={float(np.mean(arr)):.2f} "
+            f"p50={float(np.percentile(arr, 50)):.2f} "
+            f"p90={float(np.percentile(arr, 90)):.2f} "
+            f"p99={float(np.percentile(arr, 99)):.2f} ms"
+        )
+    return lines
+
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 

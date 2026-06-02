@@ -42,6 +42,35 @@ def _trt_vit_scale_fix_kw(args: Args) -> bool | None:
     return None
 
 
+def _policy_torch_model_for_perf(pol: Any) -> Any | None:
+    m = getattr(pol, "_model", None)
+    if m is not None:
+        return m
+    inner = getattr(pol, "_policy", None)
+    if inner is not None:
+        return getattr(inner, "_model", None)
+    return None
+
+
+def _install_compare_pt_stage_perf(policy: Any, *, warmup_skips: int) -> None:
+    """compare 第一路 PyTorch：安装与 TRT 路对齐的阶段耗时（sample_actions / denoise_step 等）。"""
+    if not bool(os.environ.get("MO_PI0_STAGE_PROFILE", "").strip()):
+        return
+    model = _policy_torch_model_for_perf(policy)
+    if model is None:
+        return
+    try:
+        from model_optimizer.infer.perf import StagePerfCollector, install_infer_stage_perf
+        from model_optimizer.infer.tensorrt.pi0_stage_profiler import maybe_install_pi0_stage_profiler
+
+        sp = StagePerfCollector(enabled=True, summary_prefix="[summary:model:pt]")
+        install_infer_stage_perf(policy, model, sp, warmup_skips=int(warmup_skips))
+        maybe_install_pi0_stage_profiler(model)
+        setattr(policy, "_stage_perf", sp)
+    except Exception as exc:
+        logging.warning("compare_mode：PyTorch 路阶段 profiling 安装失败: %s", exc)
+
+
 def _trt_trt_second_engine_filenames(args: Args) -> dict[str, str]:
     """第二路引擎文件名：``trt_trt_second_*`` 非空优先，否则回退到主路 ``*_engine``。"""
 
@@ -257,11 +286,20 @@ def load_infer_bundle(
             raise ValueError("compare_mode=True 时必须设置 --engine-path（TensorRT 引擎目录）。")
         print(colored("[infer] compare_mode：加载第二套 policy 并挂 TensorRT …", "cyan"), flush=True)
         _p("policy_trt", "compare：加载 TensorRT 路 PyTorch 封装并挂载引擎 …")
+        if bool(getattr(args, "trt_enable_stage_profile", True)):
+            os.environ["MO_PI0_STAGE_PROFILE"] = "1"
+            os.environ["PI05_PROFILE_WARMUP"] = str(
+                int(getattr(args, "trt_stage_profile_warmup", 10))
+            )
+        if bool(getattr(args, "trt_enable_hook_profile", True)):
+            os.environ["MO_TRT_HOOK_STATS"] = "1"
+            os.environ.setdefault("MO_TRT_HOOK_STATS_PRINT", "0")
         policy_trt = policy_config.create_trained_policy(
             train_cfg,
             args.checkpoint,
             pytorch_device=args.device,
         )
+        _compare_warmup = max(int(getattr(args, "perf_profile_warmup_chunks", 10)), 0)
         load_tensorrt_engines(
             policy_trt,
             engine_path=args.engine_path,
@@ -272,7 +310,14 @@ def load_infer_bundle(
             denoise_engine=args.denoise_engine,
             embed_prefix_engine=args.embed_prefix_engine,
             trt_vit_scale_fix=_trt_vit_scale_fix_kw(args),
+            trt_perf=bool(getattr(args, "trt_perf", True)),
+            trt_perf_warmup=_compare_warmup,
+            trt_perf_print_interval=int(getattr(args, "trt_perf_print_interval", 50)),
+            trt_cuda_graph=bool(getattr(args, "trt_cuda_graph", False)),
+            trt_cuda_graph_warmup=int(getattr(args, "trt_cuda_graph_warmup", 3)),
+            denoise_adarms_precompute=bool(getattr(args, "denoise_adarms_precompute", False)),
         )
+        _install_compare_pt_stage_perf(policy, warmup_skips=_compare_warmup)
         print(colored("[infer] compare_mode：PyTorch + TensorRT 双策略已就绪", "cyan"), flush=True)
         _p("policy_trt", "TensorRT 引擎已挂载（compare 双路就绪）")
 
