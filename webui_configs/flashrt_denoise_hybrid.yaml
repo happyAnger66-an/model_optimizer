@@ -1,0 +1,37 @@
+checkpoint: /srcs/openpi/pytorch_pi05_libero/
+config: pi05_libero
+inference_mode: tensorrt
+precision: bf16
+
+# Dataset/eval range
+num_samples: 300
+start_index: 0
+
+# TensorRT engines
+engine_path: /path/to/pi05/trt_engines
+vit_engine: vit.engine
+llm_engine: llm.engine
+expert_engine: expert.engine
+denoise_engine: ""
+embed_prefix_engine: embed_prefix.engine
+
+# FlashRT hybrid (P2): denoise -> FlashRT decoder_forward
+# Optional: vit/embed_prefix -> FlashRT SigLIP
+trt_use_flashrt_siglip_embed_prefix: false
+trt_use_flashrt_denoise: true
+flashrt_checkpoint_dir: /path/to/pi05/checkpoint_dir
+flashrt_num_views: 2
+flashrt_siglip_use_cuda_graph: true
+
+# IMPORTANT:
+# Keep denoise_engine empty when trt_use_flashrt_denoise=true.
+
+# WebSocket server
+host: 0.0.0.0
+port: 8765
+path: /ws
+gpu_stats_interval_sec: 1.0
+
+# Stable comparison
+noise: fixed
+noise_seed: 0

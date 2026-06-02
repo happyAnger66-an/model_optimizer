@@ -38,9 +38,9 @@ native_enable_denoise: true                     # 覆盖 denoise（交给 native
 
 # —— 仓内 FlashRT decoder（不依赖 flash_rt 包，整 10 步循环替代 denoise loop） ——
 native_flashrt_decoder: true                    # 启用仓内 FlashRT decoder（静态 FP8 整循环）
-native_flashrt_build_dir: "/workspace/flash_rt/build"   # flash_rt_kernels*.so 所在目录（Thor 上构建产物；不设则用环境变量 MO_FLASHRT_BUILD_DIR）
+native_flashrt_build_dir: "/srcs/mopt/FlashRT/build"   # flash_rt_kernels*.so 所在目录（Thor 上构建产物；不设则用环境变量 MO_FLASHRT_BUILD_DIR）
 native_flashrt_fmha_so: ""                              # 可选 CUTLASS FMHA（libfmha_fp16_strided.so）路径；空则不加载
-native_flashrt_use_fp8: true                    # true=静态 FP8 布局；false=fp16 baseline（精度对照/调试用）
+native_flashrt_use_fp8: false                    # true=静态 FP8 布局；false=fp16 baseline（精度对照/调试用）
 native_flashrt_act_scales_path: "/tmp/quantize/pi05/flashrt_decoder_act_scales.json"  # 激活量化 scale JSON（离线量化导出/加载路径）
 native_flashrt_calibrate: false                 # 首跑导出 act scales 时设 true；导出后改回 false 即自动加载上面的文件
 native_flashrt_calib_samples: 8                  # 标定累计样本数：跨 N 个 observation + 每样本跨 10 步，对激活 scale 取 max（提升 FP8 鲁棒性）
