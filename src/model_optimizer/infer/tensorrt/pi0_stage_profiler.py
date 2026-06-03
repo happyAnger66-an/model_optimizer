@@ -83,6 +83,7 @@ class Pi0StageProfiler:
         self.latencies: dict[str, list[float]] = defaultdict(list)
         # 供 native CUDA Graph 使用：capture 不能包含 perf_counter 等 CPU 计时代码。
         self._orig_denoise_step: Any = None
+        self._orig_pge_forward: Any = None
 
     def _append_ms(self, key: str, dt_ms: float) -> None:
         if not self._record_this_call:
@@ -123,6 +124,7 @@ class Pi0StageProfiler:
         # --- PaliGemmaWithExpertModel.forward (gemma_pytorch) ---
         pgm = m.paligemma_with_expert
         _orig_pge_fwd = pgm.forward
+        prof._orig_pge_forward = _orig_pge_fwd
 
         def _pge_fwd(self, *args, **kwargs):
             if not prof._record_this_call:

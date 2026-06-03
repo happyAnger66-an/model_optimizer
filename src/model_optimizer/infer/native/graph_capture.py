@@ -95,7 +95,8 @@ def resolve_eager_denoise_step(model: Any) -> Any:
     """返回未挂 stage profiler 的 ``denoise_step``（CUDA Graph capture 必须走 eager 实现）。
 
     TRT ``load_model`` 会在 native overlay 之前安装 :class:`Pi0StageProfiler`，其
-    ``denoise_step`` 包装含 ``time.perf_counter()``，会导致 ``cudaErrorStreamCaptureInvalidated``。
+    ``denoise_step`` / ``paligemma_with_expert.forward`` 包装含 ``time.perf_counter()``，
+    会导致 ``cudaErrorStreamCaptureInvalidated``。
     """
     prof = getattr(model, "_pi05_stage_profiler", None)
     if prof is not None:
@@ -103,6 +104,24 @@ def resolve_eager_denoise_step(model: Any) -> Any:
         if orig is not None:
             return orig
     return model.denoise_step
+
+
+def restore_eager_ops_for_cuda_graph(model: Any) -> list[str]:
+    """去掉 Pi0 stage profiler 在 denoise capture 路径上会触发的 CPU 计时包装。
+
+    ``denoise_step`` 内部会调用 ``paligemma_with_expert.forward``；仅 unwrap denoise 不够。
+    """
+    restored: list[str] = []
+    prof = getattr(model, "_pi05_stage_profiler", None)
+    if prof is None:
+        return restored
+    pge = getattr(model, "paligemma_with_expert", None)
+    if pge is not None:
+        orig_fwd = getattr(prof, "_orig_pge_forward", None)
+        if orig_fwd is not None and pge.forward is not orig_fwd:
+            pge.forward = orig_fwd
+            restored.append("paligemma_with_expert.forward")
+    return restored
 
 
 def _read_capture_probe_stage(observation: Any) -> str:
@@ -179,6 +198,18 @@ def _build_static_past_key_values(
         out.append((static_flat[j], static_flat[j + 1]))
         j += 2
     return out
+
+
+def _build_static_past_for_capture(
+    template: Any, static_flat: list[torch.Tensor]
+) -> Any:
+    """Capture 用静态 KV：使用 ``list[(k,v)]`` 引用 static buffer，避免 DynamicCache 副作用。"""
+    n_layers = len(static_flat) // 2
+    if n_layers <= 0:
+        return _build_static_past_key_values(template, static_flat)
+    return [
+        (static_flat[2 * i], static_flat[2 * i + 1]) for i in range(n_layers)
+    ]
 
 
 @dataclasses.dataclass
@@ -274,7 +305,7 @@ def build_graph_entry_for_denoise_step(
         static_flat = [torch.empty_like(t) for t in in_flat]
         for dst, src in zip(static_flat, in_flat, strict=True):
             dst.copy_(src, non_blocking=False)
-        static_past = _build_static_past_key_values(past_key_values, static_flat)
+        static_past = _build_static_past_for_capture(past_key_values, static_flat)
 
         static_x_t = torch.empty_like(x_t)
         static_x_t.copy_(x_t, non_blocking=False)
@@ -283,9 +314,14 @@ def build_graph_entry_for_denoise_step(
 
     for _ in range(max(int(warmup), 0)):
         with torch.cuda.stream(stream):
-            out = raw_denoise_step(
-                static_state, static_prefix, static_past, static_x_t, static_timestep
-            )
+            try:
+                out = raw_denoise_step(
+                    static_state, static_prefix, static_past, static_x_t, static_timestep
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"denoise_step warmup failed before CUDA graph capture: {exc}"
+                ) from exc
             if not torch.is_tensor(out):
                 raise TypeError(
                     f"denoise_step output must be Tensor, got {type(out).__name__}"
@@ -294,11 +330,18 @@ def build_graph_entry_for_denoise_step(
 
     graph = torch.cuda.CUDAGraph()
     capture_start = time.perf_counter()
-    with torch.cuda.graph(graph, stream=stream, capture_error_mode="thread_local"):
-        static_output = raw_denoise_step(
-            static_state, static_prefix, static_past, static_x_t, static_timestep
-        )
-    stream.synchronize()
+    try:
+        with torch.cuda.graph(graph, stream=stream, capture_error_mode="thread_local"):
+            static_output = raw_denoise_step(
+                static_state, static_prefix, static_past, static_x_t, static_timestep
+            )
+        stream.synchronize()
+    except Exception as exc:
+        stream.synchronize()
+        cur_stream.wait_stream(stream)
+        raise RuntimeError(
+            f"denoise_step CUDA graph capture failed: {exc}"
+        ) from exc
     cur_stream.wait_stream(stream)
     capture_ms = (time.perf_counter() - capture_start) * 1000.0
 

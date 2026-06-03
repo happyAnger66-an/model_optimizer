@@ -529,6 +529,22 @@ def load_infer_bundle(
             os.environ["MO_TRT_HOOK_STATS_PRINT"] = "1"
         print(colored("[infer] 加载 TensorRT 引擎 ...", "cyan"), flush=True)
         _p("tensorrt", "加载 TensorRT 引擎（vit/llm/expert 等）…")
+        trt_cuda_graph = bool(getattr(args, "trt_cuda_graph", False))
+        if (
+            bool(getattr(args, "native_overlay_on_tensorrt", False))
+            and bool(getattr(args, "native_enable_denoise", True))
+            and bool(getattr(args, "native_use_cuda_graph", True))
+            and trt_cuda_graph
+        ):
+            print(
+                colored(
+                    "[infer] native denoise CUDA Graph 与 TRT engine CUDA Graph 互斥，"
+                    "已自动关闭 trt_cuda_graph（vit/llm 仍走 TRT eager launch）",
+                    "yellow",
+                ),
+                flush=True,
+            )
+            trt_cuda_graph = False
         load_tensorrt_engines(
             policy,
             engine_path=args.engine_path,
@@ -542,7 +558,7 @@ def load_infer_bundle(
             trt_perf=bool(getattr(args, "trt_perf", True)),
             trt_perf_warmup=int(getattr(args, "trt_perf_warmup", 20)),
             trt_perf_print_interval=int(getattr(args, "trt_perf_print_interval", 50)),
-            trt_cuda_graph=bool(getattr(args, "trt_cuda_graph", False)),
+            trt_cuda_graph=trt_cuda_graph,
             trt_cuda_graph_warmup=int(getattr(args, "trt_cuda_graph_warmup", 3)),
             denoise_adarms_precompute=bool(getattr(args, "denoise_adarms_precompute", False)),
             trt_vit_scale_fix=_trt_vit_scale_fix_kw(args),

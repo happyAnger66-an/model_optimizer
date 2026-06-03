@@ -23,7 +23,8 @@ denoise_engine: ""
 trt_perf: true
 trt_perf_warmup: 20
 trt_perf_print_interval: 50
-trt_cuda_graph: true
+trt_cuda_graph: false
+# native denoise CUDA Graph 与 TRT engine CUDA Graph 不宜同开（bundle 会自动关 TRT 侧）
 trt_cuda_graph_warmup: 3
 
 # —— Native 阶段覆盖（关键） ——

@@ -16,7 +16,7 @@ from ..perf import StagePerfCollector, install_infer_stage_perf
 from ...models.pi05.model_pi05 import Pi05Model
 from .decoder_runner import NativeDenoiseLoopRunner, NativeDenoiseLoopRunnerV2
 from .denoise_backend import NativeDenoiseBackend
-from .graph_capture import resolve_eager_denoise_step
+from .graph_capture import resolve_eager_denoise_step, restore_eager_ops_for_cuda_graph
 from .quant_runtime import NativeQuantRuntime
 
 logger = logging.getLogger(__name__)
@@ -193,6 +193,16 @@ class Pi05NativeExecutor(Executor):
             vals = [past_key_values[i][1] for i in range(n)]
         return torch.cat(keys, dim=0), torch.cat(vals, dim=0)
 
+    def _prepare_cuda_graph_eager_ops(self, *, use_cuda_graph: bool) -> None:
+        if not use_cuda_graph:
+            return
+        restored = restore_eager_ops_for_cuda_graph(self.pi05_model)
+        if restored:
+            logger.info(
+                "[native] CUDA graph: restored eager ops (removed profiler wrap on %s)",
+                ", ".join(restored),
+            )
+
     def _install_denoise_runtime(
         self,
         *,
@@ -201,6 +211,7 @@ class Pi05NativeExecutor(Executor):
         perf: bool,
     ) -> None:
         # denoise 阶段后端：与 TRT denoise engine 接口对齐（堆叠 KV），可与 vit/llm=TRT 自由组合。
+        self._prepare_cuda_graph_eager_ops(use_cuda_graph=use_cuda_graph)
         eager_denoise = resolve_eager_denoise_step(self.pi05_model)
         self._orig_denoise = eager_denoise
         if use_cuda_graph and eager_denoise is not self.pi05_model.denoise_step:
@@ -242,6 +253,7 @@ class Pi05NativeExecutor(Executor):
         graph_warmup: int,
         perf: bool,
     ) -> None:
+        self._prepare_cuda_graph_eager_ops(use_cuda_graph=use_cuda_graph)
         if self._orig_denoise is None:
             self._orig_denoise = resolve_eager_denoise_step(self.pi05_model)
         self._orig_sample_actions = self.pi05_model.sample_actions
