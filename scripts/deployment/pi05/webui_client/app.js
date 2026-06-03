@@ -1238,6 +1238,8 @@ function updateTop(event) {
   el("runId").textContent = event.run_id ?? "-";
   el("repoId").textContent = meta?.repo_id ?? "-";
   el("backend").textContent = meta?.backend ?? "-";
+  el("actionHorizon").textContent = meta?.action_horizon ?? "-";
+  el("actionDim").textContent = meta?.action_dim ?? "-";
   el("episodeId").textContent = event.episode_id ?? "-";
   el("globalIndex").textContent = event.global_index ?? "-";
   el("kInChunk").textContent = event.k_in_chunk ?? "-";
@@ -1673,6 +1675,8 @@ function clearClientDisplay() {
   if (imgB) imgB.removeAttribute("src");
   if (imgW) imgW.removeAttribute("src");
   el("runId").textContent = "-";
+  el("actionHorizon").textContent = meta?.action_horizon ?? "-";
+  el("actionDim").textContent = meta?.action_dim ?? "-";
   el("episodeId").textContent = "-";
   el("globalIndex").textContent = "-";
   el("kInChunk").textContent = "-";
@@ -2330,6 +2334,8 @@ function connectInternal() {
       el("runId").textContent = meta.run_id ?? "-";
       el("repoId").textContent = meta.repo_id ?? "-";
       el("backend").textContent = meta.backend ?? "-";
+      el("actionHorizon").textContent = meta.action_horizon ?? "-";
+      el("actionDim").textContent = meta.action_dim ?? "-";
       applyTensorrtMetaFromMsg(meta);
       applyOnnxrtMetaFromMsg(meta);
       el("gpuUtil").textContent =
@@ -2341,8 +2347,9 @@ function connectInternal() {
         const lo = meta.start_index ?? "?";
         const hi = meta.end_index_exclusive ?? "?";
         const H = meta.action_horizon ?? "?";
+        const D = meta.action_dim ?? "?";
         setProgress(
-          `服务端就绪 · run_id=${meta.run_id ?? "-"} · 评估下标 [${lo}, ${hi}) · action_horizon=${H} · 等待 step 流…`
+          `服务端就绪 · run_id=${meta.run_id ?? "-"} · 评估下标 [${lo}, ${hi}) · action_horizon=${H} · action_dim=${D} · 等待 step 流…`
         );
       }
       setInferLoadingSub("模型与数据已就绪，等待首次推理结果（step）推送…");
