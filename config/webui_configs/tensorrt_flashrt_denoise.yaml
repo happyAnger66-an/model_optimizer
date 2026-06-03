@@ -66,3 +66,5 @@ noise_seed: 0                                   # noise=fixed 时与 chunk 起�
 # —— WebSocket 服务 ——
 host: 0.0.0.0                                   # 监听地址
 port: 8765                                      # 监听端口（client 连 ws://<host>:<port>/ws）
+wait_for_client: true                           # 首个 WebSocket 客户端连接后再开始推理，避免页面只收到 meta
+history_size: 4096                              # 浏览器刷新/晚连时回放最近 step，避免图表为空
