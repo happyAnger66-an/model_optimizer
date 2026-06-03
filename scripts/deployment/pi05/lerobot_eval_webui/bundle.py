@@ -317,6 +317,35 @@ def load_infer_bundle(
             trt_cuda_graph_warmup=int(getattr(args, "trt_cuda_graph_warmup", 3)),
             denoise_adarms_precompute=bool(getattr(args, "denoise_adarms_precompute", False)),
         )
+        if bool(getattr(args, "native_overlay_on_tensorrt", False)):
+            _p("native", "compare：在 TensorRT 路叠加 Native/FlashRT decoder（阶段覆盖）…")
+            native_executor = load_native_runtime(
+                policy_trt,
+                precision=args.precision,
+                use_cuda_graph=bool(getattr(args, "native_use_cuda_graph", True)),
+                full_loop_graph=bool(getattr(args, "native_full_loop_graph", False)),
+                graph_warmup=int(getattr(args, "native_graph_warmup", 3)),
+                compile_expert=bool(getattr(args, "native_compile_expert", False)),
+                enable_expert=bool(getattr(args, "native_enable_expert", True)),
+                enable_denoise=bool(getattr(args, "native_enable_denoise", True)),
+                quant_spec_path=str(getattr(args, "native_quant_spec_path", "") or ""),
+                recalib_enable=bool(getattr(args, "native_recalib_enable", False)),
+                recalib_max_samples=int(getattr(args, "native_recalib_max_samples", 0)),
+                recalib_percentile=float(getattr(args, "native_recalib_percentile", 99.9)),
+                flashrt_decoder=bool(getattr(args, "native_flashrt_decoder", False)),
+                flashrt_build_dir=str(getattr(args, "native_flashrt_build_dir", "") or ""),
+                flashrt_fmha_so=str(getattr(args, "native_flashrt_fmha_so", "") or ""),
+                flashrt_use_fp8=bool(getattr(args, "native_flashrt_use_fp8", True)),
+                flashrt_act_scales_path=str(getattr(args, "native_flashrt_act_scales_path", "") or ""),
+                flashrt_calibrate=bool(getattr(args, "native_flashrt_calibrate", False)),
+                flashrt_calib_samples=int(getattr(args, "native_flashrt_calib_samples", 8)),
+                sample_actions_warmup_skips=_compare_warmup,
+            )
+            try:
+                setattr(policy_trt, "_native_executor", native_executor)
+            except Exception:
+                pass
+            _p("native", "compare：Native/FlashRT 阶段覆盖已生效")
         _install_compare_pt_stage_perf(policy, warmup_skips=_compare_warmup)
         print(colored("[infer] compare_mode：PyTorch + TensorRT 双策略已就绪", "cyan"), flush=True)
         _p("policy_trt", "TensorRT 引擎已挂载（compare 双路就绪）")

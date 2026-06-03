@@ -1,0 +1,68 @@
+# lerobot_eval_webui_server —— PyTorch vs TensorRT(vit/llm)+FlashRT(denoise) 双路对比。
+# 用法：
+#   python scripts/deployment/pi05/lerobot_eval_webui_server.py \
+#     --webui-config config/webui_configs/tensorrt_flashrt_denoise_compare.yaml
+#
+# compare_mode=True：
+# - 第一路 policy：原始 PyTorch，作为精度参考。
+# - 第二路 policy_trt：vit/llm 走 TensorRT，denoise 由 native FlashRT decoder 覆盖。
+# - 双路共用固定 noise，逐 chunk 输出动作误差统计。
+checkpoint: /srcs/openpi/pytorch_pi05_libero/
+config: pi05_libero
+inference_mode: tensorrt
+device: cuda:0
+precision: bf16
+
+compare_mode: true
+vit_pt_trt_compare: true
+vit_batch_views: true
+trt_vit_scale_fix: true
+
+# —— TensorRT 引擎路径（compare 第二路的 vit/llm） ——
+engine_path: /tmp/build/pi05/opt
+vit_engine: vit_fp8_batch.engine
+llm_engine: llm_nvfp4_lat.engine
+denoise_engine: ""
+expert_engine: ""
+embed_prefix_engine: ""
+
+# —— TRT engine 运行开关（仅作用于 vit/llm） ——
+trt_perf: true
+trt_perf_warmup: 20
+trt_perf_print_interval: 50
+trt_cuda_graph: true
+trt_cuda_graph_warmup: 3
+
+# —— 在 compare 的 TensorRT 路上叠加 FlashRT denoise ——
+native_overlay_on_tensorrt: true
+native_enable_expert: false
+native_enable_denoise: true
+native_use_cuda_graph: false
+native_full_loop_graph: false
+
+native_flashrt_decoder: true
+native_flashrt_build_dir: "/srcs/mopt/FlashRT/flash_rt/"
+native_flashrt_fmha_so: ""
+# 已完成 act scale 校准后可设 true；若要先看 fp16 baseline，保持 false。
+native_flashrt_use_fp8: true
+native_flashrt_act_scales_path: "/tmp/quantize/pi05/flashrt_decoder_act_scales.json"
+native_flashrt_calibrate: false
+native_flashrt_calib_samples: 8
+
+# —— 性能 profile / summary ——
+perf_profile_chunk: true
+perf_profile_warmup_chunks: 10
+perf_profile_print_interval: 20
+perf_profile_top_n: 3
+trt_enable_stage_profile: false
+trt_stage_profile_warmup: 10
+trt_enable_hook_profile: true
+
+# —— 评估区间与可复现 noise ——
+num_samples: 100
+start_index: 0
+noise: fixed
+noise_seed: 0
+
+host: 0.0.0.0
+port: 8765
