@@ -91,6 +91,20 @@ def _copy_tensor_tree_inplace(dst: Any, src: Any) -> None:
         return
 
 
+def resolve_eager_denoise_step(model: Any) -> Any:
+    """返回未挂 stage profiler 的 ``denoise_step``（CUDA Graph capture 必须走 eager 实现）。
+
+    TRT ``load_model`` 会在 native overlay 之前安装 :class:`Pi0StageProfiler`，其
+    ``denoise_step`` 包装含 ``time.perf_counter()``，会导致 ``cudaErrorStreamCaptureInvalidated``。
+    """
+    prof = getattr(model, "_pi05_stage_profiler", None)
+    if prof is not None:
+        orig = getattr(prof, "_orig_denoise_step", None)
+        if orig is not None:
+            return orig
+    return model.denoise_step
+
+
 def _read_capture_probe_stage(observation: Any) -> str:
     if isinstance(observation, dict):
         probe = observation.get("__capture_probe")
@@ -240,6 +254,9 @@ def build_graph_entry_for_denoise_step(
     ):
         raise TypeError("prefix_pad_masks/x_t/timestep must be torch.Tensor")
 
+    # 与 TRT engine CUDA Graph / 其它异步 kernel 隔离，避免 capture 读到 invalidated stream。
+    torch.cuda.synchronize(device=x_t.device)
+
     stream = torch.cuda.Stream(device=x_t.device)
     cur_stream = torch.cuda.current_stream(device=x_t.device)
     stream.wait_stream(cur_stream)
@@ -326,6 +343,8 @@ def build_graph_entry_for_sample_actions(
         raise ValueError("noise must be non-empty")
     if num_steps <= 0:
         raise ValueError(f"num_steps must be > 0, got {num_steps}")
+
+    torch.cuda.synchronize(device=noise.device)
 
     stream = torch.cuda.Stream(device=noise.device)
     cur_stream = torch.cuda.current_stream(device=noise.device)

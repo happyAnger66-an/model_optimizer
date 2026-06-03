@@ -104,7 +104,10 @@ class NativeDenoiseLoopRunner:
             if "cudaErrorStreamCaptureInvalidated" in msg or "previous error during capture" in msg:
                 self._capture_disabled_reason = msg
                 logger.warning(
-                    "[native] capture invalidated, disable cuda graph for this process; fallback eager. reason=%s",
+                    "[native] capture invalidated, disable cuda graph for this process; fallback eager. "
+                    "reason=%s "
+                    "(常见原因：Pi0 stage profiler 包装了 denoise_step，或 TRT CUDA Graph 与 capture 同 stream 冲突；"
+                    "请确认已部署 resolve_eager_denoise_step 修复)",
                     msg,
                 )
             else:

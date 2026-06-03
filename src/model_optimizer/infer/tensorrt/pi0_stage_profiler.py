@@ -81,6 +81,8 @@ class Pi0StageProfiler:
         self._sa_invocation = 0
         self._record_this_call = False
         self.latencies: dict[str, list[float]] = defaultdict(list)
+        # 供 native CUDA Graph 使用：capture 不能包含 perf_counter 等 CPU 计时代码。
+        self._orig_denoise_step: Any = None
 
     def _append_ms(self, key: str, dt_ms: float) -> None:
         if not self._record_this_call:
@@ -135,6 +137,7 @@ class Pi0StageProfiler:
 
         # --- denoise_step（可能已是 TRT MethodType）---
         _orig_den = m.denoise_step
+        prof._orig_denoise_step = _orig_den
 
         def _den(self, state, prefix_pad_masks, past_key_values, x_t, timestep):
             if not prof._record_this_call:

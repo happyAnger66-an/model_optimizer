@@ -16,6 +16,7 @@ from ..perf import StagePerfCollector, install_infer_stage_perf
 from ...models.pi05.model_pi05 import Pi05Model
 from .decoder_runner import NativeDenoiseLoopRunner, NativeDenoiseLoopRunnerV2
 from .denoise_backend import NativeDenoiseBackend
+from .graph_capture import resolve_eager_denoise_step
 from .quant_runtime import NativeQuantRuntime
 
 logger = logging.getLogger(__name__)
@@ -200,9 +201,15 @@ class Pi05NativeExecutor(Executor):
         perf: bool,
     ) -> None:
         # denoise 阶段后端：与 TRT denoise engine 接口对齐（堆叠 KV），可与 vit/llm=TRT 自由组合。
-        self._orig_denoise = self.pi05_model.denoise_step
+        eager_denoise = resolve_eager_denoise_step(self.pi05_model)
+        self._orig_denoise = eager_denoise
+        if use_cuda_graph and eager_denoise is not self.pi05_model.denoise_step:
+            logger.info(
+                "[native] CUDA graph will capture eager denoise_step "
+                "(bypass Pi0 stage profiler wrapper)"
+            )
         self._denoise_backend = NativeDenoiseBackend(
-            self._orig_denoise,
+            eager_denoise,
             use_cuda_graph=use_cuda_graph,
             graph_warmup=graph_warmup,
             perf=perf,
@@ -236,7 +243,7 @@ class Pi05NativeExecutor(Executor):
         perf: bool,
     ) -> None:
         if self._orig_denoise is None:
-            self._orig_denoise = self.pi05_model.denoise_step
+            self._orig_denoise = resolve_eager_denoise_step(self.pi05_model)
         self._orig_sample_actions = self.pi05_model.sample_actions
 
         def denoise_loop_capture_safe(
