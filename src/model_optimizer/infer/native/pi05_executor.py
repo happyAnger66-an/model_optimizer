@@ -586,7 +586,19 @@ class Pi05NativeExecutor(Executor):
                         use_cache=True,
                     )
                 past_keys, past_values = self._stack_past_key_values(past_key_values)
-                enc_seq = int(past_keys.shape[-2])
+                if int(prefix_pad_masks.shape[0]) != 1:
+                    raise ValueError(
+                        "FlashRT decoder hybrid currently supports batch=1; "
+                        f"got batch={int(prefix_pad_masks.shape[0])}"
+                    )
+                valid_prefix = prefix_pad_masks[0].to(dtype=torch.bool)
+                enc_seq = int(valid_prefix.sum().item())
+                if past_keys.dim() == 4:
+                    past_keys = past_keys[:, :, valid_prefix, :].contiguous()
+                    past_values = past_values[:, :, valid_prefix, :].contiguous()
+                else:
+                    past_keys = past_keys[:, valid_prefix, :].contiguous()
+                    past_values = past_values[:, valid_prefix, :].contiguous()
 
                 if noise is None:
                     bsize = int(prefix_pad_masks.shape[0])
