@@ -22,7 +22,7 @@ trt_vit_scale_fix: true                        # TRT ViT 补乘 sqrt(hidden_size
 # —— TensorRT 引擎路径（vit/llm 仍走 TRT） ——
 engine_path: /tmp/build/pi05/opt                # TRT 引擎根目录（含各子图 .engine）
 vit_engine: vit_fp8_batch.engine                # ViT 引擎文件名（FP8 + 多视角 batch）
-llm_engine: llm_nvfp4_lat.engine                # LLM 引擎文件名（NVFP4 低时延版）
+llm_engine: llm_fp8.engine                # LLM 引擎文件名（NVFP4 低时延版）
 denoise_engine: ""                              # 留空：denoise 不走 TRT，交给下面的 native FlashRT decoder
 
 # —— TRT engine 运行开关（仅作用于 vit/llm 这类 TRT 引擎） ——

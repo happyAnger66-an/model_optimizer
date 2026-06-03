@@ -767,6 +767,7 @@ def load_infer_bundle(
         "trt_ort_compare": bool(getattr(args, "trt_ort_compare", False)),
         "trt_trt_compare": bool(getattr(args, "trt_trt_compare", False)),
         "action_horizon": int(action_horizon),
+        "action_dim": int(action_dim),
         "start_index": int(args.start_index),
         "end_index_exclusive": int(end),
         "send_wrist": bool(args.send_wrist),
