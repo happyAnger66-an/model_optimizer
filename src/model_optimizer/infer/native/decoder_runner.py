@@ -106,8 +106,8 @@ class NativeDenoiseLoopRunner:
                 logger.warning(
                     "[native] capture invalidated, disable cuda graph for this process; fallback eager. "
                     "reason=%s "
-                    "(常见原因：Pi0 stage profiler 包装了 denoise_step 或 paligemma forward，"
-                    "或 TRT CUDA Graph 与 native capture 争用；请确认已部署 restore_eager_ops_for_cuda_graph)",
+                    "(单步 denoise_step 不支持 CUDA Graph；请确认 native_use_cuda_graph 已走 full-loop，"
+                    "或设置 native_full_loop_graph: true / trt_enable_stage_profile: false)",
                     msg,
                 )
             else:

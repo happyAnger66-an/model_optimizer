@@ -32,6 +32,8 @@ native_overlay_on_tensorrt: true
 native_enable_expert: false
 native_enable_denoise: true
 native_use_cuda_graph: true
+# use_cuda_graph=true 时自动走 full-loop denoise capture（无需再设 true；单步 denoise_step 无法 graph）
+native_full_loop_graph: false
 native_graph_warmup: 3
 native_compile_expert: false
 native_quant_spec_path: ""

@@ -122,9 +122,15 @@ class Pi05NativeExecutor(Executor):
                 flashrt_calibrate,
             )
         elif enable_denoise:
-            if full_loop_graph:
-                # full-loop 模式下，避免安装单步 denoise runner（含额外包装逻辑），
-                # 直接对原始 denoise_step 循环做 graph capture/replay，降低 capture 冲突风险。
+            # 单步 ``denoise_step``（含 embed_suffix + create_causal_mask）在 capture 区会动态分配张量，
+            # 不能稳定做 CUDA Graph；``use_cuda_graph=True`` 时改走 full-loop（仅 capture 10 步 denoise）。
+            prefer_full_loop = bool(full_loop_graph) or bool(use_cuda_graph)
+            if prefer_full_loop:
+                if use_cuda_graph and not full_loop_graph:
+                    logger.info(
+                        "[native] per-step denoise CUDA graph 不可用（HF forward/mask 动态分配）；"
+                        "自动切换为 full-loop denoise graph（prefix TRT 仍 eager）"
+                    )
                 self._install_full_loop_runtime(
                     use_cuda_graph=use_cuda_graph,
                     graph_warmup=graph_warmup,
@@ -137,14 +143,12 @@ class Pi05NativeExecutor(Executor):
                 )
             else:
                 self._install_denoise_runtime(
-                    use_cuda_graph=use_cuda_graph,
+                    use_cuda_graph=False,
                     graph_warmup=graph_warmup,
                     perf=perf,
                 )
                 logger.info(
-                    "[native] denoise stage enabled (cuda_graph=%s warmup=%s)",
-                    use_cuda_graph,
-                    graph_warmup,
+                    "[native] denoise stage enabled (per-step eager, cuda_graph=false)",
                 )
 
         self._install_sample_actions_stage_timer(config)
@@ -272,58 +276,38 @@ class Pi05NativeExecutor(Executor):
                     probe["stage"] = stage
 
             def _denoise_step_with_probe(
-                state,
                 prefix_pad_masks,
                 past_key_values,
                 x_t,
                 timestep,
             ):
                 _set_probe("denoise_embed_suffix_before")
-                # capture-safe suffix embedding（pi05 路径）
                 time_freq = observation["time_freq"]
-                suffix_pad_mask_template = observation["suffix_pad_mask_template"]
-                suffix_att_mask_template = observation["suffix_att_mask_template"]
+                sin_input_buf = observation["sin_input_buf"]
+                time_emb_buf = observation["time_emb_buf"]
+                half = sin_input_buf.shape[1]
 
                 _set_probe("denoise_time_emb")
-                sin_input = time_freq[None, :] * timestep[:, None]
-                time_emb = torch.cat([torch.sin(sin_input), torch.cos(sin_input)], dim=1)
-                time_emb = time_emb.to(dtype=timestep.dtype)
+                sin_input_buf.copy_(time_freq.unsqueeze(0))
+                sin_input_buf.mul_(timestep.unsqueeze(1))
+                torch.sin(sin_input_buf, out=time_emb_buf[:, :half])
+                torch.cos(sin_input_buf, out=time_emb_buf[:, half:])
 
                 _set_probe("denoise_action_proj")
-                action_emb = self.pi05_model.action_in_proj(x_t)
+                suffix_embs = self.pi05_model.action_in_proj(x_t)
 
                 _set_probe("denoise_time_mlp")
-                x = self.pi05_model.time_mlp_in(time_emb)
+                x = self.pi05_model.time_mlp_in(time_emb_buf)
                 x = F.silu(x)
                 x = self.pi05_model.time_mlp_out(x)
                 adarms_cond = F.silu(x)
-
-                suffix_embs = action_emb
-                bsize_local, action_time_dim = suffix_embs.shape[:2]
-                suffix_pad_masks = suffix_pad_mask_template.expand(bsize_local, action_time_dim)
-                suffix_att_masks = suffix_att_mask_template.expand(bsize_local, action_time_dim)
                 _set_probe("denoise_embed_suffix_after")
 
-                suffix_len = suffix_pad_masks.shape[1]
-                batch_size = prefix_pad_masks.shape[0]
-                prefix_len = prefix_pad_masks.shape[1]
-
                 _set_probe("denoise_build_masks")
-                prefix_pad_2d_masks = prefix_pad_masks[:, None, :].expand(
-                    batch_size, suffix_len, prefix_len
-                )
-                suffix_cumsum = torch.cumsum(suffix_att_masks, dim=1)
-                suffix_att_2d_masks = suffix_cumsum[:, None, :] <= suffix_cumsum[:, :, None]
-                suffix_pad_2d_masks = suffix_pad_masks[:, None, :] * suffix_pad_masks[:, :, None]
-                suffix_att_2d_masks = suffix_att_2d_masks & suffix_pad_2d_masks
-                full_att_2d_masks = torch.cat([prefix_pad_2d_masks, suffix_att_2d_masks], dim=2)
-
-                prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
-                position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
-                full_att_2d_masks_4d = self.pi05_model._prepare_attention_masks_4d(full_att_2d_masks)
+                full_att_2d_masks_4d = observation["full_att_2d_masks_4d"]
+                position_ids = observation["position_ids"]
 
                 _set_probe("denoise_forward_before")
-                self.pi05_model.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
                 outputs_embeds, _ = self.pi05_model.paligemma_with_expert.forward(
                     attention_mask=full_att_2d_masks_4d,
                     position_ids=position_ids,
@@ -342,11 +326,9 @@ class Pi05NativeExecutor(Executor):
                 _set_probe("denoise_proj_after")
                 return out
 
-            state = observation["state"]
             prefix_pad_masks = observation["prefix_pad_masks"]
             past_key_values = observation["past_key_values"]
             time_buf = observation["time_buf"]
-            bsize = int(prefix_pad_masks.shape[0])
 
             _set_probe("loop_setup")
             n_steps = max(int(num_steps), 1)
@@ -357,14 +339,13 @@ class Pi05NativeExecutor(Executor):
                 t_scalar = 1.0 - (float(s) / float(n_steps))
                 time_buf.fill_(t_scalar)
                 v_t = _denoise_step_with_probe(
-                    state,
                     prefix_pad_masks,
                     past_key_values,
                     x_t,
                     time_buf,
                 )
                 _set_probe(f"denoise_step_{s}_after")
-                x_t = x_t + v_t * dt
+                x_t.add_(v_t, alpha=dt)
             _set_probe("loop_done")
             return x_t
 
@@ -415,7 +396,7 @@ class Pi05NativeExecutor(Executor):
 
             # 目标边界：仅 denoise loop capture。
             # preprocess + prefix kv cache 维持 eager（与 FlashRT “整段 denoise loop 单次 replay” 目标一致）。
-            images, img_masks, lang_tokens, lang_masks, state = self_m._preprocess_observation(
+            images, img_masks, lang_tokens, lang_masks, _state = self_m._preprocess_observation(
                 observation,
                 train=False,
             )
@@ -439,15 +420,45 @@ class Pi05NativeExecutor(Executor):
                 inputs_embeds=[prefix_embs, None],
                 use_cache=True,
             )
+            batch = int(prefix_pad_masks.shape[0])
+            action_horizon = int(self_m.config.action_horizon)
+            prefix_len = int(prefix_pad_masks.shape[1])
+            suffix_len = action_horizon
+            time_emb_dim = int(self_m.action_in_proj.out_features)
+            mlp_dtype = self_m.time_mlp_in.weight.dtype
+
+            suffix_pad_masks = torch.ones(
+                (batch, action_horizon), dtype=torch.bool, device=device
+            )
+            suffix_att_masks = torch.cat(
+                [
+                    torch.ones((batch, 1), dtype=torch.float32, device=device),
+                    torch.zeros(
+                        (batch, max(action_horizon - 1, 0)),
+                        dtype=torch.float32,
+                        device=device,
+                    ),
+                ],
+                dim=1,
+            )
+            prefix_pad_2d_masks = prefix_pad_masks[:, None, :].expand(
+                batch, suffix_len, prefix_len
+            )
+            suffix_cumsum = torch.cumsum(suffix_att_masks, dim=1)
+            suffix_att_2d_masks = suffix_cumsum[:, None, :] <= suffix_cumsum[:, :, None]
+            suffix_pad_2d_masks = suffix_pad_masks[:, None, :] * suffix_pad_masks[:, :, None]
+            suffix_att_2d_masks = suffix_att_2d_masks & suffix_pad_2d_masks
+            full_att_2d_masks = torch.cat(
+                [prefix_pad_2d_masks, suffix_att_2d_masks], dim=2
+            )
+            prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
+            position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
+            full_att_2d_masks_4d = self_m._prepare_attention_masks_4d(full_att_2d_masks)
+
             denoise_inputs = {
-                "state": state,
                 "prefix_pad_masks": prefix_pad_masks,
                 "past_key_values": past_key_values,
-                "time_buf": torch.empty(
-                    (int(prefix_pad_masks.shape[0]),),
-                    dtype=torch.float32,
-                    device=device,
-                ),
+                "time_buf": torch.empty((batch,), dtype=torch.float32, device=device),
                 "time_freq": (
                     (2.0 * math.pi)
                     / (
@@ -456,30 +467,23 @@ class Pi05NativeExecutor(Executor):
                         ** torch.linspace(
                             0.0,
                             1.0,
-                            int(self_m.action_in_proj.out_features // 2),
+                            time_emb_dim // 2,
                             dtype=torch.float32,
                             device=device,
                         )
                     )
                 ),
-                "suffix_pad_mask_template": torch.ones(
-                    (1, int(self_m.config.action_horizon)),
-                    dtype=torch.bool,
-                    device=device,
+                "sin_input_buf": torch.empty(
+                    (batch, time_emb_dim // 2), dtype=mlp_dtype, device=device
                 ),
-                "suffix_att_mask_template": torch.cat(
-                    [
-                        torch.ones((1, 1), dtype=torch.float32, device=device),
-                        torch.zeros(
-                            (1, max(int(self_m.config.action_horizon) - 1, 0)),
-                            dtype=torch.float32,
-                            device=device,
-                        ),
-                    ],
-                    dim=1,
+                "time_emb_buf": torch.empty(
+                    (batch, time_emb_dim), dtype=mlp_dtype, device=device
                 ),
+                "full_att_2d_masks_4d": full_att_2d_masks_4d,
+                "position_ids": position_ids,
                 "__capture_probe": {"stage": "prepared_inputs"},
             }
+            self_m.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
             return self._denoise_runner_v2.run(
                 device=device,
                 observation=denoise_inputs,
