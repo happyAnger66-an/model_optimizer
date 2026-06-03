@@ -58,13 +58,15 @@ def fill_prefix_kv_from_trt(
     past_values: torch.Tensor,
     enc_seq: int,
 ) -> None:
-    """方案(B) KV 适配器：把 TRT llm 的 bf16 stacked KV 填入 FlashRT fp16 slab 的 prefix 区。
+    """方案(B) KV 适配器：把 TRT/PyTorch LLM KV 填入 FlashRT fp16 slab 的 prefix 区。
 
     布局对齐（见设计文档 §8.2）：
       - TRT past_keys/values: ``[L, 1, enc_seq, HD]``（或 ``[L, enc_seq, HD]``）bf16
       - FlashRT ``Kc``/``Vc``: ``[L, total_keys, HD]`` fp16，prefix 占 ``[:, :enc_seq, :]``，
         suffix 区 ``[:, enc_seq:, :]`` 由 decoder 自己写。
-    仅做 dtype cast + 逐层 strided copy；**RoPE 约定须在 Thor 上验证一致**（K 须已施加 RoPE）。
+    FlashRT RoPE kernel 读写 pair-interleaved head 维：
+    ``[d0, dHD/2, d1, dHD/2+1, ...]``。PyTorch/HF cache 已经施加 RoPE，
+    但仍是 half-split head 维，因此 prefix K 拷贝前必须做同样的 pair-interleave。
     """
     k = past_keys[:, 0] if past_keys.dim() == 4 else past_keys
     v = past_values[:, 0] if past_values.dim() == 4 else past_values
@@ -72,7 +74,15 @@ def fill_prefix_kv_from_trt(
         raise ValueError(
             f"prefix KV 长度 {k.shape[1]} != enc_seq {enc_seq}；检查 prefix_len/total_keys"
         )
-    Kc[:, :enc_seq, :].copy_(k.to(Kc.dtype))
+    hd = int(k.shape[-1])
+    if hd % 2 != 0:
+        raise ValueError(f"prefix K head_dim must be even for RoPE interleave, got {hd}")
+    k_flashrt = (
+        k.reshape(*k.shape[:-1], 2, hd // 2)
+        .permute(0, 1, 3, 2)
+        .reshape_as(k)
+    )
+    Kc[:, :enc_seq, :].copy_(k_flashrt.to(Kc.dtype))
     Vc[:, :enc_seq, :].copy_(v.to(Vc.dtype))
 
 
