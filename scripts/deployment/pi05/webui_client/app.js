@@ -844,6 +844,18 @@ function buildPlotlyLayout() {
   };
 }
 
+function relayoutAutorange(gd) {
+  if (!gd) return;
+  try {
+    Plotly.relayout(gd, {
+      "xaxis.autorange": true,
+      "yaxis.autorange": true,
+    });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
 function refreshDimChartsTheme() {
   if (isDimChartsFoldCollapsed()) {
     return;
@@ -2077,9 +2089,11 @@ function pushPoint(event) {
           const tArr = state.pred_trt.get(d) || [];
           Plotly.restyle(gd, { x: [xArr, xArr, xArr], y: [[...gArr], [...pArr], [...tArr]] }, [0, 1, 2]);
           Plotly.restyle(gd, { visible: visDim });
+          relayoutAutorange(gd);
         } else {
           Plotly.restyle(gd, { x: [xArr, xArr], y: [[...gArr], [...pArr]] }, [0, 1]);
           Plotly.restyle(gd, { visible: visDim });
+          relayoutAutorange(gd);
         }
       } catch (e) {
         const layout = chartLayouts.get(d) || buildPlotlyLayout();
@@ -2114,6 +2128,7 @@ function pushPoint(event) {
         const xPay = state.dims.map(() => xArr);
         Plotly.restyle(gd, { x: xPay, y: yPayload }, state.dims.map((_, i) => i));
         Plotly.restyle(gd, { visible: getMetricDimVisibility() });
+        relayoutAutorange(gd);
       } catch (e) {
         const layout = layoutFallback();
         metricsLayouts.set(def.id, layout);
@@ -2135,6 +2150,7 @@ function pushPoint(event) {
           continue;
         }
         Plotly.restyle(gd, buildMetricTracesFromState(def));
+        relayoutAutorange(gd);
       } catch (e) {
         /* ignore */
       }
