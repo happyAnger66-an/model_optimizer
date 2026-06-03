@@ -117,10 +117,12 @@ class Args:
     在 host 侧预算调制系数并喂入引擎。须与对应的 denoise 引擎（含 adarms_mod 输入）配套。"""
 
     native_use_cuda_graph: bool = True
-    """native 模式下对 denoise_step 启用 CUDA Graph capture/replay。"""
+    """PyTorch native denoise 启用 CUDA Graph（``denoise_step`` / full-loop V2）。
+
+    **FlashRT denoise（``native_flashrt_decoder``）不使用此项**；FlashRT 走 FVK 整循环，请设 ``false``。"""
 
     native_full_loop_graph: bool = False
-    """native 模式下对 sample_actions 全循环启用单次 CUDA Graph replay（V2）。"""
+    """PyTorch native 对 sample_actions 全循环做单次 CUDA Graph replay（V2）。FlashRT 路径忽略。"""
 
     native_graph_warmup: int = 3
     """native 模式 denoise CUDA Graph capture 前 warmup 次数。"""

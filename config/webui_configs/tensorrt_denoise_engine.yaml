@@ -1,0 +1,58 @@
+# lerobot_eval_webui_server —— TensorRT 全链路（vit/llm/denoise），denoise 走 TRT engine，不用 FlashRT。
+# 用法：
+#   python scripts/deployment/pi05/lerobot_eval_webui_server.py \
+#     --webui-config config/webui_configs/tensorrt_denoise_engine.yaml
+#
+# 说明：
+# - 与 tensorrt_flashrt_denoise.yaml 相同的 vit/llm 引擎布局；denoise 改为 TRT ``denoise_engine``。
+# - **不**叠加 native overlay（``native_overlay_on_tensorrt: false``），FlashRT 相关项全部关闭。
+# - 若引擎按 adarms_mod 输入导出，保持 ``denoise_adarms_precompute: true``；否则改为 false。
+# - 引擎文件名请按 ``engine_path`` 目录下实际产物修改（常见：denoise_fused_st_fp8.engine）。
+# —— 模型与数据集 ——
+checkpoint: /srcs/openpi/pytorch_pi05_libero/
+config: pi05_libero
+inference_mode: tensorrt
+device: cuda:0
+precision: bf16
+vit_batch_views: true
+trt_vit_scale_fix: true
+denoise_adarms_precompute: true
+
+# —— TensorRT 引擎（vit / llm / denoise 均走 TRT） ——
+engine_path: /tmp/build/pi05/opt
+vit_engine: vit_fp8_batch.engine
+llm_engine: llm_nvfp4_lat.engine
+denoise_engine: denoise_fused_st_fp8.engine
+expert_engine: ""
+embed_prefix_engine: ""
+
+# —— TRT engine 运行开关 ——
+trt_perf: true
+trt_perf_warmup: 20
+trt_perf_print_interval: 50
+trt_cuda_graph: true
+trt_cuda_graph_warmup: 3
+
+# —— 不使用 native / FlashRT 覆盖 denoise ——
+native_overlay_on_tensorrt: false
+native_enable_denoise: false
+native_flashrt_decoder: false
+
+# —— 性能 profile ——
+perf_profile_chunk: true
+perf_profile_warmup_chunks: 10
+perf_profile_print_interval: 20
+perf_profile_top_n: 3
+trt_enable_stage_profile: true
+trt_stage_profile_warmup: 10
+trt_enable_hook_profile: true
+
+# —— 评估区间与可复现 noise ——
+num_samples: 500
+start_index: 0
+noise: fixed
+noise_seed: 0
+
+# —— WebSocket 服务 ——
+host: 0.0.0.0
+port: 8765

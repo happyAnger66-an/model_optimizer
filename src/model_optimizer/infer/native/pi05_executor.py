@@ -106,6 +106,11 @@ class Pi05NativeExecutor(Executor):
 
         self._stage_perf.enabled = bool(perf)
         if enable_denoise and flashrt_decoder:
+            if use_cuda_graph or full_loop_graph:
+                logger.info(
+                    "[native-flashrt] native_use_cuda_graph / native_full_loop_graph 对 FlashRT 无效 "
+                    "（denoise 由 FVK decoder_forward 整 10 步循环完成，非 PyTorch denoise_step CUDA Graph）"
+                )
             self._install_flashrt_loop_runtime(
                 build_dir=flashrt_build_dir,
                 fmha_so=flashrt_fmha_so,

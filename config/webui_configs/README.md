@@ -19,6 +19,9 @@ python scripts/deployment/pi05/lerobot_eval_webui_server.py \
 |---|---|---|---|
 | `pytorch_baseline.yaml` | PyTorch 浮点 | 精度/对齐基线 | 仅需 checkpoint |
 | `tensorrt_full.yaml` | TensorRT | 全引擎推理（vit/llm/expert/denoise） | 各 `.engine` |
+| `tensorrt_flashrt_denoise.yaml` | TensorRT + FlashRT | vit/llm=TRT，denoise=仓内 FlashRT FVK 整循环 | TRT 引擎 + `build_flashrt_kernels.sh` 产物 |
+| `tensorrt_denoise_engine.yaml` | TensorRT | vit/llm/denoise 均 TRT engine（与 flashrt 版同 vit/llm 布局，denoise 用 `.engine`） | 含 `denoise_*.engine` 的 TRT 目录 |
+| `tensorrt_native_denoise.yaml` | TensorRT + FlashRT | 同上（精简占位路径，与 flashrt 配置等价目标） | 同上 |
 | `tensorrt_vit_batch.yaml` | TensorRT | 全引擎 + **多视角 batching**（延时优化） | vit 引擎须支持动态 batch |
 | `pt_trt_compare.yaml` | PyTorch vs TensorRT | 双路逐 chunk 对比（含 ViT PT/TRT 对比） | TRT 各 `.engine` |
 | `trt_trt_compare.yaml` | TensorRT vs TensorRT | 双引擎对比（如 FP8 vs NVFP4） | 两套 `.engine` |

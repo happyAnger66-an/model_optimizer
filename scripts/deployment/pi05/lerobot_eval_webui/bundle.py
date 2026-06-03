@@ -530,15 +530,18 @@ def load_infer_bundle(
         print(colored("[infer] 加载 TensorRT 引擎 ...", "cyan"), flush=True)
         _p("tensorrt", "加载 TensorRT 引擎（vit/llm/expert 等）…")
         trt_cuda_graph = bool(getattr(args, "trt_cuda_graph", False))
+        native_flashrt = bool(getattr(args, "native_flashrt_decoder", False))
+        # FlashRT denoise 走 FVK 整循环，与 PyTorch native CUDA Graph 无关；勿因此误关 vit/llm 的 TRT CUDA Graph。
         if (
             bool(getattr(args, "native_overlay_on_tensorrt", False))
             and bool(getattr(args, "native_enable_denoise", True))
             and bool(getattr(args, "native_use_cuda_graph", True))
+            and not native_flashrt
             and trt_cuda_graph
         ):
             print(
                 colored(
-                    "[infer] native denoise CUDA Graph 与 TRT engine CUDA Graph 互斥，"
+                    "[infer] native PyTorch denoise CUDA Graph 与 TRT engine CUDA Graph 互斥，"
                     "已自动关闭 trt_cuda_graph（vit/llm 仍走 TRT eager launch）",
                     "yellow",
                 ),
