@@ -596,9 +596,20 @@ class Pi05NativeExecutor(Executor):
                 if past_keys.dim() == 4:
                     past_keys = past_keys[:, :, valid_prefix, :].contiguous()
                     past_values = past_values[:, :, valid_prefix, :].contiguous()
+                    if enc_seq % 2 != 0:
+                        # FlashRT Thor kernels assume an even encoder sequence length.
+                        # Match the original frontend's prompt padding by appending one
+                        # duplicate valid KV token instead of leaving an odd physical stride.
+                        past_keys = torch.cat([past_keys, past_keys[:, :, -1:, :]], dim=2)
+                        past_values = torch.cat([past_values, past_values[:, :, -1:, :]], dim=2)
+                        enc_seq += 1
                 else:
                     past_keys = past_keys[:, valid_prefix, :].contiguous()
                     past_values = past_values[:, valid_prefix, :].contiguous()
+                    if enc_seq % 2 != 0:
+                        past_keys = torch.cat([past_keys, past_keys[:, -1:, :]], dim=1)
+                        past_values = torch.cat([past_values, past_values[:, -1:, :]], dim=1)
+                        enc_seq += 1
 
                 if noise is None:
                     bsize = int(prefix_pad_masks.shape[0])

@@ -41,7 +41,7 @@ native_full_loop_graph: false
 
 # —— 仓内 FlashRT decoder（不依赖 flash_rt 包，整 10 步循环替代 denoise loop） ——
 native_flashrt_decoder: true                    # 启用仓内 FlashRT decoder（静态 FP8 整循环）
-native_flashrt_build_dir: "/srcs/mopt/FlashRT/build"   # flash_rt_kernels*.so 所在目录（Thor 上构建产物；不设则用环境变量 MO_FLASHRT_BUILD_DIR）
+native_flashrt_build_dir: "/srcs/mopt/FlashRT/flash_rt/"   # flash_rt_kernels*.so 所在目录（Thor 上构建产物；不设则用环境变量 MO_FLASHRT_BUILD_DIR）
 native_flashrt_fmha_so: ""                              # 可选 CUTLASS FMHA（libfmha_fp16_strided.so）路径；空则不加载
 native_flashrt_use_fp8: false                    # true=静态 FP8 布局；false=fp16 baseline（精度对照/调试用）
 native_flashrt_act_scales_path: "/tmp/quantize/pi05/flashrt_decoder_act_scales.json"  # 激活量化 scale JSON（离线量化导出/加载路径）
