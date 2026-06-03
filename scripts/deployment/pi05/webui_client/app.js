@@ -2066,35 +2066,16 @@ function pushPoint(event) {
     }
   }
 
-  const xArr = [...state.x];
-
   if (!isDimChartsFoldCollapsed() && isPlotlyLoaded()) {
-    const needTracesDim = dualPredMode() ? 3 : 2;
     for (const d of state.dims) {
       const id = chartDivId(d);
       const gd = document.getElementById(id);
       if (!gd) continue;
-      const gArr = state.gt.get(d);
-      const pArr = state.pred.get(d);
-      if (!gArr || !pArr) continue;
       try {
-        if (!gd.data || gd.data.length < needTracesDim) {
-          const layout = chartLayouts.get(d) || buildPlotlyLayout();
-          chartLayouts.set(d, layout);
-          Plotly.newPlot(gd, buildTracesForDim(d), layout, { displayModeBar: false, responsive: true });
-          continue;
-        }
-        const visDim = getDimTraceVisibility();
-        if (dualPredMode()) {
-          const tArr = state.pred_trt.get(d) || [];
-          Plotly.restyle(gd, { x: [xArr, xArr, xArr], y: [[...gArr], [...pArr], [...tArr]] }, [0, 1, 2]);
-          Plotly.restyle(gd, { visible: visDim });
-          relayoutAutorange(gd);
-        } else {
-          Plotly.restyle(gd, { x: [xArr, xArr], y: [[...gArr], [...pArr]] }, [0, 1]);
-          Plotly.restyle(gd, { visible: visDim });
-          relayoutAutorange(gd);
-        }
+        const layout = chartLayouts.get(d) || buildPlotlyLayout();
+        chartLayouts.set(d, layout);
+        Plotly.react(gd, buildTracesForDim(d), layout, { displayModeBar: false, responsive: true });
+        relayoutAutorange(gd);
       } catch (e) {
         const layout = chartLayouts.get(d) || buildPlotlyLayout();
         chartLayouts.set(d, layout);
@@ -2104,30 +2085,14 @@ function pushPoint(event) {
   }
 
   if (!isMetricsFoldCollapsed() && isPlotlyLoaded()) {
-    const needTracesMet = state.dims.length;
     for (const def of METRIC_CHART_DEFS) {
       const gd = document.getElementById(def.id);
       if (!gd) continue;
-      const sk = def.seriesKey;
-      const yPayload = state.dims.map((d) => {
-        if (!dualPredMode()) {
-          const arr = sk === "mae" ? state.maePerDim.get(d) : state.msePerDim.get(d);
-          return [...(arr || [])];
-        }
-        const arr = sk === "mae" ? state.maePtTrtPerDim.get(d) : state.msePtTrtPerDim.get(d);
-        return [...(arr || [])];
-      });
       const layoutFallback = () => metricsLayouts.get(def.id) || metricsChartLayout(def);
       try {
-        if (!gd.data || gd.data.length !== needTracesMet) {
-          const layout = layoutFallback();
-          metricsLayouts.set(def.id, layout);
-          Plotly.newPlot(gd, buildMetricTracesFromState(def), layout, { displayModeBar: false, responsive: true });
-          continue;
-        }
-        const xPay = state.dims.map(() => xArr);
-        Plotly.restyle(gd, { x: xPay, y: yPayload }, state.dims.map((_, i) => i));
-        Plotly.restyle(gd, { visible: getMetricDimVisibility() });
+        const layout = layoutFallback();
+        metricsLayouts.set(def.id, layout);
+        Plotly.react(gd, buildMetricTracesFromState(def), layout, { displayModeBar: false, responsive: true });
         relayoutAutorange(gd);
       } catch (e) {
         const layout = layoutFallback();
@@ -2149,7 +2114,9 @@ function pushPoint(event) {
           Plotly.newPlot(gd, buildMetricTracesFromState(def), layout, { displayModeBar: false, responsive: true });
           continue;
         }
-        Plotly.restyle(gd, buildMetricTracesFromState(def));
+        const layout = metricsLayouts.get(def.id) || metricsChartLayout(def);
+        metricsLayouts.set(def.id, layout);
+        Plotly.react(gd, buildMetricTracesFromState(def), layout, { displayModeBar: false, responsive: true });
         relayoutAutorange(gd);
       } catch (e) {
         /* ignore */
