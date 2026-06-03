@@ -34,7 +34,8 @@ native_enable_denoise: true
 native_use_cuda_graph: true
 native_graph_warmup: 3
 native_compile_expert: false
-native_quant_spec_path: "/tmp/quantize/pi05/native_quant_spec.json"
+native_quant_spec_path: ""
+# 可选：生成后填入 /tmp/quantize/pi05/native_quant_spec.json（见 quantize --native-quant-spec-export）
 native_recalib_enable: false
 native_recalib_max_samples: 0
 native_recalib_percentile: 99.9
@@ -43,7 +44,7 @@ perf_profile_chunk: true
 perf_profile_warmup_chunks: 10
 perf_profile_print_interval: 20
 perf_profile_top_n: 3
-trt_enable_stage_profile: true
+trt_enable_stage_profile: false
 trt_stage_profile_warmup: 10
 trt_enable_hook_profile: true
 

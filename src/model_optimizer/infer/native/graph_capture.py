@@ -182,7 +182,9 @@ def _build_static_past_key_values(
     template: Any, static_flat: list[torch.Tensor]
 ) -> Any:
     if _is_dynamic_cache_like(template):
-        obj = copy.copy(template)
+        from transformers.cache_utils import DynamicCache
+
+        obj = DynamicCache()
         keys: list[torch.Tensor] = []
         vals: list[torch.Tensor] = []
         for i in range(0, len(static_flat), 2):
@@ -198,18 +200,6 @@ def _build_static_past_key_values(
         out.append((static_flat[j], static_flat[j + 1]))
         j += 2
     return out
-
-
-def _build_static_past_for_capture(
-    template: Any, static_flat: list[torch.Tensor]
-) -> Any:
-    """Capture 用静态 KV：使用 ``list[(k,v)]`` 引用 static buffer，避免 DynamicCache 副作用。"""
-    n_layers = len(static_flat) // 2
-    if n_layers <= 0:
-        return _build_static_past_key_values(template, static_flat)
-    return [
-        (static_flat[2 * i], static_flat[2 * i + 1]) for i in range(n_layers)
-    ]
 
 
 @dataclasses.dataclass
@@ -305,7 +295,7 @@ def build_graph_entry_for_denoise_step(
         static_flat = [torch.empty_like(t) for t in in_flat]
         for dst, src in zip(static_flat, in_flat, strict=True):
             dst.copy_(src, non_blocking=False)
-        static_past = _build_static_past_for_capture(past_key_values, static_flat)
+        static_past = _build_static_past_key_values(past_key_values, static_flat)
 
         static_x_t = torch.empty_like(x_t)
         static_x_t.copy_(x_t, non_blocking=False)
