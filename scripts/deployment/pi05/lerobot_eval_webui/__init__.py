@@ -3,8 +3,9 @@ LeRobot 离线评估 WebUI — server 侧模块化实现。
 
 - ``protocol``：step/meta 等事件与 JSON
 - ``dataset`` / ``media`` / ``action_align``：数据与图像
-- ``bundle`` / ``chunk_infer`` / ``tensorrt_backend`` / ``calib``：推理管线
-- ``broadcaster`` / ``hints`` / ``server``：WebSocket 与 CLI
+- ``bundle`` / ``bundle_*`` / ``chunk_infer`` / ``tensorrt_backend`` / ``calib``：推理管线
+- ``chunk_pipeline`` / ``chunk_*``：单段 chunk 取样、推理、step 事件
+- ``broadcaster`` / ``hints`` / ``server`` / ``ws_handlers`` / ``server_runtime``：WebSocket 与 CLI
 - ``ports``（出站端口 Protocol）、``outbound_bridge``（Janus 适配）、``eval_session``（推理编排）、``infer_backends``（多后端策略）、``control_commands``（控制面命令）
 
 协议说明见入口 ``lerobot_eval_webui_server.py`` 顶部文档字符串。

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import subprocess
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
+
+from .protocol import event_to_json
 
 if TYPE_CHECKING:
     from .config import Args
@@ -66,3 +70,44 @@ def sample_gpu_util(device_index: int = 0) -> dict[str, Any] | None:
     except (subprocess.TimeoutExpired, ValueError, IndexError, OSError) as exc:
         logger.debug("sample_gpu_util failed: %s", exc)
         return None
+
+
+async def run_gpu_stats_loop(
+    *,
+    args: Args,
+    run_id: str,
+    pump_task: asyncio.Task[None],
+    publish_direct: Callable[..., Awaitable[None]],
+) -> None:
+    """周期性广播 GPU 利用率；``pump_task`` 结束时本协程退出。"""
+    interval = float(args.gpu_stats_interval_sec)
+    if interval <= 0:
+        return
+    interval = max(0.2, interval)
+    dev_idx = int(effective_gpu_index(args))
+    loop = asyncio.get_running_loop()
+
+    while True:
+        # 不能用 wait_for(pump_task, timeout=…)：超时会取消 pump_task，导致 drain 在 get() 上 CancelledError。
+        done, _pending = await asyncio.wait((pump_task,), timeout=interval, return_when=asyncio.FIRST_COMPLETED)
+        if pump_task in done:
+            return
+        try:
+            stats = await loop.run_in_executor(None, sample_gpu_util, dev_idx)
+        except Exception:  # pragma: no cover
+            logging.exception("gpu sample run_in_executor failed")
+            continue
+        if stats is None:
+            continue
+        await publish_direct(
+            event_to_json(
+                {
+                    "type": "gpu_stats",
+                    "run_id": run_id,
+                    "device_index": dev_idx,
+                    "gpu_util_pct": stats["gpu_util_pct"],
+                    "mem_util_pct": stats["mem_util_pct"],
+                }
+            ),
+            add_history=False,
+        )

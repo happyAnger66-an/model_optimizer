@@ -3,189 +3,69 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import logging
 import threading
-import uuid
-from pathlib import Path
 from typing import Any
 
-import janus
+import websockets.asyncio.server as _server
+import websockets.exceptions as _wsex
 from termcolor import colored
 
-from .broadcaster import WebsocketBroadcaster
 from .config import Args
-from .control_commands import ControlPause, ControlResume, parse_control_message
 from .eval_session import run_infer_worker
-from .gpu_stats import effective_gpu_index, sample_gpu_util
+from .gpu_stats import run_gpu_stats_loop
 from .hints import write_webui_server_hint
-from .outbound_bridge import JanusOutboundBridge
-from .protocol import LOADING_META_MSG, event_to_json
+from .server_logging import configure_server_logging
+from .server_runtime import ServerRuntime, build_server_runtime
+from .server_startup import print_server_startup_hints
+from .ws_handlers import make_ws_handler
 
 
-def _handshake_request_path(ws: Any) -> str | None:
-    """读取 WebSocket 握手路径。
+async def _shutdown_after_infer(
+    server: Any,
+    rt: ServerRuntime,
+    gpu_task: asyncio.Task[None] | None,
+) -> None:
+    clients = rt.broadcaster.snapshot_clients()
+    if clients:
+        await asyncio.gather(
+            *[c.close(code=1001, reason="server finished") for c in clients],
+            return_exceptions=True,
+        )
+    if gpu_task is not None:
+        gpu_task.cancel()
+        try:
+            await gpu_task
+        except asyncio.CancelledError:
+            pass
+    await asyncio.sleep(0.25)
+    print(colored("[main] 推理管线已结束，关闭 WebSocket 并退出进程", "green"), flush=True)
+    server.close()
+    await server.wait_closed()
 
-    ``websockets`` 旧版在连接对象上暴露 ``path``；13+ asyncio 服务端多为 ``request.path``。
-    """
-    p = getattr(ws, "path", None)
-    if isinstance(p, str):
-        return p
-    req = getattr(ws, "request", None)
-    if req is not None:
-        rp = getattr(req, "path", None)
-        if isinstance(rp, str):
-            return rp
-    return None
 
-
-def _paths_equivalent(a: str, b: str) -> bool:
-    """``/ws`` 与 ``/ws/`` 视为同一路径。"""
-    aa = a.rstrip("/") or "/"
-    bb = b.rstrip("/") or "/"
-    return aa == bb
+def _start_infer_thread(rt: ServerRuntime) -> None:
+    threading.Thread(
+        target=run_infer_worker,
+        kwargs={
+            "args": rt.args,
+            "run_id": rt.run_id,
+            "meta_ready": rt.meta_ready,
+            "infer_paused": rt.infer_paused,
+            "client_connected": rt.client_connected,
+            "bridge": rt.bridge,
+        },
+        daemon=True,
+        name="pi05_infer",
+    ).start()
 
 
 async def run_server(args: Args) -> None:
-    import websockets.asyncio.server as _server
-    import websockets.exceptions as _wsex
+    configure_server_logging()
+    rt = build_server_runtime(args)
+    handler = make_ws_handler(rt, _wsex)
+    pump_task = asyncio.create_task(rt.bridge.drain(), name="outbound_pump")
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-
-    class _SuppressWsHandshakeNoise(logging.Filter):
-        def filter(self, record: logging.LogRecord) -> bool:
-            if "opening handshake failed" in record.getMessage():
-                return False
-            return True
-
-    for _name in ("websockets.server", "websockets.asyncio.server", "websockets"):
-        logging.getLogger(_name).addFilter(_SuppressWsHandshakeNoise())
-
-    run_id = uuid.uuid4().hex[:12]
-    broadcaster = WebsocketBroadcaster(history_size=args.history_size)
-    meta_ready: dict[str, Any] = {"msg": None}
-    infer_paused = threading.Event()
-    client_connected = threading.Event()
-    if not bool(getattr(args, "wait_for_client", False)):
-        client_connected.set()
-
-    qmax = int(args.outbound_queue_maxsize)
-    outbound_queue: janus.Queue[Any] = janus.Queue(qmax if qmax > 0 else 0)
-    bridge = JanusOutboundBridge(outbound_queue, broadcaster)
-
-    async def handler(ws: Any) -> None:
-        req_path = _handshake_request_path(ws)
-        if req_path is None or not _paths_equivalent(req_path, args.path):
-            await ws.close(code=1008, reason="invalid path")
-            return
-        await broadcaster.register(ws)
-        if not client_connected.is_set():
-            client_connected.set()
-            print(
-                colored("[main] 已有 WebSocket 客户端连接，开始（或继续）chunk 推理", "green"),
-                flush=True,
-            )
-        try:
-            if meta_ready["msg"] is None:
-                await ws.send(LOADING_META_MSG)
-            else:
-                await ws.send(meta_ready["msg"])
-                if args.history_size > 0:
-                    await broadcaster.send_history(ws)
-            await ws.send(
-                event_to_json({"type": "control_ack", "action": "sync", "paused": infer_paused.is_set()})
-            )
-            try:
-                async for raw in ws:
-                    try:
-                        msg = json.loads(raw)
-                    except Exception:
-                        continue
-                    cmd = parse_control_message(msg)
-                    if isinstance(cmd, ControlPause):
-                        infer_paused.set()
-                        print(colored("[infer] 收到 pause：下一 chunk 前将阻塞推理", "yellow"), flush=True)
-                        await ws.send(
-                            event_to_json({"type": "control_ack", "action": "pause", "paused": True})
-                        )
-                    elif isinstance(cmd, ControlResume):
-                        infer_paused.clear()
-                        print(colored("[infer] 收到 resume：继续推理", "green"), flush=True)
-                        await ws.send(
-                            event_to_json({"type": "control_ack", "action": "resume", "paused": False})
-                        )
-            except (_wsex.ConnectionClosedOK, _wsex.ConnectionClosedError):
-                pass
-        finally:
-            await broadcaster.unregister(ws)
-
-    loop = asyncio.get_running_loop()
-
-    async def publish_direct(msg: str, *, add_history: bool = True) -> None:
-        """GPU 统计等 asyncio 侧消息：不经 Janus，避免从协程向 sync_q 投递。"""
-        if add_history:
-            broadcaster.add_history(msg)
-        await broadcaster.broadcast(msg)
-
-    pump_task = asyncio.create_task(bridge.drain(), name="outbound_pump")
-
-    async def gpu_stats_loop() -> None:
-        interval = float(args.gpu_stats_interval_sec)
-        if interval <= 0:
-            return
-        interval = max(0.2, interval)
-        dev_idx = int(effective_gpu_index(args))
-        while True:
-            # 不能用 wait_for(pump_task, timeout=…)：超时会取消 pump_task，导致 drain 在 get() 上 CancelledError。
-            done, _pending = await asyncio.wait((pump_task,), timeout=interval, return_when=asyncio.FIRST_COMPLETED)
-            if pump_task in done:
-                return
-            try:
-                stats = await loop.run_in_executor(None, sample_gpu_util, dev_idx)
-            except Exception:  # pragma: no cover
-                logging.exception("gpu sample run_in_executor failed")
-                continue
-            if stats is None:
-                continue
-            await publish_direct(
-                event_to_json(
-                    {
-                        "type": "gpu_stats",
-                        "run_id": run_id,
-                        "device_index": dev_idx,
-                        "gpu_util_pct": stats["gpu_util_pct"],
-                        "mem_util_pct": stats["mem_util_pct"],
-                    }
-                ),
-                add_history=False,
-            )
-
-    hint_url = write_webui_server_hint(args)
-    print(
-        colored(
-            f"WebUI WebSocket 监听: {args.host}:{args.port}{args.path} · "
-            f"client 默认地址（已写入 webui_client/server_hint.json）: {hint_url}",
-            "green",
-        ),
-        flush=True,
-    )
-    client_dir = Path(__file__).resolve().parent.parent / "webui_client"
-    print(
-        colored(
-            f"浏览器请用 HTTP 打开静态页（勿 file://）：cd {client_dir} && "
-            f"python -m http.server 8080  →  http://127.0.0.1:8080/",
-            "green",
-        ),
-        flush=True,
-    )
-    if bool(getattr(args, "wait_for_client", False)):
-        print(
-            colored(
-                "[main] wait_for_client=true：加载完成后将等待 WebSocket 连接再开始推理",
-                "yellow",
-            ),
-            flush=True,
-        )
+    print_server_startup_hints(args, write_webui_server_hint(args))
 
     async with _server.serve(
         handler,
@@ -194,42 +74,23 @@ async def run_server(args: Args) -> None:
         compression=None,
         max_size=None,
     ) as server:
-        print(colored(f"run_id={run_id}（加载完成后会广播完整 meta）", "green"), flush=True)
+        print(colored(f"run_id={rt.run_id}（加载完成后会广播完整 meta）", "green"), flush=True)
         gpu_task = None
         if args.gpu_stats_interval_sec and args.gpu_stats_interval_sec > 0:
-            gpu_task = asyncio.create_task(gpu_stats_loop(), name="gpu_stats")
-        threading.Thread(
-            target=run_infer_worker,
-            kwargs={
-                "args": args,
-                "run_id": run_id,
-                "meta_ready": meta_ready,
-                "infer_paused": infer_paused,
-                "client_connected": client_connected,
-                "bridge": bridge,
-            },
-            daemon=True,
-            name="pi05_infer",
-        ).start()
+            gpu_task = asyncio.create_task(
+                run_gpu_stats_loop(
+                    args=args,
+                    run_id=rt.run_id,
+                    pump_task=pump_task,
+                    publish_direct=rt.publish_direct,
+                ),
+                name="gpu_stats",
+            )
+        _start_infer_thread(rt)
         try:
             await pump_task
         finally:
-            clients = broadcaster.snapshot_clients()
-            if clients:
-                await asyncio.gather(
-                    *[c.close(code=1001, reason="server finished") for c in clients],
-                    return_exceptions=True,
-                )
-            if gpu_task is not None:
-                gpu_task.cancel()
-                try:
-                    await gpu_task
-                except asyncio.CancelledError:
-                    pass
-            await asyncio.sleep(0.25)
-            print(colored("[main] 推理管线已结束，关闭 WebSocket 并退出进程", "green"), flush=True)
-            server.close()
-            await server.wait_closed()
+            await _shutdown_after_infer(server, rt, gpu_task)
 
 
 def main() -> None:

@@ -35,13 +35,17 @@ class FlashRtDecoderBackend:
 
     Args:
         get_weight: ``key -> Tensor``，从 HF/openpi state_dict 取权重。
-        Sa: suffix（action）token 数。
-        Da: action-expert 隐藏维。
-        Ha: action-expert MLP 隐藏维。
-        num_layers: decoder 层数（pi05=18）。
-        num_q_heads: Q head 数（pi05=8；K/V=1）。
+        Sa: suffix（action）token 数，即单次输出的 action horizon。
+        Da: action-expert 隐藏维（``action_expert.width``）。
+        Ha: action-expert FFN 中间维（``action_expert.mlp_dim``）。
+        num_layers: decoder 层数（pi05 默认 18）。
+        num_q_heads: 注意力 Q 头数（pi05=8；K/V 为 GQA）。
+        steps: flow-matching 去噪迭代次数（默认 10）。
+        HD: 每头维度 ``head_dim``（pi05=256）。
         use_fp8: True 走静态 FP8；False 走 fp16 baseline。
+        device: 权重与 buffer 所在 CUDA 设备。
         build_dir / fmha_so: 传给 kernel loader 的 .so 搜索路径。
+        stage_perf: 可选，挂载到 ``Pi05ThorDecoderLoop`` 做分阶段耗时统计。
     """
 
     def __init__(
@@ -61,19 +65,21 @@ class FlashRtDecoderBackend:
         fmha_so: str | None = None,
         stage_perf: StagePerfCollector | None = None,
     ) -> None:
-        self.Sa = int(Sa)
-        self.Da = int(Da)
-        self.Ha = int(Ha)
-        self.num_layers = int(num_layers)
-        self.num_q_heads = int(num_q_heads)
-        self.steps = int(steps)
-        self.HD = int(HD)
-        self.use_fp8 = bool(use_fp8)
-        self.device = device
-        self._stage_perf = stage_perf
+        # ── 与模型结构绑定的静态超参（整次 eval 不变，与 prefix 长度 enc_seq 无关）──
+        self.Sa = int(Sa)  # suffix 时间步数 = action chunk 长度（如 pi05 常为 50）
+        self.Da = int(Da)  # action-expert（Gemma decoder）隐藏维，与 openpi ``action_expert.width`` 一致
+        self.Ha = int(Ha)  # action-expert FFN 中间维（gate/up 投影的 hidden）
+        self.num_layers = int(num_layers)  # decoder 层数（pi05 默认 18）
+        self.num_q_heads = int(num_q_heads)  # Q 头数（pi05=8；K/V 为 GQA，每头 1 组 KV）
+        self.steps = int(steps)  # flow-matching 去噪步数（整循环 ``decoder_forward`` 迭代次数，默认 10）
+        self.HD = int(HD)  # 每头维度 head_dim（pi05=256），RoPE 与 QKV 切分均按此维
+        self.use_fp8 = bool(use_fp8)  # True：静态 FP8 kernel + act_scales；False：fp16 baseline
+        self.device = device  # CUDA 设备字符串（如 ``cuda`` / ``cuda:0``）
+        self._stage_perf = stage_perf  # 可选：``denoise.total`` / ``flashrt.setup`` 等分阶段 wall time
 
+        # FlashRT 自定义算子：``flash_rt_kernels*.so`` 导出的 ``fvk`` 模块与执行上下文
         self._fvk = load_kernels(build_dir, fmha_so=fmha_so)
-        self._ctx = self._fvk.FvkContext()
+        self._ctx = self._fvk.FvkContext()  # 持有 kernel launch / workspace 绑定的原生句柄
 
         # 权重 repack（一次性）
         self._repacked = _wt.repack_decoder_weights(
