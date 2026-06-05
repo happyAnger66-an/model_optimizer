@@ -18,6 +18,14 @@
 from __future__ import annotations
 
 from .backend import FlashRtDecoderBackend
+from .benchmark import (
+    CudaKernelBenchRecorder,
+    SyntheticDecoderBenchmarkState,
+    create_synthetic_decoder_state,
+    decoder_forward_trace,
+    format_summary_table,
+    run_synthetic_trace_benchmark,
+)
 from .driver import (
     DecoderBuffers,
     DecoderWeights,
@@ -46,6 +54,7 @@ from .weights import (
 __all__ = [
     "decoder_forward",
     "decoder_forward_calibrate",
+    "decoder_forward_trace",
     "load_kernels",
     "build_decoder_dims",
     "fill_prefix_kv_from_trt",
@@ -53,6 +62,11 @@ __all__ = [
     "DecoderWeights",
     "Pi05ThorDecoderLoop",
     "FlashRtDecoderBackend",
+    "CudaKernelBenchRecorder",
+    "SyntheticDecoderBenchmarkState",
+    "create_synthetic_decoder_state",
+    "run_synthetic_trace_benchmark",
+    "format_summary_table",
     "AdaRmsStyles",
     "build_dec_rope",
     "precompute_adarms_styles",

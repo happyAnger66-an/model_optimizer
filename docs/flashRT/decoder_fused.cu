@@ -252,15 +252,69 @@ void gmm_fp16(cublasHandle_t handle, const __half* A, const __half* B, __half* C
         &beta, C, CUDA_R_16F, N, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 }
 
-// ── FP8 GEMM with device descale pointers → FP16 output ──
-// Exact port of pi05 gmm_fp8_kn_descale: cached descriptor + algo per (M,N,K).
-// Scale pointers updated per-call. Layout: col-major matching pi05.
+// ══════════════════════════════════════════════════════════════════
+// C2/C4/C5/C6: FP8 Tensor Core GEMM + epilogue descale → FP16 output
+// ══════════════════════════════════════════════════════════════════
+//
+// Host wrapper for pi05 `gmm_fp8_kn_descale`.  NOT a custom CUDA kernel —
+// delegates to cuBLASLt FP8 matmul with fused per-tensor descale in the epilogue.
+//
+// ── Role in Pi0.5 denoise pipeline ──
+//
+// Each diffusion step runs 18 Gemma Expert layers.  Within each layer there are
+// **four** FP8 GEMM sites (act_scales slot l*4+k, k=0..3):
+//
+//   k=0  C2  QKV:     xn_fp8 [S,D]  × qw [D,2560]  → qkv(fp16)     ← after C1 AdaRMS
+//   k=1  C4  O-proj:  ctx_fp8       × ow            → fg(fp16)      ← after Attention
+//   k=2  C5  gate+up: xn_fp8         × gw [D,2H]     → fg(fp16)      ← after C4→5 AdaRMS
+//   k=3  C6  down:    hid_fp8        × dw [H,D]      → fg(fp16)      ← after GeGLU
+//
+// OpenPI equivalent: nn.Linear layers (q/k/v_proj, o_proj, gate/up/down_proj).
+// FlashRT merges Q+K+V into one qw weight; all four GEMMs share this function.
+//
+// ── Math (per-tensor static FP8) ──
+//
+// Offline:  W_fp8 ≈ W / s_w,   X_fp8 ≈ X / s_act   (E4M3, s = amax/448)
+// Runtime:   Y_fp16 ≈ (X_fp8 @ W_fp8) * s_act * s_w
+//
+// Descale happens **inside** the GEMM epilogue (Tensor Core accumulates in fp32,
+// then multiplies s_act*s_w and writes fp16).  There is NO intermediate fp8 GEMM
+// output buffer — C is written directly as fp16 for RoPE / Attention / GeGLU etc.
+//
+// ── Parameter naming (Python → C++) ──
+//
+//   fp8_gemm_descale_fp16(A_fp8, B_fp8, C_fp16, M, N, K, act_descale, w_descale, stream)
+//
+//   A_fp8       activation, logical row-major [M, K]  (e.g. xn_fp8 [S, D])
+//   B_fp8       weight,     logical row-major [K, N]  (e.g. qw     [D, 2560])
+//   C_fp16      output,     logical row-major [M, N]  (e.g. qkv    [S, 2560])
+//   act_descale device ptr to s_act (must match upstream quant kernel, e.g. C1)
+//   w_descale   device ptr to s_w   (from weights.py quant_fp8 / w_scales)
+//
+// ── cuBLASLt layout note ──
+//
+// cuBLAS is column-major.  Row-major [M,K]@ [K,N]→[M,N] is mapped via:
+//   Adesc = weight  (N, K) col-major, lda=N
+//   Bdesc = activ   (K, M) col-major, lda=K
+//   Cdesc = output  (N, M) col-major, lda=N
+// Matmul call passes (B_fp8, Adesc) as cuBLAS "A" and (A_fp8, Bdesc) as "B":
+//   C_col(N,M) = A_col(N,K) * B_col(K,M)  ≡  C_row(M,N) = A_row(M,K) @ B_row(K,N)
+//
+// Scale pointer assignment (cuBLAS matrix A = weight, B = activation):
+//   A_SCALE_POINTER → w_descale
+//   B_SCALE_POINTER → act_descale
+//
+// ── Descriptor / algo caching ──
+//
+// MatmulDesc + MatrixLayout + best Algo are expensive to create and heuristic-search.
+// Cached in g_lt_cache keyed by (M,N,K); scale pointers updated every call (per layer).
+// One-time lazy init: cublasLt handle + 32MB workspace for algo selection.
 #include <cublasLt.h>
 #include <unordered_map>
 
-static cublasLtHandle_t g_fp8_lt = nullptr;
-static void* g_fp8_ws = nullptr;
-static size_t g_fp8_ws_sz = 32 * 1024 * 1024;  // Match production (32MB)
+static cublasLtHandle_t g_fp8_lt = nullptr;   // lazy-init cuBLASLt handle
+static void* g_fp8_ws = nullptr;               // workspace for cublasLtMatmul algo
+static size_t g_fp8_ws_sz = 32 * 1024 * 1024; // 32 MB — match pi05 production
 
 struct LtGemmKey {
     int M, N, K;
@@ -275,9 +329,9 @@ struct LtGemmKeyHash {
     }
 };
 struct CachedLtGemm {
-    cublasLtMatmulDesc_t desc;
+    cublasLtMatmulDesc_t desc;       // matmul op + scale pointer slots
     cublasLtMatrixLayout_t Adesc, Bdesc, Cdesc;
-    cublasLtMatmulAlgo_t algo;
+    cublasLtMatmulAlgo_t algo;      // heuristic-selected Tensor Core kernel
 };
 static std::unordered_map<LtGemmKey, CachedLtGemm, LtGemmKeyHash> g_lt_cache;
 
@@ -285,19 +339,26 @@ void fp8_gemm_descale_fp16(const void* A_fp8, const void* B_fp8, void* C_fp16,
                              int M, int N, int K,
                              const float* act_descale, const float* w_descale,
                              cudaStream_t stream) {
+    // ── Step 0: one-time global init ──
     if (!g_fp8_lt) { cublasLtCreate(&g_fp8_lt); cudaMalloc(&g_fp8_ws, g_fp8_ws_sz); }
 
+    // ── Step 1: lookup or build cached (M,N,K) descriptor + algo ──
     LtGemmKey key{M, N, K};
     auto it = g_lt_cache.find(key);
     if (it == g_lt_cache.end()) {
         CachedLtGemm cg;
+        // fp32 accumulator; epilogue writes fp16 C
         cublasLtMatmulDescCreate(&cg.desc, CUBLAS_COMPUTE_32F, CUDA_R_32F);
         cublasOperation_t opN = CUBLAS_OP_N;
         cublasLtMatmulDescSetAttribute(cg.desc, CUBLASLT_MATMUL_DESC_TRANSA, &opN, sizeof(opN));
         cublasLtMatmulDescSetAttribute(cg.desc, CUBLASLT_MATMUL_DESC_TRANSB, &opN, sizeof(opN));
+        // Weight layout: col-major (N rows, K cols), E4M3
         cublasLtMatrixLayoutCreate(&cg.Adesc, CUDA_R_8F_E4M3, N, K, N);
+        // Activation layout: col-major (K rows, M cols), E4M3
         cublasLtMatrixLayoutCreate(&cg.Bdesc, CUDA_R_8F_E4M3, K, M, K);
+        // Output layout: col-major (N rows, M cols), FP16
         cublasLtMatrixLayoutCreate(&cg.Cdesc, CUDA_R_16F, N, M, N);
+        // Ask cuBLASLt for best FP8 Tensor Core algo given 32MB workspace budget
         cublasLtMatmulPreference_t pref;
         cublasLtMatmulPreferenceCreate(&pref);
         cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
@@ -311,8 +372,15 @@ void fp8_gemm_descale_fp16(const void* A_fp8, const void* B_fp8, void* C_fp16,
         it = g_lt_cache.find(key);
     }
     auto& cg = it->second;
+
+    // ── Step 2: bind per-call descale pointers (vary per layer / quant slot) ──
+    // Pointers are device-resident floats; cuBLASLt reads them during epilogue.
     cublasLtMatmulDescSetAttribute(cg.desc, CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &w_descale, sizeof(w_descale));
     cublasLtMatmulDescSetAttribute(cg.desc, CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &act_descale, sizeof(act_descale));
+
+    // ── Step 3: launch FP8 GEMM ──
+    // C = 1.0 * A_weight * B_act + 0.0 * C  (beta=0 overwrites C)
+    // Argument order: cuBLAS "A"=B_fp8 (weight), "B"=A_fp8 (activation) — see layout note above.
     float alpha = 1.0f, beta = 0.0f;
     cublasLtMatmul(g_fp8_lt, cg.desc, &alpha, B_fp8, cg.Adesc, A_fp8, cg.Bdesc,
                     &beta, C_fp16, cg.Cdesc, C_fp16, cg.Cdesc,
