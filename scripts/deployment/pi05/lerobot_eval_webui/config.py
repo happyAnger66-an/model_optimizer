@@ -112,6 +112,12 @@ class Args:
     trt_cuda_graph_warmup: int = 3
     """CUDA Graph 捕获前的 warmup 次数。"""
 
+    llm_kv_only: bool = False
+    """LLM TRT 仅返回/使用 KV 输出；配套 KV-only LLM engine 时可跳过 last_hidden_state。"""
+
+    llm_expected_seq_len: int = 0
+    """非 0 时校验 prefix LLM seq_len，帮助固定 shape / CUDA Graph 配置尽早 fail-fast。"""
+
     denoise_adarms_precompute: bool = False
     """denoise 引擎以 adarms_mod 输入导出时（AdaRMS Dense host 预计算 / roadmap #22），
     在 host 侧预算调制系数并喂入引擎。须与对应的 denoise 引擎（含 adarms_mod 输入）配套。"""

@@ -49,6 +49,10 @@ class TensorRTConfig:
     vit_batch_views: bool = False
     """多视角 batching：把所有相机视角堆成 batch 维一次过 vit 引擎（需 vit 引擎支持动态 batch）。
     与 use_flashrt_siglip_embed_prefix / embed_prefix_engine 互斥。"""
+    llm_kv_only: bool = False
+    """LLM TRT engine 仅返回/使用 KV 输出；用于配套 KV-only ONNX/engine，跳过 last_hidden_state。"""
+    llm_expected_seq_len: int = 0
+    """非 0 时在运行时校验 prefix LLM seq_len，帮助固定 shape / CUDA Graph 配置尽早 fail-fast。"""
 
 
 @dataclass

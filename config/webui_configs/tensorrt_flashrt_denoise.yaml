@@ -31,6 +31,8 @@ trt_perf_warmup: 20                             # 统计前 warmup 次数（排�
 trt_perf_print_interval: 50                     # 每 N 次推理打印一次 perf
 trt_cuda_graph: true                            # 对 TRT 引擎启用 CUDA Graph capture/replay
 trt_cuda_graph_warmup: 3                        # CUDA Graph capture 前 warmup 次数
+llm_kv_only: false                              # true=LLM TRT hook 仅返回 KV；配套 KV-only LLM engine 可去掉 last_hidden_state 输出
+llm_expected_seq_len: 0                         # 非 0 时校验 prefix LLM 固定 seq_len（例如 968），便于固定 shape / graph 配置 fail-fast
 
 # —— Native 叠加：在 TRT 上覆盖部分阶段（这里仅覆盖 denoise） ——
 native_overlay_on_tensorrt: true                # 在 tensorrt 模式上叠加 native runtime（不替换 vit/llm）

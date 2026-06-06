@@ -115,10 +115,12 @@ def make_engine(
     opts: TrtRuntimeOptions,
     *,
     return_wrap: Callable[[Any], Any] | None = None,
+    output_names: list[str] | tuple[str, ...] | None = None,
 ) -> Engine:
     return Engine(
         os.path.join(engine_path, engine_name),
         return_wrap=return_wrap,
+        output_names=output_names,
         **opts.engine_kwargs(),
     )
 
@@ -437,7 +439,26 @@ class Pi05TrtEngineInstaller:
 
     def install_llm(self, engine_name: str) -> None:
         print(colored(f"replace language_model with {engine_name}", "green"))
-        llm_engine = make_engine(self._engine_root, engine_name, self._opts)
+        llm_kv_only = bool(cfg_get(self._config, "llm_kv_only", False))
+        llm_expected_seq_len = int(cfg_get(self._config, "llm_expected_seq_len", 0) or 0)
+        llm_engine = make_engine(
+            self._engine_root,
+            engine_name,
+            self._opts,
+        )
+        if llm_kv_only:
+            kv_output_names = {
+                name
+                for name, _, _ in llm_engine.out_meta
+                if name in ("past_keys", "past_values")
+                or name.startswith("present_key_values.")
+            }
+            if not kv_output_names:
+                raise ValueError(
+                    "config.llm_kv_only=True but LLM engine exposes no KV outputs "
+                    "(expected past_keys/past_values or present_key_values.*)."
+                )
+            llm_engine.output_names = kv_output_names
         self._engines["llm"] = llm_engine
         ex = self._ex
 
@@ -472,10 +493,18 @@ class Pi05TrtEngineInstaller:
             attention_mask = sanitize_additive_attention_mask_for_trt(
                 attention_mask, neg_cap
             )
+            if llm_expected_seq_len > 0:
+                seq_len = int(inputs_embeds.shape[1])
+                if seq_len != llm_expected_seq_len:
+                    raise ValueError(
+                        f"LLM TRT expected fixed seq_len={llm_expected_seq_len}, "
+                        f"got {seq_len}. Update config.llm_expected_seq_len or "
+                        "use an engine/profile matching the current prefix length."
+                    )
             outputs = llm_engine(inputs_embeds, attention_mask, position_ids)
             k_v_cache = llm_outputs_to_dynamic_cache(outputs, ex._wrap_past_key_values)
             return BaseModelOutputWithPast(
-                last_hidden_state=outputs["last_hidden_state"],
+                last_hidden_state=outputs.get("last_hidden_state"),
                 past_key_values=k_v_cache,
             )
 

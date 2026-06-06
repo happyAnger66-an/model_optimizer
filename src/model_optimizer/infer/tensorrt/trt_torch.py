@@ -17,6 +17,7 @@ import atexit
 import ctypes
 import os
 import time
+from collections.abc import Iterable
 import numpy as np
 
 import tensorrt as trt
@@ -62,6 +63,7 @@ class Engine(object):
         cuda_graph_warmup=1,
         perf_warmup=20,
         perf_print_interval=50,
+        output_names: Iterable[str] | None = None,
     ):
         super().__init__()
 
@@ -82,6 +84,7 @@ class Engine(object):
         self.perf_warmup = max(int(perf_warmup), 0)
         self.perf_print_interval = max(int(perf_print_interval), 0)
         self._graph_cache = {}
+        self.output_names = set(output_names) if output_names is not None else None
 
         if self.perf:
             self.time_results = {
@@ -183,6 +186,9 @@ class Engine(object):
             sig.append((name, tuple(x.shape), x.dtype, x.device))
         return tuple(sig)
 
+    def _should_return_output(self, name: str) -> bool:
+        return self.output_names is None or name in self.output_names
+
     def _stats_ms(self, values: list[float]) -> str:
         arr = np.asarray(values, dtype=np.float64) * 1000.0
         if arr.size == 0:
@@ -283,7 +289,11 @@ class Engine(object):
                 entry["static_inputs"][name].copy_(prepared_inputs[name], non_blocking=True)
             entry["graph"].replay()
             torch.cuda.current_stream().synchronize()
-            outputs = {name: tensor.clone() for name, tensor in entry["static_outputs"].items()}
+            outputs = {
+                name: tensor.clone()
+                for name, tensor in entry["static_outputs"].items()
+                if self._should_return_output(name)
+            }
         else:
             stream = torch.cuda.current_stream()
             reference_tensors = []
@@ -299,7 +309,7 @@ class Engine(object):
                         f"Output {out_name} still has dynamic shape {runtime_shape} after binding inputs; "
                         "check that all dynamic inputs were provided."
                     )
-                output_tensor = torch.zeros(
+                output_tensor = torch.empty(
                     tuple(runtime_shape), dtype=out_dtype, device=reference_tensors[0].device
                 )
                 self.execution_context.set_tensor_address(out_name, output_tensor.data_ptr())
@@ -313,12 +323,17 @@ class Engine(object):
             outputs = {
                 item[0]: reference_tensors[len(self.in_meta) + i]
                 for i, item in enumerate(self.out_meta)
+                if self._should_return_output(item[0])
             }
         execute_end = time.perf_counter()
 
         output = None
         if return_list:
-            output = [outputs[item[0]] for item in self.out_meta]
+            output = [
+                outputs[item[0]]
+                for item in self.out_meta
+                if self._should_return_output(item[0])
+            ]
         else:
             output = outputs
             if self.return_wrap:

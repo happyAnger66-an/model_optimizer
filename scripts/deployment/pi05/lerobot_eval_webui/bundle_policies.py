@@ -49,6 +49,8 @@ def _load_tensorrt_on_policy(
     trt_perf_print_interval: int | None = None,
     trt_cuda_graph: bool | None = None,
     trt_cuda_graph_warmup: int | None = None,
+    llm_kv_only: bool | None = None,
+    llm_expected_seq_len: int | None = None,
     denoise_adarms_precompute: bool = False,
 ) -> None:
     kw: dict[str, Any] = {
@@ -76,6 +78,10 @@ def _load_tensorrt_on_policy(
         kw["trt_cuda_graph"] = trt_cuda_graph
     if trt_cuda_graph_warmup is not None:
         kw["trt_cuda_graph_warmup"] = trt_cuda_graph_warmup
+    if llm_kv_only is not None:
+        kw["llm_kv_only"] = llm_kv_only
+    if llm_expected_seq_len is not None:
+        kw["llm_expected_seq_len"] = llm_expected_seq_len
     if denoise_adarms_precompute:
         kw["denoise_adarms_precompute"] = True
     load_tensorrt_engines(**kw)
@@ -382,6 +388,8 @@ def _attach_tensorrt_single(
         trt_perf_print_interval=int(getattr(args, "trt_perf_print_interval", 50)),
         trt_cuda_graph=trt_cuda_graph,
         trt_cuda_graph_warmup=int(getattr(args, "trt_cuda_graph_warmup", 3)),
+        llm_kv_only=bool(getattr(args, "llm_kv_only", False)),
+        llm_expected_seq_len=int(getattr(args, "llm_expected_seq_len", 0)),
         denoise_adarms_precompute=bool(getattr(args, "denoise_adarms_precompute", False)),
     )
     native_executor = None

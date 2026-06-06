@@ -153,6 +153,18 @@ class GemmaModelNativeOnnxExport(torch.nn.Module):
         return (hidden_states,) + tuple(present_key_values)
 
 
+class KvOnlyOnnxExport(torch.nn.Module):
+    """Drop ``last_hidden_state`` when exporting an LLM wrapper that returns ``(K, V, hidden)``."""
+
+    def __init__(self, model: torch.nn.Module) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, inputs_embeds, attention_mask, position_ids):
+        past_keys, past_values, _ = self.model(inputs_embeds, attention_mask, position_ids)
+        return past_keys, past_values
+
+
 # ── 特性注册：作用对象为 HF Gemma 解码器（``paligemma.get_decoder()``） ──────────
 # ``fused_mlp`` 与具体模型无关（``install_fused_mlp`` 对任意 HF Gemma 解码器幂等、
 # 自动跳过不匹配层），因此 ``supported_models=None``（适用所有模型）。与
@@ -416,15 +428,18 @@ class LLM(torch.nn.Module, Model):
                 "green",
             )
         )
-        inputs_embeds = torch.randn((1, 968, 2048),
+        seq_len = int(self.feature_config.export.get("llm_seq_len", 968) or 968)
+        llm_kv_only = bool(self.feature_config.export.get("llm_kv_only", False))
+        llm_static_shape = bool(self.feature_config.export.get("llm_static_shape", False))
+        inputs_embeds = torch.randn((1, seq_len, 2048),
                                     dtype=torch.bfloat16,
                                     device="cuda",
                                     )
-        attention_mask = torch.randn((1, 1, 968, 968),
+        attention_mask = torch.randn((1, 1, seq_len, seq_len),
                                      dtype=torch.float32,
                                      device="cuda",
                                      )
-        position_ids = torch.randint(1, 1000, (1, 968),
+        position_ids = torch.randint(1, 1000, (1, seq_len),
                                      dtype=torch.int64,
                                      device="cuda",
                                      )
@@ -432,24 +447,29 @@ class LLM(torch.nn.Module, Model):
         onnx_path = f"{output_dir}/llm.onnx"
         with torch.inference_mode():
             if mode == "native_per_layer":
+                if llm_kv_only:
+                    raise ValueError(
+                        "export.llm_kv_only is currently supported only with mode='self_forward'."
+                    )
                 export_net = GemmaModelNativeOnnxExport(self.model).eval().cuda()
                 num_layers = int(self.config.num_hidden_layers)
                 input_names = ["inputs_embeds", "attention_mask", "position_ids"]
                 output_names = ["last_hidden_state"] + [
                     f"present_key_values.{i}" for i in range(num_layers)
                 ]
-                dynamic_axes = {
+                dynamic_axes = None if llm_static_shape else {
                     "inputs_embeds": {0: "batch_size", 1: "seq_len"},
                     "attention_mask": {0: "batch_size", 2: "seq_len", 3: "seq_len"},
                     "position_ids": {0: "batch_size", 1: "seq_len"},
                     "last_hidden_state": {0: "batch_size", 1: "seq_len"},
                 }
-                for i in range(num_layers):
-                    # [B, 2, Hkv, S, D]
-                    dynamic_axes[f"present_key_values.{i}"] = {
-                        0: "batch_size",
-                        3: "seq_len",
-                    }
+                if dynamic_axes is not None:
+                    for i in range(num_layers):
+                        # [B, 2, Hkv, S, D]
+                        dynamic_axes[f"present_key_values.{i}"] = {
+                            0: "batch_size",
+                            3: "seq_len",
+                        }
                 torch.onnx.export(
                     export_net,
                     (inputs_embeds, attention_mask, position_ids),
@@ -465,17 +485,21 @@ class LLM(torch.nn.Module, Model):
             elif mode == "self_forward":
                 # 直接导出 LLM 包装模块的 forward，不做 Native 图重写、不做 KV 聚合包装
                 input_names = ["inputs_embeds", "attention_mask", "position_ids"]
-                output_names = ["past_keys", "past_values", "last_hidden_state"]
-                dynamic_axes = {
+                export_net = KvOnlyOnnxExport(self).eval().cuda() if llm_kv_only else self
+                output_names = ["past_keys", "past_values"]
+                if not llm_kv_only:
+                    output_names.append("last_hidden_state")
+                dynamic_axes = None if llm_static_shape else {
                     "inputs_embeds": {0: "batch_size", 1: "seq_len"},
                     "attention_mask": {0: "batch_size", 2: "seq_len", 3: "seq_len"},
                     "position_ids": {0: "batch_size", 1: "seq_len"},
                     "past_keys": {0: "past_keys_dim0", 2: "seq_len"},
                     "past_values": {0: "past_values_dim0", 2: "seq_len"},
-                    "last_hidden_state": {0: "batch_size", 1: "seq_len"},
                 }
+                if dynamic_axes is not None and not llm_kv_only:
+                    dynamic_axes["last_hidden_state"] = {0: "batch_size", 1: "seq_len"}
                 torch.onnx.export(
-                    self,
+                    export_net,
                     (inputs_embeds, attention_mask, position_ids),
                     onnx_path,
                     export_params=True,

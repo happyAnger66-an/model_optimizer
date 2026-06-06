@@ -123,6 +123,12 @@ def _mount_tensorrt_engines(policy: Any, config: ServerConfig, on_progress: Prog
     if getattr(config.tensorrt, "vit_batch_views", False):
         trt_cfg["vit_batch_views"] = True
 
+    if getattr(config.tensorrt, "llm_kv_only", False):
+        trt_cfg["llm_kv_only"] = True
+    llm_expected_seq_len = int(getattr(config.tensorrt, "llm_expected_seq_len", 0) or 0)
+    if llm_expected_seq_len > 0:
+        trt_cfg["llm_expected_seq_len"] = llm_expected_seq_len
+
     # 分阶段后端矩阵：vit=flashrt 时，把 FlashRT SigLIP 视觉栈接入（其余阶段仍走 TRT）。
     # 这是把历史 ad-hoc 开关 use_flashrt_siglip_embed_prefix 迁移成一等公民的入口。
     if resolved.get("vit") == "flashrt":

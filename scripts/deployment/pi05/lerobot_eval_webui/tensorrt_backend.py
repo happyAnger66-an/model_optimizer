@@ -21,6 +21,8 @@ def load_tensorrt_engines(
     trt_perf_print_interval: int = 50,
     trt_cuda_graph: bool = False,
     trt_cuda_graph_warmup: int = 3,
+    llm_kv_only: bool = False,
+    llm_expected_seq_len: int = 0,
     denoise_adarms_precompute: bool = False,
     trt_vit_scale_fix: bool | None = None,
 ) -> None:
@@ -55,6 +57,10 @@ def load_tensorrt_engines(
     cfg["trt_perf_print_interval"] = int(trt_perf_print_interval)
     cfg["trt_cuda_graph"] = bool(trt_cuda_graph)
     cfg["trt_cuda_graph_warmup"] = int(trt_cuda_graph_warmup)
+    if llm_kv_only:
+        cfg["llm_kv_only"] = True
+    if int(llm_expected_seq_len or 0) > 0:
+        cfg["llm_expected_seq_len"] = int(llm_expected_seq_len)
     cfg["denoise_adarms_precompute"] = bool(denoise_adarms_precompute)
     if trt_vit_scale_fix is True:
         cfg["trt_vit_scale_fix"] = True

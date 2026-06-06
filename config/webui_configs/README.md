@@ -38,6 +38,8 @@ python scripts/deployment/pi05/lerobot_eval_webui_server.py \
 | `engine_path` | TensorRT 引擎目录；`vit_engine`/`llm_engine`/… 为其下文件名 |
 | `vit_batch_views` | 把所有相机视角堆成 batch 维**一次过 vit 引擎**（SigLIP 各图独立、数值等价） |
 | `trt_vit_scale_fix` | TRT ViT 输出补乘 ``sqrt(hidden_size)``，修复部分 vit.engine 相对 PyTorch 精度偏低；等价 ``PI05_TRT_VIT_SCALE_FIX=1``（YAML 为 true 时优先） |
+| `llm_kv_only` | LLM TRT hook 仅返回/使用 KV 输出。若 engine 本身仍导出 `last_hidden_state`，只省 Python 返回/Graph clone；若配套 KV-only LLM engine，可彻底去掉该输出 |
+| `llm_expected_seq_len` | 非 0 时校验 prefix LLM 固定序列长度（如 968），用于固定 shape / CUDA Graph 配置 fail-fast |
 | `ort_engine_path` / `ort_*_engine` | ONNX Runtime 模型目录与文件名 |
 | `noise` / `noise_seed` | `fixed` 时按 chunk 确定性生成推理初值，便于多后端复现对比 |
 

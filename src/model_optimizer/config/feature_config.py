@@ -14,7 +14,7 @@ JSON 格式::
         "fused_mlp":           { "enabled": false },
         "kv_cache_fp8":        true
       },
-      "export":   { "dynamo": false },
+      "export":   { "dynamo": false, "llm_kv_only": true, "llm_static_shape": true, "llm_seq_len": 968 },
       "quantize": { "dynamic_quant": "fp16" }
     }
 
