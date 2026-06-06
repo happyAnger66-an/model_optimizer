@@ -595,12 +595,32 @@ class Pi05NativeExecutor(Executor):
                 with stage_perf.timed("kv.trim"):
                     valid_prefix = prefix_pad_masks[0].to(dtype=torch.bool)
                     enc_seq = int(valid_prefix.sum().item())
+                    mask_len = int(valid_prefix.numel())
+                    # Fast path for the common case: valid tokens occupy a contiguous prefix
+                    # and padding is only at the tail. This avoids boolean gather, which has
+                    # high p99 latency on the KV tensors. Fall back to the original mask path
+                    # when an invalid image block creates holes before later valid tokens.
+                    prefix_contiguous = (
+                        enc_seq == 0
+                        or (
+                            bool(valid_prefix[enc_seq - 1].item())
+                            and (enc_seq == mask_len or not bool(valid_prefix[enc_seq].item()))
+                        )
+                    )
                     if past_keys.dim() == 4:
-                        past_keys = past_keys[:, :, valid_prefix, :].contiguous()
-                        past_values = past_values[:, :, valid_prefix, :].contiguous()
+                        if prefix_contiguous:
+                            past_keys = past_keys[:, :, :enc_seq, :].contiguous()
+                            past_values = past_values[:, :, :enc_seq, :].contiguous()
+                        else:
+                            past_keys = past_keys[:, :, valid_prefix, :].contiguous()
+                            past_values = past_values[:, :, valid_prefix, :].contiguous()
                     else:
-                        past_keys = past_keys[:, valid_prefix, :].contiguous()
-                        past_values = past_values[:, valid_prefix, :].contiguous()
+                        if prefix_contiguous:
+                            past_keys = past_keys[:, :enc_seq, :].contiguous()
+                            past_values = past_values[:, :enc_seq, :].contiguous()
+                        else:
+                            past_keys = past_keys[:, valid_prefix, :].contiguous()
+                            past_values = past_values[:, valid_prefix, :].contiguous()
                 if enc_seq % 2 != 0:
                     with stage_perf.timed("kv.pad_even"):
                         # FlashRT Thor kernels assume an even encoder sequence length.
