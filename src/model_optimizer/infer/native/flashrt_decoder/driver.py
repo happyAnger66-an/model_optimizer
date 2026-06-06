@@ -287,9 +287,15 @@ class Pi05ThorDecoderLoop:
         self._stage_perf = stage_perf
 
     def set_prefix_kv(self, past_keys: torch.Tensor, past_values: torch.Tensor) -> None:
-        fill_prefix_kv_from_trt(
-            self._bufs.Kc, self._bufs.Vc, past_keys, past_values, self._dims["enc_seq"]
-        )
+        if self._stage_perf is None:
+            fill_prefix_kv_from_trt(
+                self._bufs.Kc, self._bufs.Vc, past_keys, past_values, self._dims["enc_seq"]
+            )
+            return
+        with self._stage_perf.timed("kv.fill_prefix"):
+            fill_prefix_kv_from_trt(
+                self._bufs.Kc, self._bufs.Vc, past_keys, past_values, self._dims["enc_seq"]
+            )
 
     def run(self, noise: torch.Tensor) -> torch.Tensor:
         """运行整循环。``noise``: ``[Sa, 32]`` fp16；返回最终 action chunk（``noise`` buffer）。"""

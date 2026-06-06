@@ -585,31 +585,34 @@ class Pi05NativeExecutor(Executor):
                         inputs_embeds=[prefix_embs, None],
                         use_cache=True,
                     )
-                past_keys, past_values = self._stack_past_key_values(past_key_values)
+                with stage_perf.timed("kv.stack"):
+                    past_keys, past_values = self._stack_past_key_values(past_key_values)
                 if int(prefix_pad_masks.shape[0]) != 1:
                     raise ValueError(
                         "FlashRT decoder hybrid currently supports batch=1; "
                         f"got batch={int(prefix_pad_masks.shape[0])}"
                     )
-                valid_prefix = prefix_pad_masks[0].to(dtype=torch.bool)
-                enc_seq = int(valid_prefix.sum().item())
-                if past_keys.dim() == 4:
-                    past_keys = past_keys[:, :, valid_prefix, :].contiguous()
-                    past_values = past_values[:, :, valid_prefix, :].contiguous()
-                    if enc_seq % 2 != 0:
+                with stage_perf.timed("kv.trim"):
+                    valid_prefix = prefix_pad_masks[0].to(dtype=torch.bool)
+                    enc_seq = int(valid_prefix.sum().item())
+                    if past_keys.dim() == 4:
+                        past_keys = past_keys[:, :, valid_prefix, :].contiguous()
+                        past_values = past_values[:, :, valid_prefix, :].contiguous()
+                    else:
+                        past_keys = past_keys[:, valid_prefix, :].contiguous()
+                        past_values = past_values[:, valid_prefix, :].contiguous()
+                if enc_seq % 2 != 0:
+                    with stage_perf.timed("kv.pad_even"):
                         # FlashRT Thor kernels assume an even encoder sequence length.
                         # Match the original frontend's prompt padding by appending one
                         # duplicate valid KV token instead of leaving an odd physical stride.
-                        past_keys = torch.cat([past_keys, past_keys[:, :, -1:, :]], dim=2)
-                        past_values = torch.cat([past_values, past_values[:, :, -1:, :]], dim=2)
-                        enc_seq += 1
-                else:
-                    past_keys = past_keys[:, valid_prefix, :].contiguous()
-                    past_values = past_values[:, valid_prefix, :].contiguous()
-                    if enc_seq % 2 != 0:
-                        past_keys = torch.cat([past_keys, past_keys[:, -1:, :]], dim=1)
-                        past_values = torch.cat([past_values, past_values[:, -1:, :]], dim=1)
-                        enc_seq += 1
+                        if past_keys.dim() == 4:
+                            past_keys = torch.cat([past_keys, past_keys[:, :, -1:, :]], dim=2)
+                            past_values = torch.cat([past_values, past_values[:, :, -1:, :]], dim=2)
+                        else:
+                            past_keys = torch.cat([past_keys, past_keys[:, -1:, :]], dim=1)
+                            past_values = torch.cat([past_values, past_values[:, -1:, :]], dim=1)
+                    enc_seq += 1
 
                 if noise is None:
                     bsize = int(prefix_pad_masks.shape[0])
