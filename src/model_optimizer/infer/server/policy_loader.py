@@ -14,6 +14,8 @@ from typing import Any
 
 from termcolor import colored
 
+from model_optimizer.policies import get_policy_adapter
+
 from .config import ServerConfig
 
 logger = logging.getLogger(__name__)
@@ -35,16 +37,18 @@ def _resolve_precision(precision: str):
     return torch.float32
 
 
+def _get_policy_adapter(config: ServerConfig):
+    return get_policy_adapter(config.architecture)
+
+
 def _load_pytorch_policy(config: ServerConfig, on_progress: ProgressCallback):
     """加载一份 PyTorch 浮点策略。"""
-    from openpi.policies import policy_config
-    from openpi.training import config as _config
-
+    adapter = _get_policy_adapter(config)
     on_progress("config", "读取训练配置 …")
-    train_cfg = _config.get_config(config.config_name)
+    train_cfg = adapter.load_train_config(config.config_name)
 
     on_progress("policy_pt", "加载 PyTorch 策略（checkpoint → 内存/显存）…")
-    policy = policy_config.create_trained_policy(
+    policy = adapter.create_policy(
         train_cfg,
         config.checkpoint,
         pytorch_device=config.device,
@@ -247,9 +251,9 @@ def _apply_selective_ptq(
     from model_optimizer.models.pi05.expert import Expert
     from model_optimizer.models.pi05.dit import Pi05DenoiseStep
 
-    m = _unwrap_pi05_model(policy)
+    m = _unwrap_policy_model(policy, config)
     if m is None:
-        raise RuntimeError("Cannot unwrap Pi0.5 model from policy for PTQ")
+        raise RuntimeError(f"Cannot unwrap model from policy for architecture={config.architecture!r}")
 
     quant_cfg = _load_ptq_quant_cfg(config.ptq.quant_cfg)
     calib_dir = str(Path(config.ptq.calib_dir).expanduser().resolve())
@@ -316,14 +320,9 @@ def _apply_selective_ptq(
     on_progress("ptq_apply", "选择性 PTQ 已应用")
 
 
-def _unwrap_pi05_model(policy: Any) -> Any | None:
-    """取底层 Pi0.5 torch 模块。"""
-    inner = getattr(policy, "_policy", None)
-    if inner is not None:
-        m = getattr(inner, "_model", None)
-        if m is not None:
-            return m
-    return getattr(policy, "_model", None)
+def _unwrap_policy_model(policy: Any, config: ServerConfig) -> Any | None:
+    """取底层 torch 模块。"""
+    return _get_policy_adapter(config).unwrap_model(policy)
 
 
 def load_policy_for_serve(
@@ -342,16 +341,14 @@ def load_policy_for_serve(
         # serve 的 flashrt 直连模式不依赖 openpi policy。
         return _build_flashrt_policy(config, on_progress)
 
-    from openpi.policies import policy_config
-    from openpi.training import config as _config
-
+    adapter = _get_policy_adapter(config)
     serve_cfg = config.serve
 
     on_progress("config", "读取训练配置 …")
-    train_cfg = _config.get_config(config.config_name)
+    train_cfg = adapter.load_train_config(config.config_name)
 
     on_progress("policy", "加载策略（checkpoint → 内存/显存）…")
-    policy = policy_config.create_trained_policy(
+    policy = adapter.create_policy(
         train_cfg,
         config.checkpoint,
         default_prompt=serve_cfg.default_prompt,
@@ -396,14 +393,13 @@ def load_policies(
         on_progress = _noop_progress
 
     mode = config.mode
-    from openpi.training import config as _config
+    adapter = _get_policy_adapter(config)
     if mode == "flashrt":
         on_progress("config", "读取训练配置 …")
-        train_cfg = _config.get_config(config.config_name)
+        train_cfg = adapter.load_train_config(config.config_name)
         policy = None
     else:
         policy, train_cfg = _load_pytorch_policy(config, on_progress)
-        from openpi.policies import policy_config
 
     policy_trt = None
     policy_ptq = None
@@ -431,7 +427,7 @@ def load_policies(
 
     elif mode == "pt_trt_compare":
         on_progress("policy_trt", "对比模式：加载第二套策略并挂载 TensorRT …")
-        policy_trt = policy_config.create_trained_policy(
+        policy_trt = adapter.create_policy(
             train_cfg,
             config.checkpoint,
             pytorch_device=config.device,
@@ -442,7 +438,7 @@ def load_policies(
 
     elif mode == "pt_ort_compare":
         on_progress("policy_ort", "对比模式：加载第二套策略并挂载 ONNX Runtime …")
-        policy_trt = policy_config.create_trained_policy(
+        policy_trt = adapter.create_policy(
             train_cfg,
             config.checkpoint,
             pytorch_device=config.device,
@@ -452,7 +448,7 @@ def load_policies(
 
     elif mode == "pt_ptq_compare":
         on_progress("ptq_policy", "对比模式：加载第二套策略并应用 PTQ …")
-        policy_ptq = policy_config.create_trained_policy(
+        policy_ptq = adapter.create_policy(
             train_cfg,
             config.checkpoint,
             pytorch_device=config.device,
@@ -465,7 +461,7 @@ def load_policies(
         _apply_selective_ptq(policy, config, on_progress)
 
         on_progress("policy_trt", "PTQ+TRT 对比：加载第二套策略并挂载 TensorRT …")
-        policy_trt = policy_config.create_trained_policy(
+        policy_trt = adapter.create_policy(
             train_cfg,
             config.checkpoint,
             pytorch_device=config.device,

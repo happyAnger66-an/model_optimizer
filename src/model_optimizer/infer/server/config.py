@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
+from model_optimizer.architectures import get_architecture_spec
+
 InferMode = Literal[
     "pytorch",
     "tensorrt",
@@ -23,8 +25,9 @@ InferMode = Literal[
 # 单后端取值（用于分阶段后端矩阵 StagesConfig）。
 StageBackend = Literal["pytorch", "tensorrt", "onnxrt", "native", "flashrt"]
 
-# pi05 推理的 5 个可独立替换阶段。
-PI05_STAGES: tuple[str, ...] = ("vit", "embed_prefix", "llm", "expert", "denoise")
+# Backward-compatible alias for the Pi0.5 stages. New code should query the
+# selected architecture spec via ``ServerConfig.architecture_spec``.
+PI05_STAGES: tuple[str, ...] = get_architecture_spec("pi05").stage_names
 
 
 @dataclass
@@ -175,6 +178,7 @@ class CalibConfig:
 
 @dataclass
 class ServerConfig:
+    architecture: str = "pi05"
     checkpoint: str = ""
     config_name: str = "pi05_libero"
     mode: InferMode = "pytorch"
@@ -200,6 +204,10 @@ class ServerConfig:
     serve: ServeConfig = field(default_factory=ServeConfig)
     calib: CalibConfig = field(default_factory=CalibConfig)
 
+    @property
+    def architecture_spec(self):
+        return get_architecture_spec(self.architecture)
+
     def resolve_stages(self) -> dict[str, str]:
         """归一化分阶段后端矩阵：``stages.<stage>`` 优先，否则由 ``mode`` 推导。
 
@@ -208,7 +216,7 @@ class ServerConfig:
         对于对比 / PTQ 模式，基线阶段默认 ``pytorch``（第二路策略在 loader 中单独构建）。
 
         Returns:
-            ``{stage: backend}``，stage ∈ :data:`PI05_STAGES`。
+            ``{stage: backend}``，stage 来自当前 architecture spec。
         """
         base: str = (
             self.mode
@@ -216,12 +224,15 @@ class ServerConfig:
             else "pytorch"
         )
         resolved: dict[str, str] = {}
-        for stage in PI05_STAGES:
+        for stage in self.architecture_spec.stage_names:
             override = getattr(self.stages, stage, None)
             resolved[stage] = override if override else base
         return resolved
 
     def validate(self) -> None:
+        # Fail early for unknown architectures.
+        _ = self.architecture_spec
+
         if not self.checkpoint:
             raise ValueError("checkpoint is required")
 
