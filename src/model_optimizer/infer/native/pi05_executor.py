@@ -569,6 +569,21 @@ class Pi05NativeExecutor(Executor):
                     prefix_embs, prefix_pad_masks, prefix_att_masks = self_m.embed_prefix(
                         images, img_masks, lang_tokens, lang_masks
                     )
+                with stage_perf.timed("kv.prepare"):
+                    num_views = len(img_masks)
+                    lang_len = int(lang_masks.shape[1])
+                    image_tokens_total = int(prefix_pad_masks.shape[1]) - lang_len
+                    image_tokens_per_view = image_tokens_total // max(num_views, 1)
+                    image_valid = [
+                        bool(mask.reshape(-1)[0].item())
+                        for mask in img_masks
+                    ]
+                    lang_valid_len = int(lang_masks[0].sum().item())
+                    enc_seq_fast = sum(image_valid) * image_tokens_per_view + lang_valid_len
+                    # The prefix layout is [image blocks..., language]. Any invalid image
+                    # block creates holes before language tokens, so only the all-images-valid
+                    # case can be trimmed by a simple prefix slice without changing semantics.
+                    kv_trim_can_slice = all(image_valid)
 
                 prefix_cumsum = torch.cumsum(prefix_att_masks, dim=1)
                 prefix_att_2d_masks = prefix_cumsum[:, None, :] <= prefix_cumsum[:, :, None]
@@ -593,32 +608,23 @@ class Pi05NativeExecutor(Executor):
                         f"got batch={int(prefix_pad_masks.shape[0])}"
                     )
                 with stage_perf.timed("kv.trim"):
-                    valid_prefix = prefix_pad_masks[0].to(dtype=torch.bool)
-                    enc_seq = int(valid_prefix.sum().item())
-                    mask_len = int(valid_prefix.numel())
-                    # Fast path for the common case: valid tokens occupy a contiguous prefix
-                    # and padding is only at the tail. This avoids boolean gather, which has
-                    # high p99 latency on the KV tensors. Fall back to the original mask path
-                    # when an invalid image block creates holes before later valid tokens.
-                    prefix_contiguous = (
-                        enc_seq == 0
-                        or (
-                            bool(valid_prefix[enc_seq - 1].item())
-                            and (enc_seq == mask_len or not bool(valid_prefix[enc_seq].item()))
-                        )
-                    )
+                    enc_seq = enc_seq_fast
                     if past_keys.dim() == 4:
-                        if prefix_contiguous:
+                        if kv_trim_can_slice:
                             past_keys = past_keys[:, :, :enc_seq, :].contiguous()
                             past_values = past_values[:, :, :enc_seq, :].contiguous()
                         else:
+                            valid_prefix = prefix_pad_masks[0].to(dtype=torch.bool)
+                            enc_seq = int(valid_prefix.sum().item())
                             past_keys = past_keys[:, :, valid_prefix, :].contiguous()
                             past_values = past_values[:, :, valid_prefix, :].contiguous()
                     else:
-                        if prefix_contiguous:
+                        if kv_trim_can_slice:
                             past_keys = past_keys[:, :enc_seq, :].contiguous()
                             past_values = past_values[:, :enc_seq, :].contiguous()
                         else:
+                            valid_prefix = prefix_pad_masks[0].to(dtype=torch.bool)
+                            enc_seq = int(valid_prefix.sum().item())
                             past_keys = past_keys[:, valid_prefix, :].contiguous()
                             past_values = past_values[:, valid_prefix, :].contiguous()
                 if enc_seq % 2 != 0:
