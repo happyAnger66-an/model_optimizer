@@ -6,7 +6,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from model_optimizer.artifacts import ArtifactManifest, manifest_path_for, update_artifact_manifest
+from model_optimizer.artifacts import (
+    ArtifactManifest,
+    load_or_create_manifest,
+    manifest_path_for,
+)
 
 from .manifest import WorkflowAction, WorkflowManifest, WorkflowStage
 
@@ -149,23 +153,34 @@ class WorkflowRunner:
             onnx_path = self._find_onnx(Path(cmd.output_dir).expanduser(), stage)
             if onnx_path is not None:
                 paths["onnx"] = str(onnx_path.resolve())
-        update_artifact_manifest(
-            output_path,
-            artifact_type=None if action.name == "build" else f"workflow_{action.name}",
+        manifest_path = manifest_path_for(output_path)
+        manifest = load_or_create_manifest(manifest_path)
+        workflow = manifest.metadata.get("workflow", {})
+        if not isinstance(workflow, dict):
+            workflow = {}
+        actions = workflow.get("actions", [])
+        if not isinstance(actions, list):
+            actions = []
+        actions.append(
+            {
+                "name": action.name,
+                "argv": list(cmd.argv[1:]),
+            }
+        )
+        workflow.update(
+            {
+                "version": self.manifest.version,
+                "actions": actions,
+            }
+        )
+        manifest.merge_update(
             architecture=self.manifest.architecture,
             stage=stage.name,
             model_name=self.manifest.stage_model_name(stage),
             paths=paths,
-            configs={
-                "workflow_action": {
-                    "name": action.name,
-                    "argv": list(cmd.argv[1:]),
-                },
-            },
-            metadata={
-                "workflow_version": self.manifest.version,
-            },
+            metadata={"workflow": workflow},
         )
+        manifest.save(manifest_path)
 
     def _default_model_path(
         self,

@@ -15,7 +15,7 @@ from termcolor import colored
 
 from model_optimizer.utils.utils import is_fp4_quantized, set_dynamic_quant, is_nvfp4_quantized
 from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
-from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
+from model_optimizer.calibrate.collectors import get_calib_collector
 from model_optimizer.config.feature_config import FeatureConfig
 from model_optimizer.models.pi05.fused_mlp import install_fused_mlp
 
@@ -216,7 +216,7 @@ class LLM(torch.nn.Module, Model):
         print(colored(f"model {self.model}", "dark_grey"))
 
     def get_calibrate_dataset(self, calib_data):
-        return open_pi05_calib_for_quantize(calib_data, component="pi05_llm")
+        return get_calib_collector("pi05", "llm").load(calib_data)
 
     def _wrap_past_key_values(self, input_keys, input_values):
         k_v_cache = DynamicCache()

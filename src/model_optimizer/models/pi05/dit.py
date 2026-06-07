@@ -15,7 +15,7 @@ from termcolor import colored
 from transformers.cache_utils import DynamicCache
 
 from ..model import Model
-from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
+from model_optimizer.calibrate.collectors import get_calib_collector
 from model_optimizer.config.feature_config import FeatureConfig
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
@@ -205,7 +205,7 @@ class Pi05DenoiseStep(nn.Module, Model):
 
     def get_calibrate_dataset(self, calib_data):
         # 与 LLM/Vit/Expert 一致：支持 manifest+shards（低内存）与旧 merged .pt
-        return open_pi05_calib_for_quantize(calib_data, component="pi05_denoise")
+        return get_calib_collector("pi05", "denoise").load(calib_data)
 
     def val(self, val_data, batch_size, output_dir):
         raise NotImplementedError(

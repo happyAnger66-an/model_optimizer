@@ -105,6 +105,10 @@ def test_workflow_runner_executes_fake_steps_and_records_manifest(tmp_path, monk
             out = Path(cmd.argv[cmd.argv.index("--export_dir") + 1])
             out.mkdir(parents=True, exist_ok=True)
             (out / f"{cmd.stage}.onnx").write_bytes(b"onnx")
+            ArtifactManifest(
+                artifact_type="quantized_onnx" if cmd.action == "quantize" else "onnx_export",
+                paths={"onnx": str((out / f"{cmd.stage}.onnx").resolve())},
+            ).save(out / "artifact_manifest.json")
         if cmd.action == "build":
             engine = Path(cmd.argv[cmd.argv.index("--export_dir") + 1])
             engine.parent.mkdir(parents=True, exist_ok=True)
@@ -118,9 +122,13 @@ def test_workflow_runner_executes_fake_steps_and_records_manifest(tmp_path, monk
     llm_manifest = ArtifactManifest.load(manifest_path_for(tmp_path / "artifacts" / "llm"))
     expert_manifest = ArtifactManifest.load(manifest_path_for(tmp_path / "artifacts" / "expert"))
     assert llm_manifest.stage == "llm"
+    assert llm_manifest.artifact_type == "quantized_onnx"
     assert llm_manifest.paths["onnx"].endswith("llm.onnx")
+    assert [a["name"] for a in llm_manifest.metadata["workflow"]["actions"]] == ["quantize", "build"]
     assert expert_manifest.stage == "expert"
+    assert expert_manifest.artifact_type == "onnx_export"
     assert expert_manifest.paths["onnx"].endswith("expert.onnx")
+    assert [a["name"] for a in expert_manifest.metadata["workflow"]["actions"]] == ["export"]
 
 
 @pytest.mark.e2e

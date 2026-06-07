@@ -7,7 +7,7 @@ import logging
 from ..model import Model
 from termcolor import colored
 
-from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
+from model_optimizer.calibrate.collectors import get_calib_collector
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ class Expert(torch.nn.Module, Model):
         self.gemma_expert.config._attn_implementation = "eager"
 
     def get_calibrate_dataset(self, calib_data):
-        return open_pi05_calib_for_quantize(calib_data, component="pi05_expert")
+        return get_calib_collector("pi05", "expert").load(calib_data)
 
     @property
     def model(self):

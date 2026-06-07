@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from ..model import Model
 from .vit import _force_vision_eager_attention_temporarily, _sdp_math_backend_only
-from model_optimizer.calibrate.pi05_calib_load import open_pi05_calib_for_quantize
+from model_optimizer.calibrate.collectors import get_calib_collector
 from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 #from modelopt.torch.quantization.utils import export_torch_mode
@@ -142,7 +142,7 @@ class Pi05EmbedPrefix(nn.Module, Model):
         return self.vision_tower
 
     def get_calibrate_dataset(self, calib_data):
-        return open_pi05_calib_for_quantize(calib_data, component="pi05_embed_prefix")
+        return get_calib_collector("pi05", "embed_prefix").load(calib_data)
 
     def val(self, val_data, batch_size, output_dir):
         val_datas = self.get_calibrate_dataset(val_data)
