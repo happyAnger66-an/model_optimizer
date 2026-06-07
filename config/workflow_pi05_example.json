@@ -2,26 +2,19 @@
   "version": "workflow_v1",
   "architecture": "pi05",
   "model_name": "pi05_libero",
-  "model_path": "/path/to/pi05/checkpoint",
+  "model_path": "/srcs/openpi/pytorch_pi05_libero/",
   "train_config": "pi05_libero",
-  "output_dir": "output/pi05_workflow",
+  "output_dir": "/tmp/output/pi05_workflow",
   "stages": [
     {
       "name": "llm",
       "actions": ["quantize", "build"],
       "quantize": {
         "quantize_cfg": "config/quant/llm_quant_fp8_cfg.py",
-        "calibrate_data": "/path/to/calibration_data.npz"
+        "calibrate_data": "/data/pi05_calib_run/llm/"
       },
       "build": {
         "build_cfg": "config/build_configs/llm_build_cfg.py"
-      }
-    },
-    {
-      "name": "expert",
-      "actions": ["export"],
-      "export": {
-        "mode": "native_per_layer"
       }
     }
   ]
