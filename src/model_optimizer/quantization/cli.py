@@ -6,7 +6,6 @@ import numpy as np
 
 from ..progress.write import write_quantize_progress, write_running_log
 from ..webui.extras.constants import RUNNING_LOG
-from .llm_ptq import llm_quantize
 
 from termcolor import colored
 
@@ -164,6 +163,26 @@ def quantize_cli(args):
             )
         )
     model.quantize(quant_cfg, args.calibrate_data, args.export_dir, **quant_kwargs)
+    from model_optimizer.artifacts import infer_architecture_from_model_name, record_quantize_artifact
+
+    record_quantize_artifact(
+        output_dir=args.export_dir,
+        architecture=infer_architecture_from_model_name(model_name),
+        model_name=model_name,
+        model_path=model_path,
+        quantize_config={
+            "quantize_cfg": args.quantize_cfg,
+            "calibrate_data": args.calibrate_data,
+            "calibrate_method": args.calibrate_method,
+            "train_config": args.train_config,
+            "feature_config": args.feature_config,
+            "measure_quant_error": bool(args.measure_quant_error),
+            "native_quant_spec_export": args.native_quant_spec_export,
+            "native_calib_component": args.native_calib_component,
+            "native_calib_percentile": args.native_calib_percentile,
+            "native_calib_max_samples": args.native_calib_max_samples,
+        },
+    )
 
     if args.native_quant_spec_export:
         from .native_decoder import export_native_decoder_quant_spec

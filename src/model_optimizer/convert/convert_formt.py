@@ -2,15 +2,10 @@ import os
 import argparse
 import inspect
 
-import torch
-
 from copy import deepcopy
 from typing import Optional, Any
 
 import shutil
-
-from ultralytics import YOLO
-from ultralytics.nn.tasks import SegmentationModel
 
 from subprocess import Popen, PIPE, TimeoutExpired, STDOUT
 
@@ -41,6 +36,8 @@ def simplifier_model(model_path, output_dir):
 
 
 def pt2onnx(model_path, export_dir, simplifier=True):
+    from ultralytics import YOLO
+
     print(f'pt2onnx {model_path} to {export_dir}')
     model = YOLO(model_path, task='segment')
 
@@ -63,6 +60,7 @@ def pt2onnx(model_path, export_dir, simplifier=True):
 
 
 def qwen3_vl2onnx(model_path, export_dir):
+    import torch
     print(f'qwen3_vl2onnx {model_path} to {export_dir}')
     from transformers import Qwen3VLForConditionalGeneration
     print('loading qwen3_vl model ...')
@@ -156,6 +154,26 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
     tracker.advance(step_name="执行导出（生成 ONNX）")
     export_model_path = model.export(export_dir, mode=args.mode)
     write_running_log(export_dir, f"[export] export_model_path={export_model_path}")
+    from model_optimizer.artifacts import (
+        infer_architecture_from_model_name,
+        record_onnx_export_artifact,
+    )
+
+    record_onnx_export_artifact(
+        output_dir=export_dir,
+        onnx_path=export_model_path if isinstance(export_model_path, str) else None,
+        architecture=infer_architecture_from_model_name(model_name),
+        model_name=model_name,
+        model_path=model_path,
+        export_config={
+            "export_type": args.export_type,
+            "simplifier": args.simplifier,
+            "verify_data": args.verify_data,
+            "train_config": args.train_config,
+            "mode": args.mode,
+            "feature_config": args.feature_config,
+        },
+    )
 
     if args.verify_data:
         export_model = model_cls.construct_from_name_path(

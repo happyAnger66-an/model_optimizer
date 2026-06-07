@@ -8,6 +8,41 @@ from typing import Any
 from .manifest import ArtifactManifest, MANIFEST_FILENAME
 
 
+def infer_stage_from_model_name(model_name: str | None) -> str:
+    if not model_name:
+        return ""
+    return str(model_name).split("/")[-1] if "/" in str(model_name) else ""
+
+
+def infer_architecture_from_model_name(model_name: str | None) -> str:
+    if not model_name:
+        return ""
+    root = str(model_name).split("/")[0]
+    if root.startswith("pi05"):
+        return "pi05"
+    return root
+
+
+def find_onnx_artifact(output_dir: str | Path, *, stage: str | None = None) -> Path | None:
+    """Find the ONNX artifact in an output directory.
+
+    Prefer ``<stage>.onnx`` when stage is known, otherwise return a single ONNX
+    file only when the directory is unambiguous.
+    """
+
+    directory = Path(output_dir).expanduser()
+    if not directory.is_dir():
+        return None
+    if stage:
+        preferred = directory / f"{stage}.onnx"
+        if preferred.is_file():
+            return preferred
+    matches = sorted(directory.glob("*.onnx"))
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def manifest_path_for(output_path: str | Path) -> Path:
     """Return the manifest path for an artifact file or output directory."""
 
@@ -88,5 +123,71 @@ def record_trt_build_artifact(
         },
         metadata={
             "use_cudagraph": bool(use_cudagraph),
+        },
+    )
+
+
+def record_onnx_export_artifact(
+    *,
+    output_dir: str | Path,
+    onnx_path: str | Path | None,
+    architecture: str | None = None,
+    stage: str | None = None,
+    model_name: str | None = None,
+    model_path: str | Path | None = None,
+    export_config: dict[str, Any] | None = None,
+) -> ArtifactManifest:
+    """Record an ONNX export result."""
+
+    resolved_stage = stage or infer_stage_from_model_name(model_name)
+    resolved_onnx = Path(onnx_path).expanduser() if onnx_path else find_onnx_artifact(output_dir, stage=resolved_stage)
+    paths: dict[str, str] = {}
+    if model_path:
+        paths["model"] = str(Path(model_path).expanduser())
+    if resolved_onnx is not None:
+        paths["onnx"] = str(resolved_onnx.resolve())
+
+    return update_artifact_manifest(
+        output_dir,
+        artifact_type="onnx_export",
+        architecture=architecture,
+        stage=resolved_stage,
+        model_name=model_name,
+        paths=paths,
+        configs={
+            "export": dict(export_config or {}),
+        },
+    )
+
+
+def record_quantize_artifact(
+    *,
+    output_dir: str | Path,
+    architecture: str | None = None,
+    stage: str | None = None,
+    model_name: str | None = None,
+    model_path: str | Path | None = None,
+    quantize_config: dict[str, Any] | None = None,
+    onnx_path: str | Path | None = None,
+) -> ArtifactManifest:
+    """Record a quantization result."""
+
+    resolved_stage = stage or infer_stage_from_model_name(model_name)
+    resolved_onnx = Path(onnx_path).expanduser() if onnx_path else find_onnx_artifact(output_dir, stage=resolved_stage)
+    paths: dict[str, str] = {}
+    if model_path:
+        paths["model"] = str(Path(model_path).expanduser())
+    if resolved_onnx is not None:
+        paths["onnx"] = str(resolved_onnx.resolve())
+
+    return update_artifact_manifest(
+        output_dir,
+        artifact_type="quantized_onnx",
+        architecture=architecture,
+        stage=resolved_stage,
+        model_name=model_name,
+        paths=paths,
+        configs={
+            "quantize": dict(quantize_config or {}),
         },
     )
