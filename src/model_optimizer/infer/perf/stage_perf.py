@@ -12,6 +12,7 @@ Key 约定（点分路径，便于分组打印）::
     policy.postprocess    # actions/state D2H + output_transform
     policy.postprocess.actions_d2h
     policy.postprocess.state_d2h
+    policy.postprocess.state_cpu_reuse
     policy.postprocess.output_transform
     policy.align          # webui ``align_action_dim``（在 backend.predict 内）
     sample_actions        # 整段 ``PI0Pytorch.sample_actions`` wall time（模型纯推理）
@@ -53,6 +54,7 @@ KEY_POLICY_PREPROCESS_OBSERVATION = "policy.preprocess.observation_from_dict"
 KEY_POLICY_POSTPROCESS = "policy.postprocess"
 KEY_POLICY_POSTPROCESS_ACTIONS_D2H = "policy.postprocess.actions_d2h"
 KEY_POLICY_POSTPROCESS_STATE_D2H = "policy.postprocess.state_d2h"
+KEY_POLICY_POSTPROCESS_STATE_CPU_REUSE = "policy.postprocess.state_cpu_reuse"
 KEY_POLICY_POSTPROCESS_OUTPUT_TRANSFORM = "policy.postprocess.output_transform"
 KEY_POLICY_ALIGN = "policy.align"
 KEY_SAMPLE_ACTIONS = "sample_actions"
@@ -68,6 +70,7 @@ _DEFAULT_SUMMARY_ORDER: tuple[str, ...] = (
     KEY_POLICY_POSTPROCESS,
     KEY_POLICY_POSTPROCESS_ACTIONS_D2H,
     KEY_POLICY_POSTPROCESS_STATE_D2H,
+    KEY_POLICY_POSTPROCESS_STATE_CPU_REUSE,
     KEY_POLICY_POSTPROCESS_OUTPUT_TRANSFORM,
     KEY_POLICY_ALIGN,
     KEY_SAMPLE_ACTIONS,
@@ -176,6 +179,7 @@ def wrap_policy_infer_with_stage_perf(
             t_sub0 = time.perf_counter()
             inputs = jax.tree.map(lambda x: x, obs)
             inputs = self._input_transform(inputs)
+            state_cpu = np.asarray(inputs["state"]) if "state" in inputs else None
             collector.record(
                 KEY_POLICY_PREPROCESS_INPUT_TRANSFORM,
                 (time.perf_counter() - t_sub0) * 1000.0,
@@ -231,13 +235,20 @@ def wrap_policy_infer_with_stage_perf(
             outputs_cpu = {}
             for key, value in outputs.items():
                 t_sub0 = time.perf_counter()
-                outputs_cpu[key] = np.asarray(value[0, ...].detach().cpu())
+                if key == "state" and state_cpu is not None:
+                    outputs_cpu[key] = state_cpu
+                    collector.record(
+                        KEY_POLICY_POSTPROCESS_STATE_CPU_REUSE,
+                        (time.perf_counter() - t_sub0) * 1000.0,
+                    )
+                else:
+                    outputs_cpu[key] = np.asarray(value[0, ...].detach().cpu())
                 if key == "actions":
                     collector.record(
                         KEY_POLICY_POSTPROCESS_ACTIONS_D2H,
                         (time.perf_counter() - t_sub0) * 1000.0,
                     )
-                elif key == "state":
+                elif key == "state" and state_cpu is None:
                     collector.record(
                         KEY_POLICY_POSTPROCESS_STATE_D2H,
                         (time.perf_counter() - t_sub0) * 1000.0,
