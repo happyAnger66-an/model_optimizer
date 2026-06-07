@@ -16,7 +16,7 @@ from tqdm import tqdm
 from ..model import Model
 from .vit import _force_vision_eager_attention_temporarily, _sdp_math_backend_only
 from model_optimizer.calibrate.collectors import get_calib_collector
-from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
+from model_optimizer.evaluate.metrics import create_metric
 from model_optimizer.utils.utils import is_nvfp4_quantized, set_dynamic_quant
 #from modelopt.torch.quantization.utils import export_torch_mode
 
@@ -174,11 +174,11 @@ class Pi05EmbedPrefix(nn.Module, Model):
             print(colored("Quantized embed_prefix val", "green"))
             self.val_datas_after = []
             val_loop(self, self.val_datas_after)
-            return Pi05Metric(self.val_datas_after)
+            return create_metric("pi05", "embed_prefix", self.val_datas_after)
         print(colored("Original embed_prefix val", "green"))
         self.val_datas_before = []
         val_loop(self, self.val_datas_before)
-        return Pi05Metric(self.val_datas_before)
+        return create_metric("pi05", "embed_prefix", self.val_datas_before)
 
     def embed_prefix(
         self,

@@ -14,7 +14,7 @@ from transformers.cache_utils import DynamicCache
 from termcolor import colored
 
 from model_optimizer.utils.utils import is_fp4_quantized, set_dynamic_quant, is_nvfp4_quantized
-from model_optimizer.evaluate.metrics.pi05 import Pi05Metric
+from model_optimizer.evaluate.metrics import create_metric
 from model_optimizer.calibrate.collectors import get_calib_collector
 from model_optimizer.config.feature_config import FeatureConfig
 from model_optimizer.models.pi05.fused_mlp import install_fused_mlp
@@ -336,11 +336,11 @@ class LLM(torch.nn.Module, Model):
         if self.is_quantized:
             print(colored("Quantized model val", "green"))
             val_loop(self, self.val_datas_after)
-            return Pi05Metric(self.val_datas_after)
+            return create_metric("pi05", "llm", self.val_datas_after)
         else:
             print(colored("Original model val", "green"))
             val_loop(self, self.val_datas_before)
-            return Pi05Metric(self.val_datas_before)
+            return create_metric("pi05", "llm", self.val_datas_before)
 
     def quantize(self, quant_cfg, calib_data, export_dir, *, measure_quant_error: bool = False):
         # tokenizer = get_tokenizer(model_dir)

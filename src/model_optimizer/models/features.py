@@ -95,6 +95,30 @@ def get_feature(name: str) -> Feature | None:
     return FEATURE_REGISTRY.get(name)
 
 
+def validate_feature_config(feature_config: FeatureConfig | None, *, model_name: str) -> None:
+    """Validate explicit feature settings before mutating model modules."""
+
+    fc = feature_config or FeatureConfig.empty()
+    unknown = [name for name in fc.features if name not in FEATURE_REGISTRY]
+    if unknown:
+        raise ValueError(
+            f"feature_config references unknown feature(s): {unknown}; "
+            f"known={sorted(FEATURE_REGISTRY)}"
+        )
+
+    unsupported = []
+    for name, spec in fc.features.items():
+        if spec.enabled is not True:
+            continue
+        feat = FEATURE_REGISTRY[name]
+        if not feat.supports(model_name):
+            unsupported.append(name)
+    if unsupported:
+        raise ValueError(
+            f"feature(s) {unsupported} are not supported by model {model_name!r}"
+        )
+
+
 def apply_features(
     target: Any,
     feature_config: FeatureConfig | None,
@@ -141,5 +165,6 @@ __all__ = [
     "FEATURE_REGISTRY",
     "register_feature",
     "get_feature",
+    "validate_feature_config",
     "apply_features",
 ]

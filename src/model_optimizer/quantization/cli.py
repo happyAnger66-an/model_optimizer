@@ -136,6 +136,8 @@ def quantize_cli(args):
 
     from ..models.registry import get_model_cls
     model_cls = get_model_cls(model_name)
+    from ..models.features import validate_feature_config
+    validate_feature_config(feature_config, model_name=model_name)
     # 仅在模型 construct_from_name_path 支持时透传 feature_config（向后兼容）。
     construct_kwargs = {}
     if "feature_config" in inspect.signature(model_cls.construct_from_name_path).parameters:
