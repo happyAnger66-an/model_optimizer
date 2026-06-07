@@ -9,6 +9,8 @@ Key 约定（点分路径，便于分组打印）::
     policy.preprocess.h2d
     policy.preprocess.noise_h2d
     policy.preprocess.observation_from_dict
+    policy.preprocess.observation_image
+    policy.preprocess.observation_pack
     policy.postprocess    # actions/state D2H + output_transform
     policy.postprocess.actions_d2h
     policy.postprocess.state_d2h
@@ -52,6 +54,8 @@ KEY_POLICY_PREPROCESS_NUMPY_TO_TORCH = "policy.preprocess.numpy_to_torch"
 KEY_POLICY_PREPROCESS_H2D = "policy.preprocess.h2d"
 KEY_POLICY_PREPROCESS_NOISE_H2D = "policy.preprocess.noise_h2d"
 KEY_POLICY_PREPROCESS_OBSERVATION = "policy.preprocess.observation_from_dict"
+KEY_POLICY_PREPROCESS_OBSERVATION_IMAGE = "policy.preprocess.observation_image"
+KEY_POLICY_PREPROCESS_OBSERVATION_PACK = "policy.preprocess.observation_pack"
 KEY_POLICY_POSTPROCESS = "policy.postprocess"
 KEY_POLICY_POSTPROCESS_ACTIONS_D2H = "policy.postprocess.actions_d2h"
 KEY_POLICY_POSTPROCESS_STATE_D2H = "policy.postprocess.state_d2h"
@@ -69,6 +73,8 @@ _DEFAULT_SUMMARY_ORDER: tuple[str, ...] = (
     KEY_POLICY_PREPROCESS_H2D,
     KEY_POLICY_PREPROCESS_NOISE_H2D,
     KEY_POLICY_PREPROCESS_OBSERVATION,
+    KEY_POLICY_PREPROCESS_OBSERVATION_IMAGE,
+    KEY_POLICY_PREPROCESS_OBSERVATION_PACK,
     KEY_POLICY_POSTPROCESS,
     KEY_POLICY_POSTPROCESS_ACTIONS_D2H,
     KEY_POLICY_POSTPROCESS_STATE_D2H,
@@ -126,6 +132,104 @@ def _sync_cuda_value(value: Any) -> float | None:
     t0 = time.perf_counter()
     torch.cuda.synchronize(device)
     return (time.perf_counter() - t0) * 1000.0
+
+
+def _prompt_cache_for_policy(policy: Any) -> dict[Any, dict[str, Any]]:
+    cache = getattr(policy, "_mopt_prompt_token_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        setattr(policy, "_mopt_prompt_token_cache", cache)
+    return cache
+
+
+def _prompt_to_cache_key(prompt: Any) -> str:
+    if isinstance(prompt, str):
+        return prompt
+    try:
+        return str(prompt.item())
+    except Exception:
+        return str(prompt)
+
+
+def _clone_cached_tree(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _clone_cached_tree(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_clone_cached_tree(v) for v in value)
+    if isinstance(value, np.ndarray):
+        return value.copy()
+    return value
+
+
+def _apply_input_transform_with_prompt_cache(policy: Any, inputs: dict[str, Any]) -> dict[str, Any]:
+    """Apply ``policy._input_transform`` while caching prompt tokenization when safe."""
+
+    transform = getattr(policy, "_input_transform", None)
+    transforms = getattr(transform, "transforms", None)
+    if not transforms:
+        return transform(inputs)
+
+    data = inputs
+    cache = _prompt_cache_for_policy(policy)
+    for tr in transforms:
+        # TokenizePrompt depends only on prompt unless discrete_state_input=True.
+        if (
+            tr.__class__.__name__ == "TokenizePrompt"
+            and not bool(getattr(tr, "discrete_state_input", False))
+            and "prompt" in data
+        ):
+            prompt_key = _prompt_to_cache_key(data["prompt"])
+            cache_key = (id(tr), prompt_key)
+            prompt = data.pop("prompt")
+            cached = cache.get(cache_key)
+            if cached is None:
+                tokenized = tr({"prompt": prompt})
+                cached = {
+                    "tokenized_prompt": np.asarray(tokenized["tokenized_prompt"]).copy(),
+                    "tokenized_prompt_mask": np.asarray(tokenized["tokenized_prompt_mask"]).copy(),
+                }
+                cache[cache_key] = cached
+            data = {**data, **_clone_cached_tree(cached)}
+            continue
+        data = tr(data)
+    return data
+
+
+def _observation_from_torch_dict_fast(data: dict[str, Any], observation_cls: Any, collector: StagePerfCollector) -> Any:
+    t_img0 = time.perf_counter()
+    for key in data["image"]:
+        image = data["image"][key]
+        if image.dtype == np.uint8:
+            data["image"][key] = image.astype(np.float32) / 255.0 * 2.0 - 1.0
+        elif hasattr(image, "dtype"):
+            try:
+                import torch
+            except ImportError:
+                torch = None  # type: ignore[assignment]
+            if torch is not None and image.dtype == torch.uint8:
+                data["image"][key] = (
+                    image.to(torch.float32).permute(0, 3, 1, 2) / 255.0 * 2.0 - 1.0
+                )
+    collector.record(
+        KEY_POLICY_PREPROCESS_OBSERVATION_IMAGE,
+        (time.perf_counter() - t_img0) * 1000.0,
+    )
+
+    t_pack0 = time.perf_counter()
+    observation = observation_cls(
+        images=data["image"],
+        image_masks=data["image_mask"],
+        state=data["state"],
+        tokenized_prompt=data.get("tokenized_prompt"),
+        tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
+        token_ar_mask=data.get("token_ar_mask"),
+        token_loss_mask=data.get("token_loss_mask"),
+    )
+    collector.record(
+        KEY_POLICY_PREPROCESS_OBSERVATION_PACK,
+        (time.perf_counter() - t_pack0) * 1000.0,
+    )
+    return observation
 
 
 def wrap_sample_actions_with_stage_perf(
@@ -215,7 +319,7 @@ def wrap_policy_infer_with_stage_perf(
             t_pre0 = time.perf_counter()
             t_sub0 = time.perf_counter()
             inputs = jax.tree.map(lambda x: x, obs)
-            inputs = self._input_transform(inputs)
+            inputs = _apply_input_transform_with_prompt_cache(self, inputs)
             state_cpu = np.asarray(inputs["state"]) if "state" in inputs else None
             collector.record(
                 KEY_POLICY_PREPROCESS_INPUT_TRANSFORM,
@@ -249,7 +353,11 @@ def wrap_policy_infer_with_stage_perf(
                 )
 
             t_sub0 = time.perf_counter()
-            observation = _openpi_model.Observation.from_dict(inputs)
+            observation = _observation_from_torch_dict_fast(
+                inputs,
+                _openpi_model.Observation,
+                collector,
+            )
             collector.record(
                 KEY_POLICY_PREPROCESS_OBSERVATION,
                 (time.perf_counter() - t_sub0) * 1000.0,
