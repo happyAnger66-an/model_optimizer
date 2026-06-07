@@ -174,6 +174,7 @@ def convert_model(args: Optional[dict[str, Any]] = None) -> None:
             "train_config": args.train_config,
             "mode": args.mode,
             "feature_config": args.feature_config,
+            "applied_features": list(getattr(model, "applied_features", [])),
         },
     )
 

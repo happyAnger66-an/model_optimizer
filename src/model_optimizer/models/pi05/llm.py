@@ -207,12 +207,15 @@ class LLM(torch.nn.Module, Model):
             except StopIteration:
                 dtype = None
             ctx = FeatureContext(model_name=MODEL_NAME, dtype=dtype)
-            apply_features(self.model, feature_config, ctx)
+            self.applied_features = apply_features(self.model, feature_config, ctx)
         elif fuse_mlp:
             # 直接构造（非 CLI 路径）的向后兼容入口。
             # 方案 A（fused MLP）：合并每层 gate/up 的权重为单次 FC1 GEMM。
             # 数学等价、量化兼容；详见 ``kernelSrc/docs/fused_mlp.md`` § 3 方案 A。
             install_fused_mlp(self.model)
+            self.applied_features = ["fused_mlp"]
+        else:
+            self.applied_features = []
         print(colored(f"model {self.model}", "dark_grey"))
 
     def get_calibrate_dataset(self, calib_data):

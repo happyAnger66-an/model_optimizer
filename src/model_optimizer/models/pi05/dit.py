@@ -189,14 +189,17 @@ class Pi05DenoiseStep(nn.Module, Model):
                 dtype=getattr(gemma_expert, "dtype", None),
                 extra={"denoise_step": self},
             )
-            apply_features(self.gemma_expert, feature_config, ctx)
+            self.applied_features = apply_features(self.gemma_expert, feature_config, ctx)
         else:
             # 直接构造（非配置）路径的向后兼容入口。
+            self.applied_features = []
             if fuse_mlp:
                 # 合并 expert 各层 gate/up 为单次 GEMM（须在 quantize 之前完成）。
                 install_fused_mlp(self.gemma_expert)
+                self.applied_features.append("fused_mlp")
             if adarms_precompute:
                 self.enable_adarms_precompute(True)
+                self.applied_features.append("adarms_dense_precompute")
 
     @property
     def model(self):

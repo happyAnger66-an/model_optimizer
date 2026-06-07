@@ -191,3 +191,81 @@ def record_quantize_artifact(
             "quantize": dict(quantize_config or {}),
         },
     )
+
+
+def record_compare_artifact(
+    *,
+    output_path: str | Path,
+    data_path1: str | Path,
+    data_path2: str | Path,
+    plot_output: str | Path | None = None,
+    compare_config: dict[str, Any] | None = None,
+    metrics: dict[str, Any] | None = None,
+) -> ArtifactManifest:
+    """Record an accuracy/NPZ comparison result."""
+
+    paths = {
+        "data_path1": str(Path(data_path1).expanduser()),
+        "data_path2": str(Path(data_path2).expanduser()),
+    }
+    if plot_output:
+        paths["plot"] = str(Path(plot_output).expanduser())
+    return update_artifact_manifest(
+        output_path,
+        artifact_type="compare_report",
+        paths=paths,
+        configs={"compare": dict(compare_config or {})},
+        metrics={"compare": dict(metrics or {})},
+    )
+
+
+def record_profile_artifact(
+    *,
+    output_dir: str | Path,
+    model_path: str | Path,
+    engine_path: str | Path | None = None,
+    e2e_profile_path: str | Path | None = None,
+    layer_profile_path: str | Path | None = None,
+    profile_config: dict[str, Any] | None = None,
+) -> ArtifactManifest:
+    """Record TensorRT profile outputs."""
+
+    paths = {"model": str(Path(model_path).expanduser())}
+    if engine_path:
+        paths["engine"] = str(Path(engine_path).expanduser())
+    if e2e_profile_path:
+        paths["e2e_profile"] = str(Path(e2e_profile_path).expanduser())
+    if layer_profile_path:
+        paths["layer_profile"] = str(Path(layer_profile_path).expanduser())
+    return update_artifact_manifest(
+        output_dir,
+        artifact_type="profile_report",
+        paths=paths,
+        configs={"profile": dict(profile_config or {})},
+    )
+
+
+def record_eval_artifact(
+    *,
+    output_dir: str | Path,
+    model_name: str,
+    model_path: str | Path,
+    dataset: str | Path,
+    eval_config: dict[str, Any] | None = None,
+    metrics: dict[str, Any] | None = None,
+) -> ArtifactManifest:
+    """Record model evaluation outputs."""
+
+    return update_artifact_manifest(
+        output_dir,
+        artifact_type="eval_report",
+        architecture=infer_architecture_from_model_name(model_name),
+        stage=infer_stage_from_model_name(model_name),
+        model_name=model_name,
+        paths={
+            "model": str(Path(model_path).expanduser()),
+            "dataset": str(Path(dataset).expanduser()),
+        },
+        configs={"eval": dict(eval_config or {})},
+        metrics={"eval": dict(metrics or {})},
+    )

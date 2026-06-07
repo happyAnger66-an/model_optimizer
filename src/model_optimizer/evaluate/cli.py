@@ -6,6 +6,7 @@ from subprocess import Popen, PIPE, TimeoutExpired, STDOUT
 
 from ..progress.write import write_running_log
 from ..webui.extras.constants import RUNNING_LOG
+from .runner import EvalRequest, run_eval
 
 def eval_yolo(model_path, dataset_dir, batch_size, output_dir):
     cmd_list = ["yolo", 'val', 'segment', f"model={model_path}", f"batch={batch_size}",
@@ -48,15 +49,32 @@ def eval_cli(args):
     args = parser.parse_args(args[1:])
     print(f'[cli] eval args {args}')
 
-    model_name = args.model_name
-    model_path = args.model_path
-    
-    from model_optimizer.models.registry import get_model_cls
-    model_cls = get_model_cls(model_name)
-    model = model_cls.construct_from_name_path(
-        model_name, model_path, args.train_config
+    result = run_eval(
+        EvalRequest(
+            model_name=args.model_name,
+            model_path=args.model_path,
+            dataset=args.dataset,
+            output_dir=args.output_dir,
+            batch_size=args.batch_size,
+            max_data=args.max_data,
+            train_config=args.train_config,
+        )
     )
+    from model_optimizer.artifacts import record_eval_artifact
 
-
-    model.val(args.dataset, args.batch_size, args.max_data, args.output_dir)
+    record_eval_artifact(
+        output_dir=args.output_dir,
+        model_name=args.model_name,
+        model_path=args.model_path,
+        dataset=args.dataset,
+        eval_config={
+            "batch_size": args.batch_size,
+            "max_data": args.max_data,
+            "train_config": args.train_config,
+        },
+        metrics={
+            "has_metric": result.metric is not None,
+            "metric_type": type(result.metric).__name__ if result.metric is not None else "",
+        },
+    )
 #    eval_yolo(args.model_path, args.dataset_dir, args.batch_size, args.output_dir)

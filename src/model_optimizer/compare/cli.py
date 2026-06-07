@@ -1,5 +1,6 @@
 import argparse
 from collections import defaultdict
+from pathlib import Path
 import numpy as np
 
 from termcolor import colored
@@ -33,6 +34,12 @@ def compare_cli(args: Optional[list[str] | None] = None) -> None:
         default="data2",
         help="折线图中第二组数据图例名",
     )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="可选：写入 artifact_manifest.json 的目录；省略时若指定 plot_output，则写在 plot 文件旁边。",
+    )
 
     parsed = parser.parse_args(args[1:] if args else [])
     print(f"[cli] compare_data args {args[1:] if args else []}")
@@ -57,9 +64,14 @@ def compare_cli(args: Optional[list[str] | None] = None) -> None:
         if metrics is not None:
             collected_metrics.append(metrics)
 
+    summary_metrics = {}
     for key in all_mean_diff.keys():
         avg_mean_diff = np.mean(all_mean_diff[key])
         avg_max_diff = np.mean(all_max_diff[key])
+        summary_metrics[key] = {
+            "l1_mean_avg": float(avg_mean_diff),
+            "l1_max_avg": float(avg_max_diff),
+        }
         print(colored(f"Mean difference: {avg_mean_diff:.4f}", "green"))
         print(colored(f"Max difference: {avg_max_diff:.4f}", "green"))
 
@@ -78,4 +90,22 @@ def compare_cli(args: Optional[list[str] | None] = None) -> None:
             parsed.plot_output,
             key1=parsed.key1,
             key2=parsed.key2,
+        )
+
+    manifest_output = parsed.output_dir
+    if manifest_output is None and parsed.plot_output:
+        manifest_output = str(Path(parsed.plot_output).expanduser().parent)
+    if manifest_output is not None:
+        from model_optimizer.artifacts import record_compare_artifact
+
+        record_compare_artifact(
+            output_path=manifest_output,
+            data_path1=parsed.data_path1,
+            data_path2=parsed.data_path2,
+            plot_output=parsed.plot_output,
+            compare_config={
+                "key1": parsed.key1,
+                "key2": parsed.key2,
+            },
+            metrics=summary_metrics,
         )

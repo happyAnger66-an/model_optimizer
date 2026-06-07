@@ -59,6 +59,72 @@ def test_validate_feature_config_rejects_enabled_unsupported_feature():
 
 
 @pytest.mark.e2e
+def test_validate_feature_config_rejects_conflicting_features():
+    from model_optimizer.config.feature_config import FeatureConfig
+    from model_optimizer.models.features import register_feature, validate_feature_config
+
+    register_feature(
+        "conflict_a_e2e",
+        default_enabled=False,
+        apply_fn=lambda target, params, ctx: None,
+        conflicts=("conflict_b_e2e",),
+    )
+    register_feature(
+        "conflict_b_e2e",
+        default_enabled=False,
+        apply_fn=lambda target, params, ctx: None,
+    )
+    cfg = FeatureConfig.from_dict(
+        {
+            "features": {
+                "conflict_a_e2e": True,
+                "conflict_b_e2e": True,
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="conflict"):
+        validate_feature_config(cfg, model_name="pi05_libero/llm")
+
+
+@pytest.mark.e2e
+def test_validate_feature_config_rejects_missing_required_feature():
+    from model_optimizer.config.feature_config import FeatureConfig
+    from model_optimizer.models.features import register_feature, validate_feature_config
+
+    register_feature(
+        "requires_base_e2e",
+        default_enabled=False,
+        apply_fn=lambda target, params, ctx: None,
+    )
+    register_feature(
+        "requires_child_e2e",
+        default_enabled=False,
+        apply_fn=lambda target, params, ctx: None,
+        requires=("requires_base_e2e",),
+    )
+    missing = FeatureConfig.from_dict(
+        {
+            "features": {
+                "requires_child_e2e": True,
+            },
+        }
+    )
+    with pytest.raises(ValueError, match="requirement"):
+        validate_feature_config(missing, model_name="pi05_libero/llm")
+
+    satisfied = FeatureConfig.from_dict(
+        {
+            "features": {
+                "requires_child_e2e": True,
+                "requires_base_e2e": True,
+            },
+        }
+    )
+    validate_feature_config(satisfied, model_name="pi05_libero/llm")
+
+
+@pytest.mark.e2e
 def test_export_cli_validates_feature_config_before_model_construction(tmp_path, monkeypatch):
     from model_optimizer.convert.convert_formt import convert_model
 

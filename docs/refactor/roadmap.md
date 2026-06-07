@@ -397,6 +397,52 @@ load -> calibrate/sample -> quantize or export -> build optional -> infer/compar
 - 不修改 pi05 executor 主体即可接入新模型架构。
 - 新模型架构 能复用 CLI、manifest、compare、profile 基础能力。
 
+当前落地状态：
+
+- 已用 `world_model_acceptance_e2e` mock architecture 验证 registry 链路：
+  - `ArchitectureSpec`
+  - `CalibCollector`
+  - `Metric`
+  - `WorkflowManifest`
+- 已验证新架构可复用 workflow plan、collector lookup、metric creation。
+- 真实第二架构仍需模型资产与接口定义后才能完成，包括：
+  - checkpoint / config 加载方式。
+  - stage 拆分与输入输出张量契约。
+  - 校准样本格式和采样脚本。
+  - metric 对齐规则。
+  - 至少一个可真实导出或量化的 stage。
+
+## 5.1 当前已完成的基础设施
+
+截至本轮重构，已完成：
+
+- `ArchitectureSpec` / `StageSpec` / architecture registry。
+- `PolicyAdapter` registry，openpi pi05 加载逻辑已隔离。
+- `BackendInstaller` registry，pi05 TensorRT / Native / ONNXRT 后端挂载已注册化。
+- `ArtifactManifest`，覆盖：
+  - quantize
+  - export
+  - TensorRT build
+  - compare
+  - profile
+  - eval
+- `WorkflowManifest` 和 `WorkflowRunner`，支持 `quantize / export / build` 编排。
+- `CalibCollector` registry，pi05 五个 stage 已包装。
+- `Metric` registry，pi05 五个 stage 已注册。
+- feature registry 扩展：
+  - unknown feature 校验
+  - unsupported model 校验
+  - conflicts / requires 校验
+  - applied features 写入 artifact manifest
+- `evaluate.runner` 通用薄层，`eval_cli` 保持兼容并写入 manifest。
+
+仍需真实环境/模型资产验证：
+
+- WebUI 使用 manifest 展示状态的完整 UI 改造。
+- `scripts/deployment/pi05/` 的大规模脚本瘦身。
+- 真实第二架构接入（如 `starVLA` / `sh_vla` / `openvla` / `qwen_vl`）。
+- GPU 上的端到端性能、精度和 TensorRT build 回归。
+
 ## 6. 优先级建议
 
 近期优先做：

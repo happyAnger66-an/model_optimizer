@@ -60,6 +60,8 @@ class Feature:
     apply_fn: ApplyFn
     description: str = ""
     supported_models: tuple[str, ...] | None = None  # None = 适用所有模型
+    conflicts: tuple[str, ...] = ()
+    requires: tuple[str, ...] = ()
 
     def supports(self, model_name: str) -> bool:
         return self.supported_models is None or model_name in self.supported_models
@@ -75,6 +77,8 @@ def register_feature(
     apply_fn: ApplyFn,
     description: str = "",
     supported_models: tuple[str, ...] | None = None,
+    conflicts: tuple[str, ...] = (),
+    requires: tuple[str, ...] = (),
     override: bool = True,
 ) -> Feature:
     """注册（或覆盖）一个特性。模块多次 import 时默认覆盖，保证幂等。"""
@@ -86,6 +90,8 @@ def register_feature(
         apply_fn=apply_fn,
         description=description,
         supported_models=supported_models,
+        conflicts=tuple(conflicts),
+        requires=tuple(requires),
     )
     FEATURE_REGISTRY[name] = feat
     return feat
@@ -118,6 +124,28 @@ def validate_feature_config(feature_config: FeatureConfig | None, *, model_name:
             f"feature(s) {unsupported} are not supported by model {model_name!r}"
         )
 
+    enabled = {
+        name
+        for name, feat in FEATURE_REGISTRY.items()
+        if feat.supports(model_name) and fc.is_enabled(name, feat.default_enabled)
+    }
+    conflicts: list[tuple[str, str]] = []
+    missing_requires: list[tuple[str, str]] = []
+    for name in sorted(enabled):
+        feat = FEATURE_REGISTRY[name]
+        for conflict in feat.conflicts:
+            if conflict in enabled:
+                conflicts.append((name, conflict))
+        for requirement in feat.requires:
+            if requirement not in enabled:
+                missing_requires.append((name, requirement))
+    if conflicts:
+        raise ValueError(f"feature conflict(s) for model {model_name!r}: {conflicts}")
+    if missing_requires:
+        raise ValueError(
+            f"feature requirement(s) not met for model {model_name!r}: {missing_requires}"
+        )
+
 
 def apply_features(
     target: Any,
@@ -130,14 +158,7 @@ def apply_features(
         实际应用的特性名列表（按注册顺序）。
     """
     fc = feature_config or FeatureConfig.empty()
-
-    # JSON 里引用了未注册的特性名 → 给出明确告警（拼写错误最常见）。
-    unknown = [n for n in fc.features if n not in FEATURE_REGISTRY]
-    if unknown:
-        logger.warning(
-            "feature_config references unknown feature(s): %s; known=%s",
-            unknown, sorted(FEATURE_REGISTRY),
-        )
+    validate_feature_config(fc, model_name=ctx.model_name)
 
     applied: list[str] = []
     for name, feat in FEATURE_REGISTRY.items():

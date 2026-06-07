@@ -183,6 +183,7 @@ def quantize_cli(args):
             "native_calib_component": args.native_calib_component,
             "native_calib_percentile": args.native_calib_percentile,
             "native_calib_max_samples": args.native_calib_max_samples,
+            "applied_features": list(getattr(model, "applied_features", [])),
         },
     )
 

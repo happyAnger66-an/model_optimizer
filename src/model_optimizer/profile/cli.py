@@ -48,6 +48,12 @@ def profile_onnx(args):
 
         print(f'profile {model_path} return: {return_code}')
 
+    return {
+        "engine": f"{output_dir}/{engine_name}",
+        "e2e_profile": f"{output_dir}/{e2e_profile}" if is_e2e else None,
+        "layer_profile": f"{output_dir}/{layer_profile}" if is_layer else None,
+    }
+
 def profile_cli(args):
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_path', type=str, required=True)
@@ -59,4 +65,18 @@ def profile_cli(args):
     args = parser.parse_args(args[1:])
     print(f'[cli] profile args {args}')
 
-    profile_onnx(args)
+    outputs = profile_onnx(args)
+    from model_optimizer.artifacts import record_profile_artifact
+
+    record_profile_artifact(
+        output_dir=args.output_dir,
+        model_path=args.model_path,
+        engine_path=outputs.get("engine"),
+        e2e_profile_path=outputs.get("e2e_profile"),
+        layer_profile_path=outputs.get("layer_profile"),
+        profile_config={
+            "e2e_profile": bool(args.e2e_profile),
+            "layer_profile": bool(args.layer_profile),
+            "extra_args": args.extra_args,
+        },
+    )

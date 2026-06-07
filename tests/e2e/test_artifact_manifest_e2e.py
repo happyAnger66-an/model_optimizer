@@ -114,6 +114,8 @@ def test_convert_cli_records_export_manifest(tmp_path, monkeypatch):
     output_dir = tmp_path / "export"
 
     class FakeModel:
+        applied_features = ["fused_mlp"]
+
         @classmethod
         def construct_from_name_path(cls, model_name, model_path, train_config=None, feature_config=None):
             _ = (model_name, model_path, train_config, feature_config)
@@ -150,6 +152,7 @@ def test_convert_cli_records_export_manifest(tmp_path, monkeypatch):
     assert loaded.stage == "llm"
     assert loaded.paths["onnx"].endswith("llm.onnx")
     assert loaded.configs["export"]["mode"] == "native_per_layer"
+    assert loaded.configs["export"]["applied_features"] == ["fused_mlp"]
 
 
 @pytest.mark.e2e
@@ -160,6 +163,8 @@ def test_quantize_cli_records_quantize_manifest(tmp_path, monkeypatch):
     output_dir = tmp_path / "quant"
 
     class FakeModel:
+        applied_features = ["fused_mlp"]
+
         @classmethod
         def construct_from_name_path(cls, model_name, model_path, train_config=None, feature_config=None):
             _ = (model_name, model_path, train_config, feature_config)
@@ -198,3 +203,4 @@ def test_quantize_cli_records_quantize_manifest(tmp_path, monkeypatch):
     assert loaded.stage == "llm"
     assert loaded.paths["onnx"].endswith("llm.onnx")
     assert loaded.configs["quantize"]["quantize_cfg"] == "config/quant/llm_quant_fp8_cfg.py"
+    assert loaded.configs["quantize"]["applied_features"] == ["fused_mlp"]
