@@ -12,13 +12,13 @@
 - 性能分析：stage wall-time、TRT profile、FlashRT benchmark、CUDA Graph。
 - 自定义算子：FMHA D256 plugin、CuTe DSL kernel、fused MLP、FlashRT decoder。
 
-但当前核心路径仍强绑定 `pi05/openpi`，尤其是 `policy_loader.py`、`Pi05*Executor`、`calibrate/collector/pi05.py`、`scripts/deployment/pi05/`、`ServerConfig.PI05_STAGES`。后续要支持其它 VLA 模型，应从“pi05 专用优化工具链”演进为“VLA 优化平台 + pi05 architecture plugin”。
+但当前核心路径仍强绑定 `pi05/openpi`，尤其是 `policy_loader.py`、`Pi05*Executor`、`calibrate/collector/pi05.py`、`scripts/deployment/pi05/`、`ServerConfig.PI05_STAGES`。后续要支持其它模型（包括 VLA、世界模型等），应从“pi05 专用优化工具链”演进为“通用模型优化平台 + pi05 architecture plugin”。
 
 ## 2. 重构目标
 
 ### 2.1 架构目标
 
-- 将 `pi05` 的五阶段思想抽象为可注册的 `VLAArchitectureSpec`。
+- 将 `pi05` 的五阶段思想抽象为可注册的 `ArchitectureSpec`。
 - 将 openpi 依赖隔离到 `PolicyAdapter`，避免散落在 executor 和 server loader 中。
 - 将 TensorRT / ONNX Runtime / Native / FlashRT 等实现抽象为可组合的 `BackendRunner`。
 - 将量化、导出、编译、精度对齐、性能分析统一挂到 `StageArtifact` 和 manifest。
@@ -50,9 +50,9 @@
 - WebUI/server 使用 JSON/YAML。
 - 产物路径由用户指定，没有统一 manifest 描述 ONNX、engine、quant spec、profile、accuracy report 之间的关系。
 
-### 3.3 扩展其它 VLA 的阻力
+### 3.3 扩展其它模型架构的阻力
 
-- 缺少通用 VLA stage 定义。
+- 缺少通用模型 stage 定义。
 - 缺少通用 Policy/Model adapter。
 - 缺少通用 calibration collector manifest。
 - 缺少 backend runner registry。
@@ -60,9 +60,9 @@
 
 ## 4. 目标架构
 
-### 4.1 VLAArchitectureSpec
+### 4.1 ArchitectureSpec
 
-每个 VLA 架构定义自己的 stage、默认后端、量化/导出/编译配置和校准需求。
+每个 模型架构定义自己的 stage、默认后端、量化/导出/编译配置和校准需求。
 
 示例：
 
@@ -82,10 +82,10 @@ backends:
   denoise: [pytorch, tensorrt, native, flashrt]
 ```
 
-未来其它 VLA 可以定义不同阶段，例如：
+未来其它模型架构 可以定义不同阶段，例如：
 
 ```text
-architecture: generic_vla
+architecture: generic_robot_policy
 stages:
   - vision_encoder
   - language_model
@@ -95,7 +95,7 @@ stages:
 或：
 
 ```text
-architecture: diffusion_vla
+architecture: diffusion_policy
 stages:
   - perception
   - planner
@@ -154,7 +154,7 @@ BackendRunner
 - `NativeRunner`
 - `FlashRTRunner`
 
-`PipelineAssembler` 根据 `VLAArchitectureSpec` 和用户配置组合各阶段 runner。
+`PipelineAssembler` 根据 `ArchitectureSpec` 和用户配置组合各阶段 runner。
 
 ### 4.4 StageArtifact 和 Manifest
 
@@ -316,7 +316,7 @@ validation_check
 
 ### Phase 5：校准和精度对齐通用化
 
-目标：让其它 VLA 复用 pi05 的校准数据组织和对比工具。
+目标：让其它模型架构复用 pi05 的校准数据组织和对比工具。
 
 任务：
 
@@ -354,7 +354,7 @@ validation_check
 - feature_config 拼写错误、模型不支持、冲突组合能给出明确错误或警告。
 - manifest 记录实际启用的 features。
 
-### Phase 7：提炼通用 VLA 评测/部署入口
+### Phase 7：提炼通用 模型评测/部署入口
 
 目标：减少 `scripts/deployment/pi05/` 中的重复和专用逻辑。
 
@@ -363,14 +363,14 @@ validation_check
 - 抽出通用 eval session、GPU stats、stage perf、result worker。
 - 将 `lerobot_eval_webui` 可复用部分迁移到库内。
 - pi05 deployment script 改为薄 wrapper。
-- 为第二个 VLA 准备模板目录。
+- 为第二个模型架构准备模板目录。
 
 验收：
 
 - pi05 旧脚本仍可运行。
-- 新 VLA 只需提供 adapter/spec/metric，即可复用通用 eval runner。
+- 新模型架构 只需提供 adapter/spec/metric，即可复用通用 eval runner。
 
-### Phase 8：接入第二个 VLA 作为验收
+### Phase 8：接入第二个模型架构 作为验收
 
 目标：验证架构是否真正泛化。
 
@@ -394,15 +394,15 @@ load -> calibrate/sample -> quantize or export -> build optional -> infer/compar
 
 验收：
 
-- 不修改 pi05 executor 主体即可接入新 VLA。
-- 新 VLA 能复用 CLI、manifest、compare、profile 基础能力。
+- 不修改 pi05 executor 主体即可接入新模型架构。
+- 新模型架构 能复用 CLI、manifest、compare、profile 基础能力。
 
 ## 6. 优先级建议
 
 近期优先做：
 
 1. `ArchitectureSpec`：收益最大，风险低。
-2. `PolicyAdapter`：隔离 openpi，给其它 VLA 留入口。
+2. `PolicyAdapter`：隔离 openpi，给其它模型架构留入口。
 3. `ArtifactManifest`：提升工程可维护性，支撑 WebUI/CI/回归。
 4. Backend installer registry：降低 `policy_loader.py` 复杂度。
 
@@ -475,12 +475,31 @@ src/model_optimizer/calibrate/collectors/
 - 量化和导出依赖 ModelOpt、TensorRT、CUDA 版本，manifest 应记录环境信息。
 - WebUI 当前依赖日志文件和子进程，重构时要保持进度文件兼容。
 
-## 9. 最终验收标准
+## 9. Workflow Manifest 初版
+
+`workflow manifest` 是用户编写的输入计划，和工具生成的 `artifact_manifest.json` 分离：
+
+- `workflow manifest` 描述要执行哪些 stage、哪些 action，以及各 action 的配置。
+- `artifact_manifest.json` 记录每个 stage 产物的路径、配置、指标和 workflow 元数据。
+
+初版支持：
+
+- `model-optimizer-cli workflow plan --manifest <file>`：只打印执行计划。
+- `model-optimizer-cli workflow run --manifest <file>`：按顺序执行。
+- manifest 顶层 `dry_run: true` 或 CLI `--dry-run`：只生成计划，不执行。
+- action：`quantize`、`export`、`build`。
+- stage 默认输出目录：`<output_dir>/<stage_name>`。
+- stage 默认模型名：`<model_name>/<stage_name>`，例如 `pi05_libero/llm`。
+- `build` 未显式指定 `model_path` 时，优先从同 stage 的 `artifact_manifest.json` 读取 `onnx` 产物，否则回退到 `<stage_dir>/<stage>.onnx`。
+
+示例见 `config/workflow_pi05_example.json`。
+
+## 10. 最终验收标准
 
 重构完成后应满足：
 
 - pi05 现有量化、导出、编译、推理、对比、性能分析能力保持可用。
-- 新增一个 VLA 不需要修改 `policy_loader.py` 主流程。
+- 新增一个模型架构 不需要修改 `policy_loader.py` 主流程。
 - 新增一个 stage/backend 不需要修改 `ServerConfig` 的硬编码 stage 列表。
 - 每个 stage 产物都有 manifest，可追溯配置、模型、精度、性能报告。
 - feature/plugin 能声明适用模型、适用 stage、依赖产物和冲突关系。

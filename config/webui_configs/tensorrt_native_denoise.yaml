@@ -19,7 +19,7 @@ vit_batch_views: true
 
 engine_path: /tmp/build/pi05/opt
 vit_engine: vit_fp8_batch.engine
-llm_engine: llm_fp8.engine
+llm_engine: llm_kv_fp8.engine
 denoise_engine: ""
 
 # —— TRT engine 开关（vit/llm） ——

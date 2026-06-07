@@ -12,6 +12,7 @@ import tensorrt as trt
 from termcolor import colored
 import onnx
 from onnx import TensorProto
+from model_optimizer.artifacts import record_trt_build_artifact
 # Set up logging
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
@@ -702,3 +703,32 @@ def build_engine(
     logger.info(f"Precision: {precision.upper()}")
     print(colored(f"Precision: {precision.upper()}", print_color))
     logger.info("=" * 80)
+
+    try:
+        record_trt_build_artifact(
+            onnx_path=onnx_path,
+            engine_path=engine_path,
+            precision=precision,
+            build_time_s=build_time,
+            engine_size_mb=engine_size_mb,
+            use_cudagraph=use_cudagraph,
+            build_config={
+                "workspace_mb": workspace_mb,
+                "min_shapes": min_shapes,
+                "opt_shapes": opt_shapes,
+                "max_shapes": max_shapes,
+                "plugin_lib_paths": list(plugin_lib_paths or []),
+                "init_builtin_trt_plugins": init_builtin_trt_plugins,
+                "strongly_typed_network": strongly_typed_network,
+                "layer_precision_overrides": layer_precision_overrides or {},
+                "layer_precision_match": layer_precision_match,
+                "set_layer_output_types": set_layer_output_types,
+                "precision_constraints": precision_constraints,
+                "require_layer_name_contains": require_layer_name_contains,
+                "debug_output_tensors": list(debug_output_tensors or []),
+                "debug_dump_tensor_names": debug_dump_tensor_names,
+            },
+        )
+        logger.info("Updated artifact manifest next to engine: %s", engine_path)
+    except Exception as exc:
+        logger.warning("Failed to update artifact manifest for %s: %s", engine_path, exc)

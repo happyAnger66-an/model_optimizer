@@ -27,6 +27,7 @@ USAGE = (
     + "|   model_optimizer-cli profile: profile a model |\n"
     + "|   model_optimizer-cli calibrate: calibrate a model |\n"
     + "|   model_optimizer-cli build -h: build a onnx model to engine |\n"
+    + "|   model_optimizer-cli workflow run --manifest <file>: run workflow |\n"
     + "|   model_optimizer-cli kernels build: AOT compile CuTe DSL kernels |\n"
     + "|   model_optimizer-cli eval -h: eval model |\n"
     + "|   model_optimizer-cli webui: launch webui                        |\n"
@@ -78,6 +79,9 @@ def launch():
     elif command == "build":
         from .trt_build.cli import build_cli
         build_cli(sys.argv)
+    elif command == "workflow":
+        from .workflows.cli import workflow_cli
+        workflow_cli(sys.argv[1:])
     elif command == "kernels":
         from .kernels.cutedsl_build import kernels_build_cli
         kernels_build_cli(sys.argv[1:])

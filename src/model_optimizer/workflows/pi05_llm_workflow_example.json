@@ -1,0 +1,41 @@
+{
+  "version": "workflow_v1",
+  "architecture": "pi05",
+  "model_name": "pi05/llm",
+  "model_path": "/path/to/pi05/checkpoint",
+  "train_config": "pi05_libero",
+  "feature_config": null,
+  "output_dir": "output/pi05_llm_workflow",
+  "metadata": {
+    "description": "Example workflow for pi05/llm quantization, ONNX export, and TensorRT engine build.",
+    "usage": "model-optimizer-cli workflow run --manifest src/model_optimizer/workflows/pi05_llm_workflow_example.json",
+    "note": "Replace placeholder paths before running. Build will consume the ONNX path recorded by the export step artifact manifest."
+  },
+  "stages": [
+    {
+      "name": "llm",
+      "actions": [
+        "quantize",
+        "export",
+        "build"
+      ],
+      "quantize": {
+        "quantize_cfg": "config/quant/llm_quant_fp8_cfg.py",
+        "calibrate_data": "/path/to/calibration_data.npz",
+        "calibrate_method": "max",
+        "verify": false,
+        "verify_data": null,
+        "measure_quant_error": false
+      },
+      "export": {
+        "mode": "native_per_layer",
+        "export_type": "onnx",
+        "verify_data": null
+      },
+      "build": {
+        "build_cfg": "config/build_configs/llm_build_cfg.py",
+        "use_cudagraph": false
+      }
+    }
+  ]
+}
