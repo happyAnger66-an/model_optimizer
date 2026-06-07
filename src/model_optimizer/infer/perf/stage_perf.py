@@ -3,8 +3,16 @@
 Key 约定（点分路径，便于分组打印）::
 
     policy.infer          # 整段 ``Policy.infer`` wall time（≈ predict_ms − policy.align）
-    policy.preprocess     # 拷贝 + input_transform + H2D + Observation.from_dict + noise
-    policy.postprocess    # actions D2H + output_transform
+    policy.preprocess     # input_transform + tensorize + H2D + Observation.from_dict + noise
+    policy.preprocess.input_transform
+    policy.preprocess.numpy_to_torch
+    policy.preprocess.h2d
+    policy.preprocess.noise_h2d
+    policy.preprocess.observation_from_dict
+    policy.postprocess    # actions/state D2H + output_transform
+    policy.postprocess.actions_d2h
+    policy.postprocess.state_d2h
+    policy.postprocess.output_transform
     policy.align          # webui ``align_action_dim``（在 backend.predict 内）
     sample_actions        # 整段 ``PI0Pytorch.sample_actions`` wall time（模型纯推理）
     embed_prefix          # 单次 sample 的 embed_prefix wall time
@@ -37,14 +45,30 @@ import numpy as np
 # 默认打印顺序：Policy 外壳 → 模型整段 → 子阶段 → denoise。
 KEY_POLICY_INFER = "policy.infer"
 KEY_POLICY_PREPROCESS = "policy.preprocess"
+KEY_POLICY_PREPROCESS_INPUT_TRANSFORM = "policy.preprocess.input_transform"
+KEY_POLICY_PREPROCESS_NUMPY_TO_TORCH = "policy.preprocess.numpy_to_torch"
+KEY_POLICY_PREPROCESS_H2D = "policy.preprocess.h2d"
+KEY_POLICY_PREPROCESS_NOISE_H2D = "policy.preprocess.noise_h2d"
+KEY_POLICY_PREPROCESS_OBSERVATION = "policy.preprocess.observation_from_dict"
 KEY_POLICY_POSTPROCESS = "policy.postprocess"
+KEY_POLICY_POSTPROCESS_ACTIONS_D2H = "policy.postprocess.actions_d2h"
+KEY_POLICY_POSTPROCESS_STATE_D2H = "policy.postprocess.state_d2h"
+KEY_POLICY_POSTPROCESS_OUTPUT_TRANSFORM = "policy.postprocess.output_transform"
 KEY_POLICY_ALIGN = "policy.align"
 KEY_SAMPLE_ACTIONS = "sample_actions"
 _POLICY_SUMMARY_PREFIX = "[summary:policy]"
 _DEFAULT_SUMMARY_ORDER: tuple[str, ...] = (
     KEY_POLICY_INFER,
     KEY_POLICY_PREPROCESS,
+    KEY_POLICY_PREPROCESS_INPUT_TRANSFORM,
+    KEY_POLICY_PREPROCESS_NUMPY_TO_TORCH,
+    KEY_POLICY_PREPROCESS_H2D,
+    KEY_POLICY_PREPROCESS_NOISE_H2D,
+    KEY_POLICY_PREPROCESS_OBSERVATION,
     KEY_POLICY_POSTPROCESS,
+    KEY_POLICY_POSTPROCESS_ACTIONS_D2H,
+    KEY_POLICY_POSTPROCESS_STATE_D2H,
+    KEY_POLICY_POSTPROCESS_OUTPUT_TRANSFORM,
     KEY_POLICY_ALIGN,
     KEY_SAMPLE_ACTIONS,
     "embed_prefix",
@@ -149,21 +173,46 @@ def wrap_policy_infer_with_stage_perf(
                 return out
 
             t_pre0 = time.perf_counter()
+            t_sub0 = time.perf_counter()
             inputs = jax.tree.map(lambda x: x, obs)
             inputs = self._input_transform(inputs)
-            inputs = jax.tree.map(
-                lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...],
-                inputs,
+            collector.record(
+                KEY_POLICY_PREPROCESS_INPUT_TRANSFORM,
+                (time.perf_counter() - t_sub0) * 1000.0,
+            )
+
+            t_sub0 = time.perf_counter()
+            inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x))[None, ...], inputs)
+            collector.record(
+                KEY_POLICY_PREPROCESS_NUMPY_TO_TORCH,
+                (time.perf_counter() - t_sub0) * 1000.0,
+            )
+
+            t_sub0 = time.perf_counter()
+            inputs = jax.tree.map(lambda x: x.to(self._pytorch_device), inputs)
+            collector.record(
+                KEY_POLICY_PREPROCESS_H2D,
+                (time.perf_counter() - t_sub0) * 1000.0,
             )
             sample_device = self._pytorch_device
             sample_kwargs = dict(self._sample_kwargs)
             if noise is not None:
+                t_sub0 = time.perf_counter()
                 noise_t = torch.from_numpy(noise).to(self._pytorch_device)
                 if noise_t.ndim == 2:
                     noise_t = noise_t[None, ...]
                 sample_kwargs["noise"] = noise_t
+                collector.record(
+                    KEY_POLICY_PREPROCESS_NOISE_H2D,
+                    (time.perf_counter() - t_sub0) * 1000.0,
+                )
 
+            t_sub0 = time.perf_counter()
             observation = _openpi_model.Observation.from_dict(inputs)
+            collector.record(
+                KEY_POLICY_PREPROCESS_OBSERVATION,
+                (time.perf_counter() - t_sub0) * 1000.0,
+            )
             collector.record(
                 KEY_POLICY_PREPROCESS,
                 (time.perf_counter() - t_pre0) * 1000.0,
@@ -179,11 +228,27 @@ def wrap_policy_infer_with_stage_perf(
             sa_ms = (time.perf_counter() - t_sa0) * 1000.0
 
             t_post0 = time.perf_counter()
-            outputs = jax.tree.map(
-                lambda x: np.asarray(x[0, ...].detach().cpu()),
-                outputs,
-            )
+            outputs_cpu = {}
+            for key, value in outputs.items():
+                t_sub0 = time.perf_counter()
+                outputs_cpu[key] = np.asarray(value[0, ...].detach().cpu())
+                if key == "actions":
+                    collector.record(
+                        KEY_POLICY_POSTPROCESS_ACTIONS_D2H,
+                        (time.perf_counter() - t_sub0) * 1000.0,
+                    )
+                elif key == "state":
+                    collector.record(
+                        KEY_POLICY_POSTPROCESS_STATE_D2H,
+                        (time.perf_counter() - t_sub0) * 1000.0,
+                    )
+            outputs = outputs_cpu
+            t_sub0 = time.perf_counter()
             outputs = self._output_transform(outputs)
+            collector.record(
+                KEY_POLICY_POSTPROCESS_OUTPUT_TRANSFORM,
+                (time.perf_counter() - t_sub0) * 1000.0,
+            )
             collector.record(
                 KEY_POLICY_POSTPROCESS,
                 (time.perf_counter() - t_post0) * 1000.0,
