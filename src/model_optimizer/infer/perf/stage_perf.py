@@ -99,6 +99,35 @@ def perf_line_ms(values: Sequence[float]) -> str:
     )
 
 
+def _sync_cuda_value(value: Any) -> float | None:
+    """Synchronize the CUDA device that owns ``value`` and return sync time in ms."""
+
+    try:
+        import torch
+    except ImportError:
+        return None
+    device = None
+    if hasattr(value, "is_cuda") and bool(value.is_cuda):
+        device = value.device
+    elif isinstance(value, dict):
+        for item in value.values():
+            dt = _sync_cuda_value(item)
+            if dt is not None:
+                return dt
+        return None
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            dt = _sync_cuda_value(item)
+            if dt is not None:
+                return dt
+        return None
+    if device is None or not torch.cuda.is_available():
+        return None
+    t0 = time.perf_counter()
+    torch.cuda.synchronize(device)
+    return (time.perf_counter() - t0) * 1000.0
+
+
 def wrap_sample_actions_with_stage_perf(
     model: Any,
     collector: StagePerfCollector,
@@ -127,7 +156,12 @@ def wrap_sample_actions_with_stage_perf(
         record = collector.enabled and state["invocation"] > skips
         t0 = time.perf_counter()
         try:
-            return _orig(device, observation, noise=noise, num_steps=num_steps)
+            result = _orig(device, observation, noise=noise, num_steps=num_steps)
+            if record:
+                sync_ms = _sync_cuda_value(result)
+                if sync_ms is not None:
+                    collector.record(KEY_POLICY_SAMPLE_ACTIONS_CUDA_SYNC, sync_ms)
+            return result
         finally:
             if record:
                 collector.record(
@@ -226,18 +260,23 @@ def wrap_policy_infer_with_stage_perf(
             )
 
             t_sa0 = time.perf_counter()
+            sample_count_before = len(collector.values_for_key(KEY_SAMPLE_ACTIONS))
             outputs = {
                 "state": inputs["state"],
                 "actions": self._sample_actions(
                     sample_device, observation, **sample_kwargs
                 ),
             }
-            if str(sample_device).startswith("cuda") and torch.cuda.is_available():
-                t_sync0 = time.perf_counter()
-                torch.cuda.synchronize(sample_device)
+            sample_count_after = len(collector.values_for_key(KEY_SAMPLE_ACTIONS))
+            sync_ms = (
+                _sync_cuda_value(outputs["actions"])
+                if sample_count_after == sample_count_before
+                else None
+            )
+            if sync_ms is not None:
                 collector.record(
                     KEY_POLICY_SAMPLE_ACTIONS_CUDA_SYNC,
-                    (time.perf_counter() - t_sync0) * 1000.0,
+                    sync_ms,
                 )
             sa_ms = (time.perf_counter() - t_sa0) * 1000.0
 
