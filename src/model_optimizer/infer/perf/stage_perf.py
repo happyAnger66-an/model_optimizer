@@ -16,6 +16,7 @@ Key 约定（点分路径，便于分组打印）::
     policy.postprocess.output_transform
     policy.align          # webui ``align_action_dim``（在 backend.predict 内）
     sample_actions        # 整段 ``PI0Pytorch.sample_actions`` wall time（模型纯推理）
+    policy.sample_actions.cuda_sync
     embed_prefix          # 单次 sample 的 embed_prefix wall time
     prefix_llm            # prefix KV 前向
     flashrt.setup         # 首次 backend / setup_prompt
@@ -58,6 +59,7 @@ KEY_POLICY_POSTPROCESS_STATE_CPU_REUSE = "policy.postprocess.state_cpu_reuse"
 KEY_POLICY_POSTPROCESS_OUTPUT_TRANSFORM = "policy.postprocess.output_transform"
 KEY_POLICY_ALIGN = "policy.align"
 KEY_SAMPLE_ACTIONS = "sample_actions"
+KEY_POLICY_SAMPLE_ACTIONS_CUDA_SYNC = "policy.sample_actions.cuda_sync"
 _POLICY_SUMMARY_PREFIX = "[summary:policy]"
 _DEFAULT_SUMMARY_ORDER: tuple[str, ...] = (
     KEY_POLICY_INFER,
@@ -74,6 +76,7 @@ _DEFAULT_SUMMARY_ORDER: tuple[str, ...] = (
     KEY_POLICY_POSTPROCESS_OUTPUT_TRANSFORM,
     KEY_POLICY_ALIGN,
     KEY_SAMPLE_ACTIONS,
+    KEY_POLICY_SAMPLE_ACTIONS_CUDA_SYNC,
     "embed_prefix",
     "prefix_llm",
     "flashrt.setup",
@@ -229,6 +232,13 @@ def wrap_policy_infer_with_stage_perf(
                     sample_device, observation, **sample_kwargs
                 ),
             }
+            if str(sample_device).startswith("cuda") and torch.cuda.is_available():
+                t_sync0 = time.perf_counter()
+                torch.cuda.synchronize(sample_device)
+                collector.record(
+                    KEY_POLICY_SAMPLE_ACTIONS_CUDA_SYNC,
+                    (time.perf_counter() - t_sync0) * 1000.0,
+                )
             sa_ms = (time.perf_counter() - t_sa0) * 1000.0
 
             t_post0 = time.perf_counter()
