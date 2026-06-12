@@ -62,39 +62,11 @@ def launch():
         run_web_ui()
     elif command == "version":
         print(WELCOME)
-    elif command == "quantize":
-        from .quantization.cli import quantize_cli
-        quantize_cli(sys.argv)
-    elif command == "profile":
-        from .profile.cli import profile_cli
-        profile_cli(sys.argv)
     elif command == "export":
         from .convert.convert_formt import convert_model
         convert_model(sys.argv)
-    elif command == "calibrate":
-        from .calibrate.cli import calibrate_cli
-        calibrate_cli(sys.argv)
     elif command == "build":
         from .trt_build.cli import build_cli
         build_cli(sys.argv)
-    elif command == "eval":
-        from .evaluate.cli import eval_cli
-        eval_cli(sys.argv)
-    elif command == "datasets":
-        from .datasets.cli import eval_datasets
-        eval_datasets(sys.argv)
-    elif command == "download":
-        from .download.cli import download_cli
-        download_cli(sys.argv)
-    elif command == "compare":
-        from .compare.cli import compare_cli
-        compare_cli(sys.argv)
-    elif command == "inspect":
-        from .inspect.cli import inspect_cli
-        inspect_cli(sys.argv)
-    elif command == "draw":
-        from .draw.cli import draw_cli
-
-        draw_cli(sys.argv)
     else:
         print(USAGE)
