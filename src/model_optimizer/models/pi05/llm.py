@@ -283,38 +283,7 @@ class LLM(torch.nn.Module, Model):
             return Pi05Metric(self.val_datas_before)
 
     def quantize(self, quant_cfg, calib_data, export_dir, *, measure_quant_error: bool = False):
-        # tokenizer = get_tokenizer(model_dir)
-        calib_dataloader = self.get_calibrate_dataset(calib_data)
-        # INT4 AWQ（awq_lite 等）在 Gemma bf16 解码器上，搜索阶段会对 weight 做 pre_quant_scale；
-        # 部分环境会触发 CUDA device-side assert（异步报错栈常落在 TensorQuantizer）。
-        # 标定全程用 float32 权重/激活更稳，结束后再恢复为原 dtype 供导出。
-        awq_fp32_calib = _quant_cfg_uses_awq_family(quant_cfg)
-        saved_dtype = None
-        if awq_fp32_calib:
-            saved_dtype = next(self.model.parameters()).dtype
-            if saved_dtype in (torch.bfloat16, torch.float16):
-                self.model.to(torch.float32)
-        try:
-            # 根模块必须是 HF PreTrainedModel，ModelOpt 的 register_hf_attentions_on_the_fly 才会注册
-            # *_bmm_quantizer；否则 FP8_KV_CFG 等 attention 配置不会插入子模块。
-            from model_optimizer.quantization.quantization_utils import quantize_model  # noqa: F401
-            quantize_model(
-                self.model,
-                quant_cfg,
-                calib_dataloader,
-                measure_quant_error=measure_quant_error,
-            )
-        finally:
-            if awq_fp32_calib and saved_dtype is not None:
-                self.model.to(saved_dtype)
-        self.is_quantized = True
-        set_dynamic_quant(self, "bf16")
-
-        self.export(export_dir, dynamo=False)
-        onnx_path = f"{export_dir}/llm.onnx"
-        if is_nvfp4_quantized(quant_cfg):
-            print(colored("nvfp4 quantization detected, post processing...", "green"))
-            self._nvfp4_post_processing(onnx_path, export_dir)
+        pass
 
     @classmethod
     def construct_from_name_path(cls, model_name, model_path, train_config=None):

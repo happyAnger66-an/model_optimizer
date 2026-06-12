@@ -1,3 +1,0 @@
-# YOLO
-
-Writing in progress...

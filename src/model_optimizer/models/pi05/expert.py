@@ -154,20 +154,7 @@ class Expert(torch.nn.Module, Model):
         return self
 
     def quantize(self, quant_cfg, calib_data, export_dir, *, measure_quant_error: bool = False):
-        # tokenizer = get_tokenizer(model_dir)
-        calib_dataloader = self.get_calibrate_dataset(calib_data)
-        from model_optimizer.quantization.quantization_utils import quantize_model  # noqa: F401
-        quantize_model(
-            self, quant_cfg, calib_dataloader, measure_quant_error=measure_quant_error
-        )
-        self.is_quantized = True
-        set_dynamic_quant(self, "bf16")
-
-        self.export(export_dir, dynamo=False)
-        onnx_path = f"{export_dir}/action.onnx"
-        if is_nvfp4_quantized(quant_cfg):
-            print(colored("nvfp4 quantization detected, post processing...", "green"))
-            self._nvfp4_post_processing(onnx_path, export_dir)
+        pass
 
     @classmethod
     def export_onnx(cls, pi05_model, export_dir):

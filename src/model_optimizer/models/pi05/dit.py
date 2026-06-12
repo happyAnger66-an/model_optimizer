@@ -222,35 +222,7 @@ class Pi05DenoiseStep(nn.Module, Model):
         return self
 
     def quantize(self, quant_cfg, calib_data, export_dir, *, measure_quant_error: bool = False):
-        calib_dataloader = self.get_calibrate_dataset(calib_data)
-        # FP8_KV_CFG / *_bmm_quantizer：ModelOpt 要求 ``mtq.quantize`` 的根模块为 HF PreTrainedModel，
-        # 与 LLM.quantize(self.model, ...) 一致；标定仍走完整 ``forward`` 以覆盖 action/time 投影与 expert。
-        from model_optimizer.quantization.quantization_utils import quantize_model  # noqa: F401
-        from model_optimizer.quantization.quantization_utils import quant_config_targets_hf_bmm_kv  # noqa: F401
-        if quant_config_targets_hf_bmm_kv(quant_cfg):
-            quantize_model(
-                self.gemma_expert,
-                quant_cfg,
-                calib_dataloader,
-                forward_context=self,
-                measure_quant_error=measure_quant_error,
-            )
-        else:
-            quantize_model(
-                self,
-                quant_cfg,
-                calib_dataloader,
-                measure_quant_error=measure_quant_error,
-            )
-        self.is_quantized = True
-        set_dynamic_quant(self, "bf16")
-
-        self.export(export_dir, dynamo=False)
-        onnx_path = f"{export_dir}/denoise.onnx"
-        if is_nvfp4_quantized(quant_cfg):
-            print(colored("nvfp4 quantization detected, post processing...", "green"))
-            self._nvfp4_post_processing(onnx_path, export_dir)
-        apply_denoise_onnx_post_export_patches(onnx_path)
+        pass
 
     def _wrap_past_key_values(
         self, past_keys: torch.Tensor, past_values: torch.Tensor
