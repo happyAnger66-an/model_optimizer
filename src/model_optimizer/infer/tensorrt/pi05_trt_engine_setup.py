@@ -21,6 +21,12 @@ from transformers.modeling_outputs import BaseModelOutputWithPast, BaseModelOutp
 
 from .trt_hook_timer import trt_hook_timer
 from .trt_torch import Engine
+from model_optimizer.infer.kernels.fp8_lang_embedding import (
+    embed_language_tokens_timed,
+    maybe_install_fp8_lang_embedding,
+    patch_embed_prefix_with_stage_splits,
+    scale_lang_embedding,
+)
 
 _TRT_ATTN_MASK_NEG_CAP_KEY = "trt_attention_mask_neg_cap"
 
@@ -239,8 +245,20 @@ class Pi05TrtEngineInstaller:
             self.install_vit(str(self._config.vit_engine))
 
         if embed_opts.vit_batch_views:
+            maybe_install_fp8_lang_embedding(
+                self._model,
+                self._engine_root,
+                self._config,
+                stage_perf=getattr(self._ex, "_stage_perf", None),
+            )
             self.install_embed_prefix_batched()
         elif embed_opts.use_flashrt_siglip:
+            maybe_install_fp8_lang_embedding(
+                self._model,
+                self._engine_root,
+                self._config,
+                stage_perf=getattr(self._ex, "_stage_perf", None),
+            )
             self.install_embed_prefix_flashrt()
         elif embed_opts.embed_prefix_engine_name:
             self.install_embed_prefix_whole_graph(embed_opts.embed_prefix_engine_name)
@@ -294,6 +312,9 @@ class Pi05TrtEngineInstaller:
 
     def install_embed_prefix_batched(self) -> None:
         paligemma_model = self._model.paligemma_with_expert.paligemma.model
+        stage_perf = getattr(self._ex, "_stage_perf", None)
+        pwe = self._model.paligemma_with_expert
+        bytes_per_elem = 1 if getattr(pwe, "_mopt_fp8_lang_embedding_installed", False) else 2
 
         def embed_prefix_vit_batched(
             self_m: Any,
@@ -302,11 +323,19 @@ class Pi05TrtEngineInstaller:
             lang_tokens: torch.Tensor,
             lang_masks: torch.Tensor,
         ):
+            from contextlib import nullcontext
+
             images = list(images)
             img_masks = list(img_masks)
             bview = images[0].shape[0]
             stacked = torch.cat(images, dim=0)
-            feats = paligemma_model.get_image_features(stacked)
+            vision_ctx = (
+                stage_perf.timed("embed_prefix.vision")
+                if stage_perf is not None and stage_perf.enabled
+                else nullcontext()
+            )
+            with vision_ctx:
+                feats = paligemma_model.get_image_features(stacked)
 
             embs: list[torch.Tensor] = []
             pad_masks: list[torch.Tensor] = []
@@ -318,8 +347,14 @@ class Pi05TrtEngineInstaller:
                 pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
                 att_masks += [0] * num_img_embs
 
-            lang_emb = self_m.paligemma_with_expert.embed_language_tokens(lang_tokens)
-            lang_emb = lang_emb * math.sqrt(lang_emb.shape[-1])
+            lang_emb = embed_language_tokens_timed(
+                self_m.paligemma_with_expert,
+                lang_tokens,
+                lang_masks,
+                stage_perf,
+                bytes_per_element=bytes_per_elem,
+            )
+            lang_emb = scale_lang_embedding(lang_emb, stage_perf)
             embs.append(lang_emb)
             pad_masks.append(lang_masks)
             att_masks += [0] * lang_emb.shape[1]
@@ -330,8 +365,12 @@ class Pi05TrtEngineInstaller:
             att = att[None, :].expand(pad_cat.shape[0], len(att_masks))
             return embs_cat, pad_cat, att
 
-        hooked = trt_hook_timer("trt.embed_prefix_vit_batched")(embed_prefix_vit_batched)
-        self._model.embed_prefix = types.MethodType(hooked, self._model)
+        patch_embed_prefix_with_stage_splits(
+            self._model,
+            embed_prefix_vit_batched,
+            stage_perf,
+            hook_name="trt.embed_prefix_vit_batched",
+        )
         print(
             colored(
                 "embed_prefix: batched SigLIP (all views in one vit engine call)",
@@ -362,6 +401,9 @@ class Pi05TrtEngineInstaller:
         )
         self._ex._orig_embed_prefix_for_flashrt = self._model.embed_prefix
         ex = self._ex
+        stage_perf = getattr(self._ex, "_stage_perf", None)
+        pwe = self._model.paligemma_with_expert
+        bytes_per_elem = 1 if getattr(pwe, "_mopt_fp8_lang_embedding_installed", False) else 2
 
         def embed_prefix_flashrt_hybrid(
             self_m: Any,
@@ -370,7 +412,15 @@ class Pi05TrtEngineInstaller:
             lang_tokens: torch.Tensor,
             lang_masks: torch.Tensor,
         ):
-            v = ex._flashrt_siglip.forward_from_torch_images(images)
+            from contextlib import nullcontext
+
+            vision_ctx = (
+                stage_perf.timed("embed_prefix.vision")
+                if stage_perf is not None and stage_perf.enabled
+                else nullcontext()
+            )
+            with vision_ctx:
+                v = ex._flashrt_siglip.forward_from_torch_images(images)
             v_b = v.unsqueeze(0)
             pad_parts: list[torch.Tensor] = []
             for m in img_masks:
@@ -387,8 +437,14 @@ class Pi05TrtEngineInstaller:
                 pad_parts.append(m)
             img_pad = torch.cat(pad_parts, dim=1)
 
-            le = self_m.paligemma_with_expert.embed_language_tokens(lang_tokens)
-            lang_emb = le * math.sqrt(float(le.shape[-1]))
+            lang_emb = embed_language_tokens_timed(
+                self_m.paligemma_with_expert,
+                lang_tokens,
+                lang_masks,
+                stage_perf,
+                bytes_per_element=bytes_per_elem,
+            )
+            lang_emb = scale_lang_embedding(lang_emb, stage_perf)
             embs = torch.cat([v_b, lang_emb], dim=1)
             pad_masks = torch.cat([img_pad, lang_masks], dim=1)
             bsize = pad_masks.shape[0]
@@ -398,8 +454,11 @@ class Pi05TrtEngineInstaller:
             ).expand(bsize, -1)
             return embs, pad_masks, att_t
 
-        self._model.embed_prefix = types.MethodType(
-            embed_prefix_flashrt_hybrid, self._model
+        patch_embed_prefix_with_stage_splits(
+            self._model,
+            embed_prefix_flashrt_hybrid,
+            stage_perf,
+            hook_name="trt.embed_prefix_flashrt_hybrid",
         )
         print(
             colored(

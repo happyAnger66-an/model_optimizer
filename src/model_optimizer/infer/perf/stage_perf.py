@@ -20,6 +20,9 @@ Key 约定（点分路径，便于分组打印）::
     sample_actions        # 整段 ``PI0Pytorch.sample_actions`` wall time（模型纯推理）
     policy.sample_actions.cuda_sync
     embed_prefix          # 单次 sample 的 embed_prefix wall time
+    embed_prefix.vision   # SigLIP / TRT ViT / FlashRT vision 段
+    embed_prefix.lang_embedding  # 语言 token lookup（FP8/FP16）
+    embed_prefix.lang_scale      # × sqrt(H) 缩放
     prefix_llm            # prefix KV 前向
     flashrt.setup         # 首次 backend / setup_prompt
     denoise.total         # 整段 backend.run()（10 步扩散一次跑完）
@@ -84,6 +87,9 @@ _DEFAULT_SUMMARY_ORDER: tuple[str, ...] = (
     KEY_SAMPLE_ACTIONS,
     KEY_POLICY_SAMPLE_ACTIONS_CUDA_SYNC,
     "embed_prefix",
+    "embed_prefix.vision",
+    "embed_prefix.lang_embedding",
+    "embed_prefix.lang_scale",
     "prefix_llm",
     "flashrt.setup",
     "denoise.calibrate",
@@ -475,12 +481,20 @@ class StagePerfCollector:
 
     enabled: bool = True
     summary_prefix: str = "[summary:engine]"
+    meta_summary_prefix: str = "[summary:emb]"
     _samples: dict[str, list[float]] = field(default_factory=lambda: defaultdict(list))
+    _meta: dict[str, list[float]] = field(default_factory=lambda: defaultdict(list))
 
     def record(self, stage: str, dt_ms: float) -> None:
         if not self.enabled:
             return
         self._samples[stage].append(float(dt_ms))
+
+    def record_meta(self, key: str, value: float | int) -> None:
+        """Record scalar metadata (token counts, bytes read, etc.) per inference step."""
+        if not self.enabled:
+            return
+        self._meta[key].append(float(value))
 
     @contextmanager
     def timed(self, stage: str) -> Iterator[None]:
@@ -544,6 +558,38 @@ class StagePerfCollector:
             return self.pooled("denoise.step")
         return list(self._samples.get(key, []))
 
+    def meta_values_for_key(self, key: str) -> list[float]:
+        return list(self._meta.get(key, []))
+
+    def format_meta_summary_lines(
+        self,
+        *,
+        prefix: str | None = None,
+    ) -> list[str]:
+        tag = prefix if prefix is not None else self.meta_summary_prefix
+        lines: list[str] = []
+        for key in sorted(self._meta.keys()):
+            vals = self.meta_values_for_key(key)
+            if not vals:
+                continue
+            arr = np.asarray(vals, dtype=np.float64)
+            if key.endswith(".bytes_read"):
+                mean_b = float(np.mean(arr))
+                if mean_b >= 1024 * 1024:
+                    val_str = f"mean={mean_b / (1024 * 1024):.3f} MiB"
+                elif mean_b >= 1024:
+                    val_str = f"mean={mean_b / 1024:.2f} KiB"
+                else:
+                    val_str = f"mean={mean_b:.0f} B"
+                lines.append(f"{tag} {key:<40} n={int(arr.size)} {val_str}")
+            elif key.endswith(".valid_tokens") or key.endswith("_tokens"):
+                lines.append(
+                    f"{tag} {key:<40} n={int(arr.size)} mean={float(np.mean(arr)):.2f}"
+                )
+            else:
+                lines.append(f"{tag} {key:<40} {perf_line_ms(vals)}")
+        return lines
+
     def format_summary_lines(
         self,
         *,
@@ -561,6 +607,7 @@ class StagePerfCollector:
             label = key if key != "denoise.step" else "denoise.step"
             row_tag = _summary_prefix_for_key(key, tag)
             lines.append(f"{row_tag} {label:<16} {perf_line_ms(vals)}")
+        lines.extend(self.format_meta_summary_lines())
         return lines
 
     def merge_from(self, other: StagePerfCollector | None) -> None:
@@ -568,9 +615,12 @@ class StagePerfCollector:
             return
         for k, vals in other._samples.items():
             self._samples[k].extend(vals)
+        for k, vals in other._meta.items():
+            self._meta[k].extend(vals)
 
     def clear(self) -> None:
         self._samples.clear()
+        self._meta.clear()
 
     def to_dict(self) -> dict[str, list[float]]:
         return {k: list(v) for k, v in self._samples.items()}

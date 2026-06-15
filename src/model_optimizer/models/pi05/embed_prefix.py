@@ -314,12 +314,15 @@ class Pi05EmbedPrefix(nn.Module, Model):
         dynamic_axes["prefix_att_masks"] = {0: "batch_size", 1: "prefix_seq"}
         return {"dynamic_axes": dynamic_axes}
 
-    def export(self, export_dir: str, dynamo: bool = True, mode=None):
+    def export(self, export_dir: str, dynamo: bool = True, mode=None, fp8_lang_embedding: bool | None = None):
         """导出 ``embed_prefix.onnx``；包装与 :class:`Vit` 一致：``inference_mode`` + SigLIP 导出期 eager 注意力 + SDPA math。
 
         若已 **ModelOpt 量化**（``is_quantized``），与 ``Expert`` 一致 **仅 ``dynamo=False``**（TorchScript
         ONNX）；``dynamo=True`` 无法降低 ``tensorrt.quantize_op``。非量化时默认与 ``Vit.export`` 相同先尝试
         ``dynamo=True``，失败再回退 ``False``。
+
+        ``fp8_lang_embedding``：为 True 时在 ``export_dir`` 额外写入 ``lang_embedding.safetensors`` sidecar
+        （语言 token lookup 用 FP8，与 ONNX 主图解耦）。默认读环境变量 ``PI05_FP8_LANG_EMBEDDING=1``。
 
         量化导出前打 ``_trt_high_precision_dtype`` patch，并在 ONNX 导出外包 ``export_torch_mode()``。
         ``dynamo=False`` 且已量化时，可对 ``vision_tower`` 内 ``QuantConv2d`` 临时关闭 ``input_quantizer``
@@ -413,6 +416,18 @@ class Pi05EmbedPrefix(nn.Module, Model):
                 "green",
             )
         )
+
+        if fp8_lang_embedding is None:
+            fp8_lang_embedding = os.environ.get(
+                "PI05_FP8_LANG_EMBEDDING", ""
+            ).strip().lower() in ("1", "true", "yes", "on")
+        if fp8_lang_embedding:
+            from model_optimizer.quantization.fp8_lang_embedding import (
+                save_lang_embedding_sidecar_from_module,
+            )
+
+            save_lang_embedding_sidecar_from_module(self.embed_tokens, export_dir)
+
         return self
 
     def quantize(self, quant_cfg, calib_data, export_dir, *, measure_quant_error: bool = False):
@@ -424,7 +439,7 @@ class Pi05EmbedPrefix(nn.Module, Model):
         self.is_quantized = True
         set_dynamic_quant(self, "bf16")
 
-        self.export(export_dir, dynamo=False)  # 已量化时固定 TorchScript ONNX（与 Expert 一致）
+        self.export(export_dir, dynamo=False, fp8_lang_embedding=None)
         onnx_path = f"{export_dir}/embed_prefix.onnx"
         if is_nvfp4_quantized(quant_cfg):
             print(colored("nvfp4 quantization detected, post processing...", "green"))
