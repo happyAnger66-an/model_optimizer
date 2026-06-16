@@ -466,3 +466,4 @@ model-opt build \
 | 2026-05-31 | 落地方案 A：`dit.py` 运行时 monkey-patch + `adarms_mod` 导出；host 侧 `AdaRmsModulator` 记忆化预算；feature_config / serve JSON / env 三种可配开关。未改原始 `modeling_gemma.py`。 |
 | 2026-05-31 | 新增 §7 使用指南（export/quantize/build/serve 全流程 + 一致性自检表）与 §8 整体推理流程总结。 |
 | 2026-05-31 | 新增 §9 叠加 fused MLP（gate/up 合并，roadmap #9）：实现接线、per-channel 量化注意、配套配置与命令。 |
+AdaRMS
