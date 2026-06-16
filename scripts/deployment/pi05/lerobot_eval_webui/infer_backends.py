@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -15,6 +16,11 @@ try:
     from model_optimizer.infer.perf import stage_perf_from_policy
 except ImportError:
     stage_perf_from_policy = None  # type: ignore[assignment,misc]
+
+
+def _copy_obs_for_infer(obs: dict[str, Any]) -> dict[str, Any]:
+    """``Policy.infer`` 的 input transform 会就地改写嵌套数组；多路 infer 须各用独立副本。"""
+    return copy.deepcopy(obs)
 
 
 def _align_action_dim_with_perf(
@@ -103,10 +109,10 @@ class PtTrtCompareBackend(InferBackend):
         if policy_trt is None:
             raise RuntimeError("PtTrtCompareBackend 需要 policy_trt")
         t0 = time.monotonic()
-        out_pt = policy.infer(obs, noise=flow_noise)
+        out_pt = policy.infer(_copy_obs_for_infer(obs), noise=flow_noise)
         infer_ms_pt = (time.monotonic() - t0) * 1000.0
         t0 = time.monotonic()
-        out_trt = policy_trt.infer(obs, noise=flow_noise)
+        out_trt = policy_trt.infer(_copy_obs_for_infer(obs), noise=flow_noise)
         infer_ms_second = (time.monotonic() - t0) * 1000.0
         pred_pt = np.asarray(out_pt["actions"])
         pred_trt_raw = np.asarray(out_trt["actions"])
@@ -263,10 +269,10 @@ class PtPtqCompareBackend(InferBackend):
         if policy_ptq is None:
             raise RuntimeError("PtPtqCompareBackend 需要 policy_ptq")
         t0 = time.monotonic()
-        out_pt = policy.infer(obs, noise=flow_noise)
+        out_pt = policy.infer(_copy_obs_for_infer(obs), noise=flow_noise)
         infer_ms_pt = (time.monotonic() - t0) * 1000.0
         t0 = time.monotonic()
-        out_ptq = policy_ptq.infer(obs, noise=flow_noise)
+        out_ptq = policy_ptq.infer(_copy_obs_for_infer(obs), noise=flow_noise)
         infer_ms_second = (time.monotonic() - t0) * 1000.0
         pred_pt = np.asarray(out_pt["actions"])
         pred_ptq_raw = np.asarray(out_ptq["actions"])
@@ -303,10 +309,10 @@ class TrtOrtCompareBackend(InferBackend):
         if policy_trt is None:
             raise RuntimeError("TrtOrtCompareBackend 需要 policy_trt（ORT 路）")
         t0 = time.monotonic()
-        out_trt = policy.infer(obs, noise=flow_noise)
+        out_trt = policy.infer(_copy_obs_for_infer(obs), noise=flow_noise)
         infer_ms_pt = (time.monotonic() - t0) * 1000.0
         t0 = time.monotonic()
-        out_ort = policy_trt.infer(obs, noise=flow_noise)
+        out_ort = policy_trt.infer(_copy_obs_for_infer(obs), noise=flow_noise)
         infer_ms_second = (time.monotonic() - t0) * 1000.0
         pred_trt = np.asarray(out_trt["actions"])
         pred_ort_raw = np.asarray(out_ort["actions"])

@@ -57,6 +57,16 @@ def emit_chunk_steps(
                 k,
                 idx + k,
             )
+        if pack.pred_h_trt is not None and np.isnan(
+            np.asarray(pack.pred_h_trt[k], dtype=np.float64)
+        ).any():
+            logging.warning(
+                "chunk idx=%s k=%s global_index=%s: pred_trt 含 NaN，compare 模式下 "
+                "TRT↔GT / PT−TRT 对比表将为空",
+                idx,
+                k,
+                idx + k,
+            )
         result = assembler.build(k, pred_row, gt_row)
         step_images = images if k == 0 else None
         step_event = StepEvent(

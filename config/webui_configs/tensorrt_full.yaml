@@ -19,7 +19,7 @@ compare_mode: true
 engine_path: /tmp/build/pi05/opt
 vit_engine: vit_fp8_batch.engine
 llm_engine: llm_fp8.engine
-#denoise_engine: denoise_st_fp8.engine
+denoise_engine: denoise_st_fp8.engine
 
 # WebUI：须用 http 打开 webui_client（勿 file://）；首个 WS 连接后再开始推理
 wait_for_client: true
