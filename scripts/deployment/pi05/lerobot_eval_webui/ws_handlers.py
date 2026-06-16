@@ -36,18 +36,21 @@ def paths_equivalent(a: str, b: str) -> bool:
     return aa == bb
 
 
-async def _send_control_ack(ws: Any, action: str, paused: bool) -> None:
-    await ws.send(event_to_json({"type": "control_ack", "action": action, "paused": paused}))
+async def _send_control_ack(ws: Any, rt: ServerRuntime, action: str, paused: bool) -> None:
+    await rt.broadcaster.send_to(
+        ws,
+        event_to_json({"type": "control_ack", "action": action, "paused": paused}),
+    )
 
 
 async def send_initial_sync(ws: Any, rt: ServerRuntime) -> None:
     if rt.meta_ready["msg"] is None:
-        await ws.send(LOADING_META_MSG)
+        await rt.broadcaster.send_to(ws, LOADING_META_MSG)
     else:
-        await ws.send(rt.meta_ready["msg"])
+        await rt.broadcaster.send_to(ws, rt.meta_ready["msg"])
         if rt.args.history_size > 0:
             await rt.broadcaster.send_history(ws)
-    await _send_control_ack(ws, "sync", rt.infer_paused.is_set())
+    await _send_control_ack(ws, rt, "sync", rt.infer_paused.is_set())
 
 
 async def _handle_control_message(ws: Any, msg: dict[str, Any], rt: ServerRuntime) -> None:
@@ -55,11 +58,11 @@ async def _handle_control_message(ws: Any, msg: dict[str, Any], rt: ServerRuntim
     if isinstance(cmd, ControlPause):
         rt.infer_paused.set()
         print(colored("[infer] 收到 pause：下一 chunk 前将阻塞推理", "yellow"), flush=True)
-        await _send_control_ack(ws, "pause", True)
+        await _send_control_ack(ws, rt, "pause", True)
     elif isinstance(cmd, ControlResume):
         rt.infer_paused.clear()
         print(colored("[infer] 收到 resume：继续推理", "green"), flush=True)
-        await _send_control_ack(ws, "resume", False)
+        await _send_control_ack(ws, rt, "resume", False)
 
 
 async def control_message_loop(ws: Any, rt: ServerRuntime, wsex: Any) -> None:
