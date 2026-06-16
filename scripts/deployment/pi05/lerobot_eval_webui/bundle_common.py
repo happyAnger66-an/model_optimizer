@@ -58,6 +58,14 @@ def policy_torch_model_for_perf(pol: Any) -> Any | None:
     return None
 
 
+def restore_policy_infer_delegate(policy: Any) -> None:
+    """compare 双路下 TRT 路恢复 openpi 原生 ``Policy.infer``（避免 stage_perf 重实现路径数值异常）。"""
+    inner = getattr(policy, "_mopt_policy_infer_stage_inner", None)
+    if inner is not None and getattr(policy, "_mopt_policy_infer_stage_wrapped", False):
+        policy.infer = inner
+        policy._mopt_policy_infer_stage_wrapped = False
+
+
 def install_compare_pt_stage_perf(policy: Any, *, warmup_skips: int) -> None:
     """compare 第一路 PyTorch：安装与 TRT 路对齐的阶段耗时（sample_actions / denoise_step 等）。"""
     if not bool(os.environ.get("MO_PI0_STAGE_PROFILE", "").strip()):

@@ -23,6 +23,18 @@ def _copy_obs_for_infer(obs: dict[str, Any]) -> dict[str, Any]:
     return copy.deepcopy(obs)
 
 
+def _cuda_sync_between_compare_policies(*policies: Any) -> None:
+    """双路 policy 同卡串行 infer 前须等设备空闲，否则后一路可能读到未完成的前一路 GPU 结果。"""
+    del policies
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+    except Exception:
+        pass
+
+
 def _align_action_dim_with_perf(
     policy: Any | None,
     pred: np.ndarray,
@@ -108,12 +120,15 @@ class PtTrtCompareBackend(InferBackend):
         del policy_ptq
         if policy_trt is None:
             raise RuntimeError("PtTrtCompareBackend 需要 policy_trt")
+        obs_pt = _copy_obs_for_infer(obs)
+        obs_trt = _copy_obs_for_infer(obs)
         t0 = time.monotonic()
-        out_pt = policy.infer(_copy_obs_for_infer(obs), noise=flow_noise)
-        infer_ms_pt = (time.monotonic() - t0) * 1000.0
-        t0 = time.monotonic()
-        out_trt = policy_trt.infer(_copy_obs_for_infer(obs), noise=flow_noise)
+        out_trt = policy_trt.infer(obs_trt, noise=flow_noise)
         infer_ms_second = (time.monotonic() - t0) * 1000.0
+        _cuda_sync_between_compare_policies(policy_trt, policy)
+        t0 = time.monotonic()
+        out_pt = policy.infer(obs_pt, noise=flow_noise)
+        infer_ms_pt = (time.monotonic() - t0) * 1000.0
         pred_pt = np.asarray(out_pt["actions"])
         pred_trt_raw = np.asarray(out_trt["actions"])
         pred_a_pt, gt_a = _align_action_dim_with_perf(policy, pred_pt, gt)
@@ -268,11 +283,14 @@ class PtPtqCompareBackend(InferBackend):
         del policy_trt
         if policy_ptq is None:
             raise RuntimeError("PtPtqCompareBackend 需要 policy_ptq")
+        obs_pt = _copy_obs_for_infer(obs)
+        obs_ptq = _copy_obs_for_infer(obs)
         t0 = time.monotonic()
-        out_pt = policy.infer(_copy_obs_for_infer(obs), noise=flow_noise)
+        out_pt = policy.infer(obs_pt, noise=flow_noise)
         infer_ms_pt = (time.monotonic() - t0) * 1000.0
+        _cuda_sync_between_compare_policies(policy, policy_ptq)
         t0 = time.monotonic()
-        out_ptq = policy_ptq.infer(_copy_obs_for_infer(obs), noise=flow_noise)
+        out_ptq = policy_ptq.infer(obs_ptq, noise=flow_noise)
         infer_ms_second = (time.monotonic() - t0) * 1000.0
         pred_pt = np.asarray(out_pt["actions"])
         pred_ptq_raw = np.asarray(out_ptq["actions"])
@@ -308,11 +326,14 @@ class TrtOrtCompareBackend(InferBackend):
         del policy_ptq
         if policy_trt is None:
             raise RuntimeError("TrtOrtCompareBackend 需要 policy_trt（ORT 路）")
+        obs_trt = _copy_obs_for_infer(obs)
+        obs_ort = _copy_obs_for_infer(obs)
         t0 = time.monotonic()
-        out_trt = policy.infer(_copy_obs_for_infer(obs), noise=flow_noise)
+        out_trt = policy.infer(obs_trt, noise=flow_noise)
         infer_ms_pt = (time.monotonic() - t0) * 1000.0
+        _cuda_sync_between_compare_policies(policy, policy_trt)
         t0 = time.monotonic()
-        out_ort = policy_trt.infer(_copy_obs_for_infer(obs), noise=flow_noise)
+        out_ort = policy_trt.infer(obs_ort, noise=flow_noise)
         infer_ms_second = (time.monotonic() - t0) * 1000.0
         pred_trt = np.asarray(out_trt["actions"])
         pred_ort_raw = np.asarray(out_ort["actions"])

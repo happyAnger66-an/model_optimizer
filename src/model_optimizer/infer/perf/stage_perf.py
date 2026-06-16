@@ -373,12 +373,21 @@ def wrap_policy_infer_with_stage_perf(
 
             t_sa0 = time.perf_counter()
             sample_count_before = len(collector.values_for_key(KEY_SAMPLE_ACTIONS))
+            try:
+                import torch
+
+                pd = getattr(self, "_pytorch_device", None)
+                if pd and torch.cuda.is_available() and str(pd).startswith("cuda"):
+                    torch.cuda.synchronize(pd)
+            except Exception:
+                pass
             outputs = {
                 "state": inputs["state"],
                 "actions": self._sample_actions(
                     sample_device, observation, **sample_kwargs
                 ),
             }
+            _sync_cuda_value(outputs["actions"])
             sample_count_after = len(collector.values_for_key(KEY_SAMPLE_ACTIONS))
             sync_ms = (
                 _sync_cuda_value(outputs["actions"])

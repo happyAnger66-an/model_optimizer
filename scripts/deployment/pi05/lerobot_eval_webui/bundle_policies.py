@@ -15,6 +15,7 @@ from .bundle_common import (
     create_trained_policy,
     install_compare_pt_stage_perf,
     log_policy_ready,
+    restore_policy_infer_delegate,
     trt_trt_second_engine_filenames,
     trt_vit_scale_fix_kw,
 )
@@ -234,6 +235,17 @@ def _attach_compare_or_ptq_trt_second(
     apply_trt_hook_profile_env(args, print_on_exit=False)
     policy_trt = create_trained_policy(train_cfg, args)
     compare_warmup = max(int(getattr(args, "perf_profile_warmup_chunks", 10)), 0)
+    trt_cuda_graph = bool(getattr(args, "trt_cuda_graph", False))
+    if trt_cuda_graph:
+        print(
+            colored(
+                "[infer] compare_mode：PyTorch + TensorRT 双策略同卡串行，"
+                "已自动关闭 trt_cuda_graph（避免 CUDA Graph 与双模型推理互相干扰）",
+                "yellow",
+            ),
+            flush=True,
+        )
+        trt_cuda_graph = False
     _load_tensorrt_on_policy(
         policy_trt,
         args,
@@ -241,10 +253,11 @@ def _attach_compare_or_ptq_trt_second(
         trt_perf=bool(getattr(args, "trt_perf", True)),
         trt_perf_warmup=compare_warmup,
         trt_perf_print_interval=int(getattr(args, "trt_perf_print_interval", 50)),
-        trt_cuda_graph=bool(getattr(args, "trt_cuda_graph", False)),
+        trt_cuda_graph=trt_cuda_graph,
         trt_cuda_graph_warmup=int(getattr(args, "trt_cuda_graph_warmup", 3)),
         denoise_adarms_precompute=bool(getattr(args, "denoise_adarms_precompute", False)),
     )
+    restore_policy_infer_delegate(policy_trt)
     if bool(getattr(args, "native_overlay_on_tensorrt", False)):
         progress.emit("native", "compare：在 TensorRT 路叠加 Native/FlashRT decoder（阶段覆盖）…")
         native_executor = load_native_overlay(

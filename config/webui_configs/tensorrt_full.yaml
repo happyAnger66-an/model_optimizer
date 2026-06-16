@@ -30,6 +30,7 @@ history_size: 4096
 trt_perf: true
 trt_perf_warmup: 20
 trt_perf_print_interval: 50
+# compare_mode 下 server 会自动关闭 trt_cuda_graph（双策略同卡串行）
 trt_cuda_graph: true
 trt_cuda_graph_warmup: 3
 perf_profile_chunk: true
