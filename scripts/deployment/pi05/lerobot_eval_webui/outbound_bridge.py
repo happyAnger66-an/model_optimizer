@@ -36,6 +36,10 @@ class JanusOutboundBridge:
     def sync_emit(self, text: str, *, add_history: bool = True) -> None:
         self._queue.sync_q.put(OutboundMessage(text=text, add_history=add_history))
 
+    async def async_emit(self, text: str, *, add_history: bool = True) -> None:
+        """asyncio 侧入队，与推理线程 ``sync_emit`` 共用 ``drain`` 单路广播。"""
+        await self._queue.async_q.put(OutboundMessage(text=text, add_history=add_history))
+
     def sync_close(self) -> None:
         """推理线程结束时调用：消费者收到后退出 ``drain``。"""
         self._queue.sync_q.put(OUTBOUND_STOP)

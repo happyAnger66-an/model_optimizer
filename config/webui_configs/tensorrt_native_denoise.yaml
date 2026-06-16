@@ -67,5 +67,7 @@ noise_seed: 0
 
 host: 0.0.0.0
 port: 8765
+# 浏览器不在本机时填写可路由地址，例如 ws://192.168.55.1:8765/ws（会写入 server_hint.json）
+# client_ws_url: "ws://192.168.55.1:8765/ws"
 wait_for_client: true
 history_size: 4096

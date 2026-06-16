@@ -2240,6 +2240,10 @@ function connectInternal() {
     try {
       msg = JSON.parse(evt.data);
     } catch (e) {
+      const raw = typeof evt.data === "string" ? evt.data : "";
+      const head = raw.length > 240 ? `${raw.slice(0, 240)}…` : raw;
+      console.warn("WebSocket JSON 解析失败（常见于服务端 NaN/Inf 非标准 JSON）:", e, head);
+      setProgress("收到无法解析的 WebSocket 帧，请确认 server 已更新 protocol.py（NaN→null）并重试。");
       return;
     }
     if (!msg || !msg.type) return;

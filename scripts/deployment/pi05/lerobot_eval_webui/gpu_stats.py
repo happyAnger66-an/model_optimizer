@@ -77,7 +77,7 @@ async def run_gpu_stats_loop(
     args: Args,
     run_id: str,
     pump_task: asyncio.Task[None],
-    publish_direct: Callable[..., Awaitable[None]],
+    emit_async: Callable[..., Awaitable[None]],
 ) -> None:
     """周期性广播 GPU 利用率；``pump_task`` 结束时本协程退出。"""
     interval = float(args.gpu_stats_interval_sec)
@@ -99,7 +99,7 @@ async def run_gpu_stats_loop(
             continue
         if stats is None:
             continue
-        await publish_direct(
+        await emit_async(
             event_to_json(
                 {
                     "type": "gpu_stats",

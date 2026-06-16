@@ -82,7 +82,7 @@ async def run_server(args: Args) -> None:
                     args=args,
                     run_id=rt.run_id,
                     pump_task=pump_task,
-                    publish_direct=rt.publish_direct,
+                    emit_async=rt.bridge.async_emit,
                 ),
                 name="gpu_stats",
             )
