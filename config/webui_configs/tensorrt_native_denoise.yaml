@@ -1,7 +1,11 @@
 # lerobot_eval_webui_server —— TensorRT(vit/llm) + FlashRT decoder(denoise) 混合推理。
-# 用法：
+# 用法（需两个终端）：
+#   # 终端 1：WebSocket 评估服务
 #   python scripts/deployment/pi05/lerobot_eval_webui_server.py \
 #     --webui-config config/webui_configs/tensorrt_native_denoise.yaml
+#   # 终端 2：静态页（勿用 file:// 双击 index.html）
+#   cd scripts/deployment/pi05/webui_client && python -m http.server 8080
+#   # 浏览器打开 http://127.0.0.1:8080/ ，页面会自动连 ws://127.0.0.1:8765/ws
 #
 # 说明（目标对齐）：
 # - denoise 后端是仓内 FlashRT（``native_flashrt_decoder: true``），整 10 步循环一次跑完。
@@ -63,3 +67,5 @@ noise_seed: 0
 
 host: 0.0.0.0
 port: 8765
+wait_for_client: true
+history_size: 4096
