@@ -359,11 +359,9 @@ def wrap_policy_infer_with_stage_perf(
                 )
 
             t_sub0 = time.perf_counter()
-            observation = _observation_from_torch_dict_fast(
-                inputs,
-                _openpi_model.Observation,
-                collector,
-            )
+            # 与 openpi ``Observation.from_dict`` 完全一致；勿用仅做微优化的 fast path，
+            # 否则图像 dtype/layout 与 TRT/FlashRT 组合时可能导致 actions 为 NaN。
+            observation = _openpi_model.Observation.from_dict(inputs)
             collector.record(
                 KEY_POLICY_PREPROCESS_OBSERVATION,
                 (time.perf_counter() - t_sub0) * 1000.0,
@@ -405,7 +403,13 @@ def wrap_policy_infer_with_stage_perf(
                         (time.perf_counter() - t_sub0) * 1000.0,
                     )
                 else:
-                    outputs_cpu[key] = np.asarray(value[0, ...].detach().cpu())
+                    tensor = value.detach()
+                    if key == "actions":
+                        _sync_cuda_value(tensor)
+                        # ``sample_actions`` 可能返回 (T, D) 或 (1, T, D)；避免 ``[0]`` 误取单步。
+                        if tensor.ndim >= 3:
+                            tensor = tensor[0]
+                    outputs_cpu[key] = np.asarray(tensor.cpu())
                 if key == "actions":
                     collector.record(
                         KEY_POLICY_POSTPROCESS_ACTIONS_D2H,

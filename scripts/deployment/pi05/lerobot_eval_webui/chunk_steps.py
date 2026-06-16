@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 from typing import Any
 
 import numpy as np
@@ -48,6 +49,14 @@ def emit_chunk_steps(
         g = idx + k
         pred_row = pack.pred_h[k]
         gt_row = pack.gt_h[k]
+        if np.isnan(np.asarray(pred_row, dtype=np.float64)).any():
+            logging.warning(
+                "chunk idx=%s k=%s global_index=%s: pred 含 NaN，WebUI 将显示 pred 为空；"
+                "请更新 model_optimizer（stage_perf 已对齐 Observation.from_dict）并重试",
+                idx,
+                k,
+                idx + k,
+            )
         result = assembler.build(k, pred_row, gt_row)
         step_images = images if k == 0 else None
         step_event = StepEvent(

@@ -74,6 +74,12 @@ def _apply_pred_name_labels(args: Args, meta: dict[str, Any]) -> None:
         meta["pred1_name"] = "TRT_ref"
         meta["pred2_name"] = "TRT_tgt"
         meta["pair_name"] = "TRT_ref−TRT_tgt"
+    elif args.inference_mode == "tensorrt":
+        meta["pred1_name"] = (
+            "TRT+FlashRT"
+            if bool(getattr(args, "native_flashrt_decoder", False))
+            else "TRT"
+        )
 
 
 def _apply_tensorrt_meta(args: Args, meta: dict[str, Any]) -> None:
