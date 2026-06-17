@@ -25,6 +25,7 @@ def load_tensorrt_engines(
     llm_expected_seq_len: int = 0,
     denoise_adarms_precompute: bool = False,
     trt_vit_scale_fix: bool | None = None,
+    release_pytorch_weights: bool = True,
 ) -> None:
     import addict
     import torch
@@ -66,4 +67,5 @@ def load_tensorrt_engines(
         cfg["trt_vit_scale_fix"] = True
     elif trt_vit_scale_fix is False:
         cfg["trt_vit_scale_fix"] = False
+    cfg["release_pytorch_weights"] = bool(release_pytorch_weights)
     executor.load_model(addict.Dict(cfg))

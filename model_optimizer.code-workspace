@@ -4,34 +4,7 @@
 			"path": "."
 		},
 		{
-			"path": "../../e2e/TensorRT"
-		},
-		{
-			"path": "../../../codes/openpi"
-		},
-		{
-			"path": "../../e2e/cutlass"
-		},
-		{
-			"path": "../../../codes/sh_vla"
-		},
-		{
-			"path": "../starVLA"
-		},
-		{
-			"path": "../TensorRT-Edge-LLM"
-		},
-		{
-			"path": "../TensorRT-LLM"
-		},
-		{
-			"path": "../ffpa-attn"
-		},
-		{
-			"path": "../FlashRT"
-		},
-		{
-			"path": "../act"
+			"path": "../../opensrc/robot/openpi"
 		}
 	],
 	"settings": {}

@@ -49,10 +49,11 @@ class Pi05TensorRTExecutor(Executor):
         # openpi ``policies/policy.py``），此后只改 ``model.sample_actions`` 不会
         # 影响 ``infer()``；不刷新则仍走 torch.compile 包装，profiler / TRT 路径均可能 hook 不到。
         self._sync_policy_sample_actions_ref()
-      #  self._release_pytorch_model()
-      #  self.pi05_model.paligemma_with_expert.embed_image = partial(
-      #      embed_image, self.pi05_model.paligemma_with_expert.paligemma.model)
-      #  self.pi05_model.paligemma_with_expert.embed_language_tokens = self.embedding_layer
+        if bool(cfg_get(self.config, "release_pytorch_weights", True)):
+            self._release_pytorch_model()
+        from model_optimizer.infer.perf.gpu_memory import gpu_mem_report
+
+        gpu_mem_report("after_trt_engines")
 
     def __getattr__(self, name):
         return getattr(self.policy, name)
@@ -146,27 +147,40 @@ class Pi05TensorRTExecutor(Executor):
             return
         model.sample_actions = types.MethodType(raw_fn, model)
 
-    def _release_pytorch_model(self):
-        if self.config.vit_engine:
-            print(colored(f"release vision_tower engine", "green"))
-            if hasattr(self.pi05_model.paligemma_with_expert.paligemma.model, "vision_tower"):
-                del self.pi05_model.paligemma_with_expert.paligemma.model.vision_tower
+    def _release_pytorch_model(self) -> None:
+        """释放已被 TRT engine 接管的 PyTorch 子模块权重（保留 lang embedding 等仍被调用的部分）。"""
+        pwe = self.pi05_model.paligemma_with_expert
+        paligemma_model = pwe.paligemma.model
 
-        if self.config.llm_engine:
-            print(colored(f"release language_model engine", "green"))
-            self.embedding_layer = self.pi05_model.paligemma_with_expert.paligemma.get_input_embeddings()
+        if cfg_get(self.config, "vit_engine", None):
+            if hasattr(paligemma_model, "vision_tower"):
+                print(colored("release PyTorch vision_tower (TRT vit 已挂载)", "green"))
+                del paligemma_model.vision_tower
 
-            if hasattr(self.pi05_model.paligemma_with_expert.paligemma.model, "language_model"):
-                del self.pi05_model.paligemma_with_expert.paligemma.model.language_model
+        if cfg_get(self.config, "llm_engine", None):
+            if hasattr(paligemma_model, "language_model"):
+                print(colored("release PyTorch language_model (TRT llm 已挂载)", "green"))
+                del paligemma_model.language_model
 
-        if self.config.expert_engine:
-            print(colored(f"release expert engine", "green"))
-#            if hasattr(self.pi05_model.paligemma_with_expert.gemma_expert, "model"):
-#                del self.pi05_model.paligemma_with_expert.gemma_expert.model
+        if cfg_get(self.config, "expert_engine", None):
+            self._release_gemma_expert_module("TRT expert 已挂载")
 
-            if hasattr(self.pi05_model.paligemma_with_expert.gemma_expert, "lm_head"):
-                del self.pi05_model.paligemma_with_expert.gemma_expert.lm_head
         torch.cuda.empty_cache()
+
+    def _release_gemma_expert_module(self, reason: str) -> None:
+        ge = self.pi05_model.paligemma_with_expert.gemma_expert
+        released = False
+        if hasattr(ge, "model") and ge.model is not None:
+            print(colored(f"release PyTorch gemma_expert.model ({reason})", "green"))
+            del ge.model
+            ge.model = None
+            released = True
+        if hasattr(ge, "lm_head") and ge.lm_head is not None:
+            print(colored(f"release PyTorch gemma_expert.lm_head ({reason})", "green"))
+            del ge.lm_head
+            released = True
+        if released:
+            torch.cuda.empty_cache()
 
 
 class Pi05PyTorchExecutor(Executor):

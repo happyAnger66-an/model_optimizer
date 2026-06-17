@@ -29,6 +29,7 @@ def native_runtime_kwargs(args: Args, *, sample_actions_warmup_skips: int) -> di
         "flashrt_calibrate": bool(getattr(args, "native_flashrt_calibrate", False)),
         "flashrt_calib_samples": int(getattr(args, "native_flashrt_calib_samples", 8)),
         "sample_actions_warmup_skips": int(sample_actions_warmup_skips),
+        "release_pytorch_weights": bool(getattr(args, "trt_release_pytorch_weights", True)),
     }
 
 

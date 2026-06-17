@@ -87,6 +87,9 @@ def run_chunk_prediction(
         flow_noise=flow_noise,
     )
     t_after_predict = time.perf_counter()
+    from model_optimizer.infer.perf.gpu_memory import gpu_mem_report_after_first_infer_once
+
+    gpu_mem_report_after_first_infer_once()
     ah = ctx.action_horizon
     if pack.pred_h.shape[0] < ah or pack.gt_h.shape[0] < ah:
         logging.warning(

@@ -172,6 +172,12 @@ class Args:
     """标定累计样本数：跨 N 个 observation（KV/noise 各异）对激活 scale 取 max；
     且每个样本内对 10 个扩散步取 max。增大可提升 FP8 标定鲁棒性（减少饱和/掉点）。"""
 
+    trt_release_pytorch_weights: bool = True
+    """TRT / FlashRT 挂载成功后释放已被 engine 接管的 PyTorch 子模块权重（vit/llm/expert）。"""
+
+    gpu_mem_profile: bool = False
+    """加载阶段打印 PyTorch CUDA 显存分阶段峰值（``[MEM]`` 行）。"""
+
     perf_profile_chunk: bool = True
     """打印 chunk 级分解耗时（数据读取/重排/推理/后处理/总计），用于定位 e2e 与引擎时间差。"""
 

@@ -54,6 +54,7 @@ class Pi05NativeExecutor(Executor):
         self._flashrt_backend = None
         self._flashrt_calibrated = False
         self._flashrt_calib_count = 0
+        self._flashrt_expert_released = False
         # 分阶段耗时（见 ``model_optimizer.infer.perf.StagePerfCollector``）。
         self._stage_perf = StagePerfCollector(enabled=False)
         try:
@@ -158,6 +159,9 @@ class Pi05NativeExecutor(Executor):
 
         self._install_sample_actions_stage_timer(config)
         self._sync_policy_sample_actions_ref()
+        from model_optimizer.infer.perf.gpu_memory import gpu_mem_report
+
+        gpu_mem_report("after_native_runtime")
         if enable_denoise and flashrt_decoder:
             logger.info(
                 "[native-flashrt] perf=%s sample_actions=%s",
@@ -521,6 +525,7 @@ class Pi05NativeExecutor(Executor):
         self._flashrt_backend = None
         self._flashrt_calibrated = False
         self._flashrt_calib_count = 0
+        self._flashrt_expert_released = False
         self._orig_sample_actions = self.pi05_model.sample_actions
         m = self.pi05_model
         calib_samples = max(int(calib_samples), 1)
@@ -558,6 +563,8 @@ class Pi05NativeExecutor(Executor):
                         "[native-flashrt] act scales not found (%s)，用全 0（首跑可加 flashrt_calibrate=true 导出）",
                         act_scales_path,
                     )
+            del sd
+            self._maybe_release_gemma_expert_after_flashrt()
             return backend
 
         def sample_actions_flashrt(self_m, device, observation, noise=None, num_steps=10):
@@ -685,6 +692,30 @@ class Pi05NativeExecutor(Executor):
                 )
 
         self.pi05_model.sample_actions = types.MethodType(sample_actions_flashrt, self.pi05_model)
+
+    def _maybe_release_gemma_expert_after_flashrt(self) -> None:
+        """FlashRT repack + AdaRMS 预计算完成后释放 PyTorch gemma_expert 权重。"""
+        if self._flashrt_expert_released:
+            return
+        if not bool(_cfg_get(self.config, "release_pytorch_weights", True)):
+            return
+        ge = self.pi05_model.paligemma_with_expert.gemma_expert
+        released = False
+        if hasattr(ge, "model") and ge.model is not None:
+            logger.info("[native-flashrt] release PyTorch gemma_expert.model (FlashRT repack 已完成)")
+            del ge.model
+            ge.model = None
+            released = True
+        if hasattr(ge, "lm_head") and ge.lm_head is not None:
+            logger.info("[native-flashrt] release PyTorch gemma_expert.lm_head")
+            del ge.lm_head
+            released = True
+        if released:
+            torch.cuda.empty_cache()
+            self._flashrt_expert_released = True
+            from model_optimizer.infer.perf.gpu_memory import gpu_mem_report
+
+            gpu_mem_report("after_flashrt_backend")
 
     def _sync_policy_sample_actions_ref(self) -> None:
         pol = self.policy

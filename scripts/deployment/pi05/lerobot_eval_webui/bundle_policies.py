@@ -25,6 +25,8 @@ from .config import Args
 from .onnxrt_backend import load_onnxrt_engines
 from .tensorrt_backend import load_tensorrt_engines
 
+from model_optimizer.infer.perf.gpu_memory import gpu_mem_report, start_gpu_mem_profile
+
 
 @dataclass
 class PolicyBundle:
@@ -85,6 +87,7 @@ def _load_tensorrt_on_policy(
         kw["llm_expected_seq_len"] = llm_expected_seq_len
     if denoise_adarms_precompute:
         kw["denoise_adarms_precompute"] = True
+    kw["release_pytorch_weights"] = bool(getattr(args, "trt_release_pytorch_weights", True))
     load_tensorrt_engines(**kw)
 
 
@@ -165,6 +168,7 @@ def _load_base_pytorch_policy(args: Args, train_cfg: Any, progress: BundleProgre
     )
     progress.emit("policy_pt", "加载 PyTorch 策略（checkpoint → 内存/显存，可能较慢）…")
     policy = create_trained_policy(train_cfg, args)
+    gpu_mem_report("after_policy_load")
     log_policy_ready(policy, "main")
     progress.emit("policy_pt", "PyTorch 策略已就绪")
     return PolicyBundle(policy=policy)
@@ -464,5 +468,9 @@ def _attach_onnxrt_single(
 
 
 def load_policy_bundle(args: Args, train_cfg: Any, progress: BundleProgress) -> PolicyBundle:
+    start_gpu_mem_profile(
+        enabled=bool(getattr(args, "gpu_mem_profile", False)),
+        device=getattr(args, "device", None),
+    )
     primary = _load_primary_policy(args, train_cfg, progress)
     return _attach_secondary_policies(args, train_cfg, primary, progress)
