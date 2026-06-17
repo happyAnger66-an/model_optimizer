@@ -1,0 +1,68 @@
+# lerobot_eval_webui_server —— 单路全 TensorRT（无 PyTorch 对比、无双 policy）。
+# 用法：
+#   python scripts/deployment/pi05/lerobot_eval_webui_server.py \
+#     --webui-config config/webui_configs/tensorrt_single.yaml
+#
+# 说明：
+# - 只加载 **一套** policy，vit/llm/denoise 走 TRT engine；未配置的 stage 仍回退 PyTorch。
+# - ``compare_mode: false``（默认）：不加载第二套浮点 PyTorch 路，WebUI 仅一条 pred 曲线。
+# - ``trt_release_pytorch_weights: true``：TRT 挂载成功后释放 vision_tower / language_model 等冗余权重。
+# - checkpoint 仍必需（Policy transforms、lang embedding、denoise 宿主等）；推理热路径走 TRT。
+checkpoint: /srcs/openpi/pytorch_pi05_libero/
+config: pi05_libero
+inference_mode: tensorrt
+device: cuda:0
+precision: bf16
+
+# —— 单路 TRT：勿开任何 compare ——
+compare_mode: false
+ptq_compare: false
+ptq_trt_compare: false
+ort_compare: false
+trt_ort_compare: false
+trt_trt_compare: false
+vit_pt_trt_compare: false
+
+# —— TensorRT 引擎 ——
+engine_path: /tmp/build/pi05/opt
+vit_engine: vit_fp8_batch.engine
+llm_engine: llm_fp8.engine
+denoise_engine: denoise_st_fp8.engine
+expert_engine: ""
+embed_prefix_engine: ""
+
+denoise_adarms_precompute: true
+vit_batch_views: true
+trt_vit_scale_fix: true
+
+# —— 不叠加 Native / FlashRT ——
+native_overlay_on_tensorrt: false
+native_flashrt_decoder: false
+
+# —— TRT 运行开关 ——
+trt_perf: true
+trt_perf_warmup: 20
+trt_perf_print_interval: 50
+trt_cuda_graph: true
+trt_cuda_graph_warmup: 3
+
+# —— 性能 / 显存 ——
+perf_profile_chunk: true
+perf_profile_warmup_chunks: 10
+perf_profile_print_interval: 20
+perf_profile_top_n: 3
+trt_enable_stage_profile: true
+trt_stage_profile_warmup: 10
+trt_enable_hook_profile: true
+trt_release_pytorch_weights: true
+gpu_mem_profile: true
+
+num_samples: 500
+start_index: 0
+noise: fixed
+noise_seed: 0
+
+host: 0.0.0.0
+port: 8765
+wait_for_client: false
+history_size: 4096

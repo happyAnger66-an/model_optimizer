@@ -2,6 +2,7 @@ import types
 
 from termcolor import colored
 import torch
+import torch.nn as nn
 
 from ..executor import Executor
 from ..perf import StagePerfCollector, install_infer_stage_perf
@@ -12,6 +13,31 @@ from .trt_torch import Engine
 from transformers.cache_utils import DynamicCache
 
 
+class _TrtLanguageModelStub(nn.Module):
+    """TRT LLM 挂载后保留 ``embed_tokens`` + ``config`` + TRT ``forward``，释放 Gemma 层权重。"""
+
+    def __init__(self, *, config, embed_tokens, forward_fn):
+        super().__init__()
+        self.config = config
+        self.embed_tokens = embed_tokens
+        self._forward_fn = forward_fn
+
+    def forward(self, *args, **kwargs):
+        return self._forward_fn(*args, **kwargs)
+
+
+class _TrtExpertModelStub(nn.Module):
+    """TRT expert 挂载后仅保留 ``config`` + TRT ``forward``。"""
+
+    def __init__(self, *, config, forward_fn):
+        super().__init__()
+        self.config = config
+        self._forward_fn = forward_fn
+
+    def forward(self, *args, **kwargs):
+        return self._forward_fn(*args, **kwargs)
+
+
 class Pi05TensorRTExecutor(Executor):
     def __init__(self, policy, precision=torch.bfloat16, config=None):
         super().__init__(policy)
@@ -20,6 +46,8 @@ class Pi05TensorRTExecutor(Executor):
 #        self.pi05_model.to(precision)
         self.config = config
         self._trt_engines: dict[str, Engine] = {}
+        self._trt_lang_model_stub: _TrtLanguageModelStub | None = None
+        self._trt_expert_model_stub: _TrtExpertModelStub | None = None
         self._stage_perf = StagePerfCollector(enabled=False)
         # 暴露给上层（webui 汇总）读取 engine 级统计
         try:
@@ -158,13 +186,64 @@ class Pi05TensorRTExecutor(Executor):
                 del paligemma_model.vision_tower
 
         if cfg_get(self.config, "llm_engine", None):
-            if hasattr(paligemma_model, "language_model"):
-                print(colored("release PyTorch language_model (TRT llm 已挂载)", "green"))
-                del paligemma_model.language_model
+            self._release_language_model_for_trt(pwe, paligemma_model)
 
         if cfg_get(self.config, "expert_engine", None):
-            self._release_gemma_expert_module("TRT expert 已挂载")
+            self._release_gemma_expert_for_trt("TRT expert 已挂载")
+        elif cfg_get(self.config, "denoise_engine", None) and not cfg_get(
+            self.config, "expert_engine", None
+        ):
+            # denoise 整图 TRT 时 inference 不再走 gemma_expert PyTorch forward
+            self._release_gemma_expert_module("denoise TRT 已挂载")
 
+        torch.cuda.empty_cache()
+
+    def _release_language_model_for_trt(self, pwe, paligemma_model) -> None:
+        if not hasattr(paligemma_model, "language_model"):
+            return
+        old_lm = paligemma_model.language_model
+        if old_lm is None or isinstance(old_lm, _TrtLanguageModelStub):
+            return
+
+        forward_fn = old_lm.forward
+        config = old_lm.config
+        embed_tokens = old_lm.embed_tokens
+        old_lm.embed_tokens = None
+
+        stub = _TrtLanguageModelStub(
+            config=config,
+            embed_tokens=embed_tokens,
+            forward_fn=forward_fn,
+        )
+        paligemma_model.language_model = stub
+        self._trt_lang_model_stub = stub
+
+        if not getattr(pwe, "_mopt_fp8_lang_embedding_installed", False):
+            pwe.embed_language_tokens = lambda tokens: embed_tokens(tokens)
+
+        del old_lm
+        print(
+            colored(
+                "release PyTorch language_model layers (保留 embed_tokens + TRT forward)",
+                "green",
+            )
+        )
+
+    def _release_gemma_expert_for_trt(self, reason: str) -> None:
+        ge = self.pi05_model.paligemma_with_expert.gemma_expert
+        if not hasattr(ge, "model") or ge.model is None:
+            return
+        old_model = ge.model
+        if isinstance(old_model, _TrtExpertModelStub):
+            return
+
+        stub = _TrtExpertModelStub(config=old_model.config, forward_fn=old_model.forward)
+        ge.model = stub
+        self._trt_expert_model_stub = stub
+        if hasattr(ge, "lm_head") and ge.lm_head is not None:
+            del ge.lm_head
+        del old_model
+        print(colored(f"release PyTorch gemma_expert layers ({reason})", "green"))
         torch.cuda.empty_cache()
 
     def _release_gemma_expert_module(self, reason: str) -> None:
