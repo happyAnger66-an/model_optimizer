@@ -41,6 +41,10 @@ trt_enable_stage_profile: true
 trt_stage_profile_warmup: 10
 trt_enable_hook_profile: true
 
+# —— 显存：释放 TRT 已接管的 PyTorch 权重 + 分阶段 [MEM] 打印 ——
+trt_release_pytorch_weights: true
+gpu_mem_profile: true
+
 num_samples: 500
 start_index: 0
 noise: fixed

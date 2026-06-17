@@ -176,7 +176,7 @@ class Args:
     """TRT / FlashRT 挂载成功后释放已被 engine 接管的 PyTorch 子模块权重（vit/llm/expert）。"""
 
     gpu_mem_profile: bool = False
-    """加载阶段打印 PyTorch CUDA 显存分阶段峰值（``[MEM]`` 行）。"""
+    """加载阶段打印 PyTorch CUDA 显存分阶段峰值（``[MEM]`` 行）。亦可用环境变量 ``MO_GPU_MEM_PROFILE=1``。"""
 
     perf_profile_chunk: bool = True
     """打印 chunk 级分解耗时（数据读取/重排/推理/后处理/总计），用于定位 e2e 与引擎时间差。"""

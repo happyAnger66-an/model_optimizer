@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
+from typing import Any
 
 import torch
 from termcolor import colored
 
 logger = logging.getLogger(__name__)
+
+_GPU_MEM_PROFILE_ENV = "MO_GPU_MEM_PROFILE"
 
 _active_profiler: GpuMemoryProfiler | None = None
 
@@ -90,6 +94,16 @@ class GpuMemoryProfiler:
 
 def get_gpu_mem_profiler() -> GpuMemoryProfiler | None:
     return _active_profiler
+
+
+def resolve_gpu_mem_profile_enabled(args: Any | None = None) -> bool:
+    """YAML ``gpu_mem_profile`` 或环境变量 ``MO_GPU_MEM_PROFILE=1``。"""
+    raw = os.getenv(_GPU_MEM_PROFILE_ENV, "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if args is not None and bool(getattr(args, "gpu_mem_profile", False)):
+        return True
+    return False
 
 
 def start_gpu_mem_profile(*, enabled: bool, device: str | None = None) -> GpuMemoryProfiler:

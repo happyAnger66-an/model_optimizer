@@ -25,7 +25,11 @@ from .config import Args
 from .onnxrt_backend import load_onnxrt_engines
 from .tensorrt_backend import load_tensorrt_engines
 
-from model_optimizer.infer.perf.gpu_memory import gpu_mem_report, start_gpu_mem_profile
+from model_optimizer.infer.perf.gpu_memory import (
+    gpu_mem_report,
+    resolve_gpu_mem_profile_enabled,
+    start_gpu_mem_profile,
+)
 
 
 @dataclass
@@ -168,7 +172,8 @@ def _load_base_pytorch_policy(args: Args, train_cfg: Any, progress: BundleProgre
     )
     progress.emit("policy_pt", "加载 PyTorch 策略（checkpoint → 内存/显存，可能较慢）…")
     policy = create_trained_policy(train_cfg, args)
-    gpu_mem_report("after_policy_load")
+    mem_tag = "after_policy_load_pt" if getattr(args, "compare_mode", False) else "after_policy_load"
+    gpu_mem_report(mem_tag)
     log_policy_ready(policy, "main")
     progress.emit("policy_pt", "PyTorch 策略已就绪")
     return PolicyBundle(policy=policy)
@@ -238,6 +243,7 @@ def _attach_compare_or_ptq_trt_second(
     apply_trt_stage_profile_env(args)
     apply_trt_hook_profile_env(args, print_on_exit=False)
     policy_trt = create_trained_policy(train_cfg, args)
+    gpu_mem_report("after_policy_load_trt")
     compare_warmup = max(int(getattr(args, "perf_profile_warmup_chunks", 10)), 0)
     trt_cuda_graph = bool(getattr(args, "trt_cuda_graph", False))
     if trt_cuda_graph:
@@ -270,6 +276,7 @@ def _attach_compare_or_ptq_trt_second(
         attach_native_executor(policy_trt, native_executor)
         progress.emit("native", "compare：Native/FlashRT 阶段覆盖已生效")
     install_compare_pt_stage_perf(policy, warmup_skips=compare_warmup)
+    gpu_mem_report("after_compare_bundle")
     print(colored("[infer] compare_mode：PyTorch + TensorRT 双策略已就绪", "cyan"), flush=True)
     progress.emit("policy_trt", "TensorRT 引擎已挂载（compare 双路就绪）")
     if getattr(args, "vit_pt_trt_compare", False):
@@ -468,9 +475,15 @@ def _attach_onnxrt_single(
 
 
 def load_policy_bundle(args: Args, train_cfg: Any, progress: BundleProgress) -> PolicyBundle:
-    start_gpu_mem_profile(
-        enabled=bool(getattr(args, "gpu_mem_profile", False)),
-        device=getattr(args, "device", None),
-    )
+    mem_enabled = resolve_gpu_mem_profile_enabled(args)
+    start_gpu_mem_profile(enabled=mem_enabled, device=getattr(args, "device", None))
+    if mem_enabled:
+        print(
+            colored(
+                "[infer] GPU 显存分阶段 profiling 已启用（gpu_mem_profile / MO_GPU_MEM_PROFILE）",
+                "cyan",
+            ),
+            flush=True,
+        )
     primary = _load_primary_policy(args, train_cfg, progress)
     return _attach_secondary_policies(args, train_cfg, primary, progress)
