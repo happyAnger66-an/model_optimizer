@@ -14,7 +14,8 @@
 5. [实例：Gemma `q_proj` 一层 Linear 的完整过程](#五实例gemma-q_proj-一层-linear-的完整过程)
 6. [AWQ 等算法与 fake quant](#六awq-等算法与-fake-quant)
 7. [与 pi05 各 stage 的关系](#七与-pi05-各-stage-的关系)
-8. [关键参考](#八关键参考)
+8. [NVFP4 导出：`set_dynamic_quant` 与 `_nvfp4_post_processing`](#八nvfp4-导出set_dynamic_quant-与-_nvfp4_post_processing)
+9. [关键参考](#九关键参考)
 
 ---
 
@@ -109,11 +110,15 @@ Vit.quantize(quant_cfg, calib_data, export_dir)
   │    ├─ mtq.quantize(model, quant_config, forward_loop=calibrate_loop)  ← 核心
   │    ├─ mtq.print_quant_summary(model)
   │    └─ 可选 _tensor_qdq_error_analysis
-  ├─ set_dynamic_quant(self, "bf16")
-  └─ export(export_dir) → vit.onnx / llm.onnx / ...
+  ├─ set_dynamic_quant(self, "bf16")          # 仅 NVFP4 QuantLinear 生效
+  ├─ export(export_dir) → vit.onnx / llm.onnx / ...
+  └─ if is_nvfp4_quantized(quant_cfg):
+         _nvfp4_post_processing(onnx_path, export_dir)  # fp4qdq_to_2dq 等
 ```
 
 配置来源：`src/model_optimizer/quantization/cfg.py`（如 `"fp8": mtq.FP8_DEFAULT_CFG`）。
+
+NVFP4 导出前后两段的详细说明见 [§八](#八nvfp4-导出set_dynamic_quant-与-_nvfp4_post_processing)。
 
 ### 4.2 `calibrate_loop` 做什么
 
@@ -275,11 +280,183 @@ AWQ **不能**在纯 FP32 图上搜索，否则搜到的权重对部署无效。
 | **denoise** | `Pi05DenoiseStep` 或 `gemma_expert` + `forward_context` | 完整 denoise `forward` | `nvfp4` / FP8_KV 等 |
 | **expert** | 同 expert 子模块 | 依 collector | 同族 |
 
-标定完成后各 stage **`export()` 产出 ONNX**，再 TRT build；TVM 路径见 [how_to_use_tvm.md](./how_to_use_tvm.md)（MVP 可先 FP16，INT8 复用 calib 思路）。
+标定完成后各 stage **`export()` 产出 ONNX**；若配置为 NVFP4，还需 **`_nvfp4_post_processing`** 再 TRT build。TVM 路径见 [how_to_use_tvm.md](./how_to_use_tvm.md)（MVP 可先 FP16，INT8 复用 calib 思路）。
 
 ---
 
-## 八、关键参考
+## 八、NVFP4 导出：`set_dynamic_quant` 与 `_nvfp4_post_processing`
+
+> **结论先行**：二者同属 NVFP4 导出链路的 **相邻步骤**，不是因果关系。  
+> `set_dynamic_quant` 在 **export 之前** 配置 ModelOpt ONNX 导出器；`_nvfp4_post_processing` 在 **export 之后** 把 ONNX 图改成 TensorRT 可识别的标准 QDQ。  
+> 纯 FP8 路径通常只走标定 + export，**不调用** 后处理。
+
+### 8.1 完整顺序（以 Vit 为例）
+
+```python
+# vit.py — quantize()
+quantize_model(self, quant_cfg, calib_dataloader)   # ① 标定 + fake quant
+self.is_quantized = True
+set_dynamic_quant(self, "bf16")                       # ② 导出前：NVFP4 导出策略
+self.export(export_dir, dynamo=False)                 # ③ 写出 vit.onnx（可能含 TRT_FP4QDQ）
+onnx_path = f"{export_dir}/vit.onnx"
+if is_nvfp4_quantized(quant_cfg):                     # ④ 仅 NVFP4 配置
+    self._nvfp4_post_processing(onnx_path, export_dir)
+```
+
+| 步骤 | 函数 | 时机 | 仅 NVFP4？ |
+|------|------|------|------------|
+| ① | `quantize_model` / `mtq.quantize` | 标定 | 否（FP8/NVFP4/AWQ 均走） |
+| ② | `set_dynamic_quant` | **export 前** | 是（只改 `is_nvfp4_linear` 层） |
+| ③ | `export()` | 写 ONNX | 否 |
+| ④ | `_nvfp4_post_processing` | **export 后** | 是（`is_nvfp4_quantized(quant_cfg)` 为真） |
+
+### 8.2 `set_dynamic_quant`：导出前配置
+
+实现见 `src/model_optimizer/utils/utils.py`。遍历模块树，对 **NVFP4 QuantLinear**（`block_sizes["scale_bits"] == (4, 3)`）设置三个导出元数据：
+
+| 属性 | 取值 | 含义 |
+|------|------|------|
+| `input_quantizer._onnx_quantizer_type` | `"dynamic"` | 激活侧 Q/DQ 按 **dynamic** 导出 |
+| `weight_quantizer._onnx_quantizer_type` | `"static"` | 权重侧 Q/DQ 按 **static** 导出（权重已固化） |
+| `input_quantizer._trt_high_precision_dtype` | `"BFloat16"` 或 `"Half"` | TRT 高精度累加 dtype（Vit/dit 常用 `"bf16"`，LLM 部分路径用 `"fp16"`） |
+
+**作用**：告诉 ModelOpt 的 ONNX 导出器 **如何写 Q/DQ 节点**，使 NVFP4 权重路径导出为 `TRT_FP4QDQ` 等 TRT 专用表示（含 E2M1 权值 + per-block scale + 全局 scale）。
+
+**对 FP8 无效**：`is_nvfp4_linear` 为 false 的层不会被修改；FP8 导出走 `QuantizeLinear` / `TRT_FP8QuantizeLinear` 等标准路径，无需此步。
+
+### 8.3 `_nvfp4_post_processing`：export 后图变换
+
+基类实现在 `src/model_optimizer/models/model.py`；`llm.py` / `llm_with_trtedgellm.py` / `llm_with_cutedsl.py` 有几乎相同的 override（cutedsl 版适配了 `save_pretrained`）。
+
+#### 步骤 0：保存 HF 侧 json
+
+```python
+with torch.inference_mode():
+    self.model.save_pretrained(export_dir)
+```
+
+将 config 等 **`.json`** 写入 `export_dir`；后续清理会 **保留** 这些 json。
+
+#### 步骤 1：门禁 — 模型是否含 NVFP4 层
+
+```python
+if is_fp4_quantized(self):
+    ...
+```
+
+`is_fp4_quantized` 遍历模块，检查是否存在 `scale_bits == (4, 3)` 的 quantizer。若标定配置声称 NVFP4 但模型树中无对应层，则 **直接返回**，不做图改写。
+
+#### 步骤 2：ONNX shape 推断
+
+```python
+onnx.shape_inference.infer_shapes_path(onnx_path)
+onnx_model = onnx.load(onnx_path)
+```
+
+补全/校验张量 shape，供后续 `fp4qdq_to_2dq` 图改写使用。
+
+#### 步骤 3：核心 — `fp4qdq_to_2dq`
+
+```python
+from modelopt.onnx.quantization.qdq_utils import fp4qdq_to_2dq
+onnx_model = fp4qdq_to_2dq(onnx_model)
+```
+
+**这是后处理的关键。** ModelOpt 导出 NVFP4 时，权重路径常见自定义算子：
+
+```
+TRT_FP4QDQ  →  打包 E2M1 权值 + per-block FP8 scale + 全局 FP32 scale
+```
+
+TensorRT **无法直接解析** `TRT_FP4QDQ`（会报 `TRT_FP4QDQ Plugin not found` 一类错误）。`fp4qdq_to_2dq` 将图中这些节点 **改写为两级标准 ONNX `DequantizeLinear`**：
+
+```
+DequantizeLinear（block 级）
+  → DequantizeLinear（全局级）
+  → MatMul / Gemm
+```
+
+语义仍是 NVFP4 解压后再算，但算子变为 TRT 原生支持的 **标准 QDQ 链**。改写后应满足：
+
+```python
+assert not any(n.op_type == "TRT_FP4QDQ" for n in model.graph.node)
+```
+
+NVFP4 的「比 per-tensor 更细」来自 **per-block scale**（E2M1 + block scale + 全局标量），详见 `docs/optimizer/ddup/adarms_pre_compute.md` 中的导出粒度对照表。
+
+#### 步骤 4：清理 export_dir
+
+```python
+for file in os.listdir(export_dir):
+    if file.endswith(".json"):
+        continue
+    os.remove(os.path.join(export_dir, file))
+```
+
+删除 **除 `.json` 外** 的旧文件（export 产生的临时权重、旧 onnx 分片等），避免与重写后的 ONNX 混在一起。
+
+#### 步骤 5：以外部权重形式写回 ONNX
+
+```python
+onnx.save_model(
+    onnx_model,
+    onnx_path,
+    save_as_external_data=True,
+    all_tensors_to_one_file=True,
+    location="onnx_model.data",
+    convert_attribute=False,
+)
+```
+
+- 大图权重放到 **`onnx_model.data`**，protobuf 只保留图结构  
+- `convert_attribute=False`：避免 Constant attribute 外置错位，导致 TRT 报 **Expected size / Actual size: 0 bytes**
+
+### 8.4 NVFP4 全链路数据流
+
+```mermaid
+flowchart LR
+  A["mtq.quantize 标定"] --> B["set_dynamic_quant\n激活 dynamic / 权重 static"]
+  B --> C["torch.onnx.export"]
+  C --> D["*.onnx\n含 TRT_FP4QDQ"]
+  D --> E["fp4qdq_to_2dq"]
+  E --> F["*.onnx\n两级 DequantizeLinear\n+ onnx_model.data"]
+  F --> G["TensorRT build"]
+```
+
+### 8.5 不同量化格式对照
+
+| 格式 | `set_dynamic_quant` | `_nvfp4_post_processing` | 导出后 ONNX 典型形态 |
+|------|---------------------|--------------------------|----------------------|
+| **NVFP4** | 配置 dynamic/static + 高精度 dtype | **必须** `fp4qdq_to_2dq` | 标准 QDQ + 外部 `onnx_model.data` |
+| **FP8** | 通常 no-op | **不调用** | `QuantizeLinear` / TRT FP8 QDQ |
+| **INT8** | 通常 no-op | **不调用** | 标准 INT8 QDQ |
+
+### 8.6 各 stage 谁在用
+
+| 模块 | `set_dynamic_quant` dtype | 触发 `_nvfp4_post_processing` |
+|------|---------------------------|--------------------------------|
+| `vit.py` | `"bf16"` | `is_nvfp4_quantized(quant_cfg)` |
+| `llm.py` | 依配置（`dynamic_quant`） | 同上 |
+| `llm_with_trtedgellm.py` / `llm_with_cutedsl.py` | `"fp16"` | 同上（cutedsl 有自定义 `save_pretrained`） |
+| `dit.py` / `expert.py` / `embed_prefix.py` | `"bf16"` | 同上 |
+
+三条 LLM 导出路径均 **必须在 `export()` 之后** 调用后处理；否则 TRT 编译会挂在 NVFP4 节点上。这与是否 fused MLP 无关——凡 NVFP4 Linear 导出都会带 `TRT_FP4QDQ`。
+
+### 8.7 与 fake quant 标定的关系
+
+| 阶段 | 做什么 | 在哪里 |
+|------|--------|--------|
+| **标定** | fake QDQ + 定 scale | `mtq.quantize`（§四、§五） |
+| **导出前** | 配置 ONNX Q/DQ 写法 | `set_dynamic_quant` |
+| **导出** | PyTorch → ONNX | 各 stage `export()` |
+| **导出后** | `TRT_FP4QDQ` → 标准 QDQ | `_nvfp4_post_processing` |
+| **部署** | 真低精度 GEMM | TensorRT build |
+
+标定 fake quant 与导出 QDQ **共用同一套 scale**；`set_dynamic_quant` 与 `_nvfp4_post_processing` 不改变 scale，只影响 **ONNX 图形态与 TRT 兼容性**。
+
+---
+
+## 九、关键参考
 
 | 资源 | 路径 |
 |------|------|
@@ -288,7 +465,10 @@ AWQ **不能**在纯 FP32 图上搜索，否则搜到的权重对部署无效。
 | LLM 量化 | `src/model_optimizer/models/pi05/llm.py` — `quantize()` |
 | Vit 量化 | `src/model_optimizer/models/pi05/vit.py` — `quantize()` |
 | Denoise 量化 | `src/model_optimizer/models/pi05/dit.py` — `quantize()` |
+| NVFP4 导出前配置 | `src/model_optimizer/utils/utils.py` — `set_dynamic_quant`、`is_nvfp4_quantized` |
+| NVFP4 导出后处理 | `src/model_optimizer/models/model.py` — `_nvfp4_post_processing` |
 | 标定数据 | `src/model_optimizer/calibrate/pi05_calib_load.py` |
+| NVFP4 导出粒度说明 | `docs/optimizer/ddup/adarms_pre_compute.md` |
 | Pipeline 分工 | [pipeline.md](./pipeline.md) |
 
 ---
@@ -296,6 +476,8 @@ AWQ **不能**在纯 FP32 图上搜索，否则搜到的权重对部署无效。
 ## 附录：一句话结论
 
 **Fake quantization** 在标定阶段用 **QDQ + 浮点 MatMul** 模拟部署时的量化误差，为每层定准 **scale**（及 AWQ 等所需的权重变换），并使 **后续层统计到的激活分布** 与 TRT/ONNX **真量化推理** 一致；标定结束后 **同一套 scale** 写入导出图，由 TensorRT 等在运行时执行 **真 FP8/INT8 GEMM**。
+
+**NVFP4 额外两步**：export 前 `set_dynamic_quant` 配置 dynamic 激活 / static 权重；export 后 `_nvfp4_post_processing` 将 `TRT_FP4QDQ` 转为两级标准 `DequantizeLinear` 并以 `onnx_model.data` 外置权重，供 TensorRT build。
 
 ---
 
